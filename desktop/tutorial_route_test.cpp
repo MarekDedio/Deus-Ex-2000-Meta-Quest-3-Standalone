@@ -285,14 +285,26 @@ void GeneratedInstantMoverPublication(const OwnedTemporary& temporary) {
     Require(!AdvancePortableRuntimeMovers(0.05f) && GetPortableRuntimeMoverActors(true).empty(),
         "Instant close final sample was retained beyond its publication step");
     Require(InteractPortableRuntimeActor(path).action=="mover_open","Instant restore fixture did not queue a command");
-    Snapshot(temporary,"instant-restore-pending");
-    Require(LoadPortableRuntimeState(temporary.Path("instant-restore-pending")),"Instant authoritative checkpoint restore failed");
+    const auto pending=Snapshot(temporary,"instant-restore-pending");
+    const auto revision=GetPortableRuntimeWorldRevision();
+    // This deliberately tiny fixture has only two Mover exports, no native
+    // ULevel/Model or original source-root map authority. It can exercise the
+    // presentation command queue, but cannot authorize a native world restore.
+    // Real Training's positive mid-motion/key-door restores run above.
+    Require(!ValidatePortableRuntimeState(temporary.Path("instant-restore-pending"),"GeneratedInstantMovers")&&
+        !LoadPortableRuntimeState(temporary.Path("instant-restore-pending")),
+        "Metadata-only instant fixture acquired a fabricated authoritative restore context");
+    Require(GetPortableRuntimeWorldRevision()==revision&&Snapshot(temporary,"instant-restore-refused")==pending,
+        "Refused metadata-only instant restore changed live state or revision");
     const auto restored=GetPortableRuntimeMoverActors();
     const auto actor=std::find_if(restored.begin(),restored.end(),[&](const auto& value) {return value.objectPath==path;});
-    Require(actor!=restored.end() && !actor->moverMoving && actor->activated,"Authoritative restore lost instant command endpoint");
-    Near(actor->y,56.0f,"Authoritative restore changed the instant key pose");
-    Require(!AdvancePortableRuntimeMovers(0.0f) && !AdvancePortableRuntimeMovers(0.05f) &&
-        GetPortableRuntimeMoverActors(true).empty(),"Restore serialized/replayed transient command publication work");
+    Require(actor!=restored.end() && !actor->moverMoving && actor->activated,"Refused restore lost the instant command endpoint");
+    Near(actor->y,56.0f,"Refused restore changed the instant key pose");
+    Require(!AdvancePortableRuntimeMovers(0.0f)&&AdvancePortableRuntimeMovers(0.05f),
+        "Refused restore consumed the original pending instant publication");
+    const auto published=only();Near(published.y,56.0f,"Pending instant publication changed after refusal");
+    Require(!AdvancePortableRuntimeMovers(0.05f)&&GetPortableRuntimeMoverActors(true).empty(),
+        "Refused restore duplicated the original pending instant publication");
 }
 void Original(const std::filesystem::path& gameRoot) {
     OwnedTemporary temporary(gameRoot);

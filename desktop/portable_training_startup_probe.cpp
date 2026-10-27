@@ -588,8 +588,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
         PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
         PreparePortableRuntimeNativeInputClasses().prepared&&
-        PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared,
-        "Cannot prepare genuine Engine/metadata/config/Package/Input/lookup/Cylinder prerequisites");
+        PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared&&
+        PreparePortableRuntimeInputSchema().prepared,
+        "Cannot prepare genuine Engine/metadata/config/Package/Input/lookup/Cylinder/Input-schema prerequisites");
     auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,Client);
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");

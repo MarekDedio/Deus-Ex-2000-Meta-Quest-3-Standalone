@@ -147,7 +147,20 @@ struct RuntimeNativeDumpState {
     std::unique_ptr<std::byte[]> helper;
 };
 enum class RuntimeNativeDefaultKind {Object,Subsystem,Field,Property,StrProperty,ArrayProperty,
+    Struct,NameProperty,StructProperty,Input,InputExt,
     Primitive,Engine,GameEngine,GameEngineExt,DeusExGameEngine};
+struct RuntimeNativeInputAlias {NameString alias{"None"};std::string command;};
+struct RuntimeNativeInputValues {
+    std::array<RuntimeNativeInputAlias,40u> aliases;
+    std::array<std::string,255u> bindings;
+    RuntimeObject *viewport{},*keyEnum{};
+    bool execInstalled{};
+};
+struct RuntimeNativeStruct {
+    NameString friendlyName{"None"};
+    std::uint32_t propertiesSize{};
+    RuntimeObject* super{};
+};
 struct RuntimeNativeEngineValues {
     std::array<RuntimeObject*,5u> configuredClasses{};
     RuntimeObject *cylinder{},*client{},*render{},*audio{};
@@ -168,11 +181,14 @@ struct RuntimePreparedNativeDefaults {
     // Audited metadata/Primitive CDO native tails are zero after parent-copy
     // and extension. UProperty's dimension becomes1 only in its INSTANCE ctor.
     std::uint32_t propertyDimension{},propertyElementSize{},propertyFlags{},propertyOffset{};
+    std::uint32_t structPropertiesSize{};
+    NameString structFriendlyName{"None"};
+    std::unique_ptr<RuntimeNativeInputValues> input;
     std::array<float,10u> primitiveBounds{};
     bool primitiveBoundsValid{};
 };
 struct RuntimeNativeProperty {
-    RuntimeObject *next{},*inner{};
+    RuntimeObject *next{},*inner{},*referencedStruct{};
     RuntimeObject *propertyNext{},*configNext{},*constructorNext{};
     std::uint32_t dimension{},elementSize{},flags{},offset{};
     std::string category;
@@ -320,6 +336,7 @@ public:
     std::unique_ptr<QuestVr::NativePackage::Instance> nativePackageInstance;
     std::unique_ptr<const RuntimePreparedNativeDefaults> preparedNativeDefaults;
     std::unique_ptr<RuntimeNativeProperty> nativeProperty;
+    std::unique_ptr<RuntimeNativeStruct> nativeStruct;
     std::array<RuntimeObject*,3u> nativePropertyNext{};
     std::array<RuntimeObject*,3u> nativePropertyHeads{};
     RuntimeObject* nativeChildren{};
@@ -420,7 +437,10 @@ public:
     // inherited Engine/DeusEx class default. Array slots inherit separately.
     std::unordered_map<std::string,
         std::unordered_map<std::uint32_t, std::string>> namePropertyValues;
-    QuestVr::ActorTextureOverrides textureOverrides;
+    // Immutable load-time cache. Native metadata/default/schema objects and
+    // ordinary exports without a declared texture slot need no ten-string
+    // Actor payload; a present specified null slot must still be retained.
+    std::unique_ptr<QuestVr::ActorTextureOverrides> textureOverrides;
     std::string sourcePath;
     std::size_t exportIndex{};
     std::unique_ptr<PortableLodMesh> lodMesh;
@@ -437,8 +457,11 @@ public:
     decltype(scriptValues) frozenBirthDefaults;
     bool runtimeBirth{};
     std::string birthVmKey;
-    std::optional<QuestVr::ActorAnimationClock> animationClock;
-    std::optional<QuestVr::StateObject> stateObject;
+    // Actor-only mutable payloads are absent on metadata/default/HUD objects.
+    // Before-images and prepared restores own the same pointer type, retaining
+    // deep-copy staging and nonallocating swap-only rollback/publication.
+    std::unique_ptr<QuestVr::ActorAnimationClock> animationClock;
+    std::unique_ptr<QuestVr::StateObject> stateObject;
     // Native AActor latent timer is actor-owned, not a state-frame local.
     // It remains across GotoState, null code and stopped frames.
     std::optional<float> latentTimeLeft;
@@ -460,7 +483,9 @@ public:
     std::int32_t worldActorIndex{-1};
     bool active{true};
     bool activated{};
-    std::optional<RuntimeMoverMotion> moverMotion;
+    // Tutorial presentation motion is allocated only for an actual moving
+    // brush, not embedded in every metadata/default/window UObject.
+    std::unique_ptr<RuntimeMoverMotion> moverMotion;
     bool healthInitialized{};
     float health{100.0f};
 
@@ -478,6 +503,36 @@ protected:
 private:
     std::size_t* destroyed_{};
 };
+
+void CacheRuntimeActorTextureOverride(RuntimeObject* object,const std::string& propertyName,
+    const std::uint32_t arrayIndex,const std::string& path) {
+    // Match SetActorTextureOverride's exact admitted names/slots BEFORE any
+    // allocation. Unrelated ObjectProperties must not create an empty cache.
+    const bool recognized=(propertyName=="MultiSkins"&&arrayIndex<8u)||
+        (arrayIndex==0u&&(propertyName=="Skin"||propertyName=="Texture"));
+    if(!recognized)return;
+    // This cache is immutable authored asset/loader metadata, like the
+    // neighboring objectPropertyPaths/name-property caches. Lazy allocation
+    // does not reclassify it as mutable script state or native instance data.
+    if(!object||object->sourcePath.empty()||object->exportIndex==std::numeric_limits<std::size_t>::max()||
+        object->runtimeBirth||object->defaultOwner||object->nativeClientClass||object->nativeClientIdentity||
+        object->nativeEngineClass||object->nativeMetadataClass||object->nativeWindowObject||
+        object->nativePackageInstance||object->nativeProperty||object->nativeStruct||object->nativeConversation||object->nativeDump)
+        throw std::runtime_error("Texture override cache requires an actual authored source UObject");
+    if(!object->textureOverrides)object->textureOverrides=std::make_unique<QuestVr::ActorTextureOverrides>();
+    // Empty path is an explicit authored None, not an absent/inheritable slot.
+    if(!QuestVr::SetActorTextureOverride(*object->textureOverrides,propertyName,arrayIndex,path))std::terminate();
+}
+
+std::size_t RuntimeActorTextureOverrideBytes(const RuntimeObject* object) {
+    if(!object->textureOverrides)return 0u;
+    using QuestVr::DecalStateDetail::Add;
+    const auto& value=*object->textureOverrides;
+    auto bytes=sizeof(QuestVr::ActorTextureOverrides);
+    bytes=Add(bytes,value.skin.path.capacity()+1u);bytes=Add(bytes,value.texture.path.capacity()+1u);
+    for(const auto& skin:value.multiSkins)bytes=Add(bytes,skin.path.capacity()+1u);
+    return bytes;
+}
 
 class RuntimeAIManager final : public GCObject {
 public:
@@ -546,9 +601,10 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     for(auto* field:nativePropertyHeads) marklist=GC::MarkObject(marklist,field);
     for(auto* field:nativePropertyNext) marklist=GC::MarkObject(marklist,field);
     if(nativeProperty) {
-        for(auto* field:{nativeProperty->next,nativeProperty->inner,nativeProperty->propertyNext,
+        for(auto* field:{nativeProperty->next,nativeProperty->inner,nativeProperty->referencedStruct,nativeProperty->propertyNext,
             nativeProperty->configNext,nativeProperty->constructorNext}) marklist=GC::MarkObject(marklist,field);
     }
+    if(nativeStruct)marklist=GC::MarkObject(marklist,nativeStruct->super);
     const auto engineEdges=[&](const RuntimeNativeEngineValues& values) {
         for(auto* cls:values.configuredClasses) marklist=GC::MarkObject(marklist,cls);
         for(auto* object:{values.cylinder,values.client,values.render,values.audio}) marklist=GC::MarkObject(marklist,object);
@@ -556,6 +612,10 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     if(preparedNativeDefaults) {
         marklist=GC::MarkObject(marklist,preparedNativeDefaults->superDefault);
         engineEdges(preparedNativeDefaults->engine);
+        if(preparedNativeDefaults->input) {
+            marklist=GC::MarkObject(marklist,preparedNativeDefaults->input->viewport);
+            marklist=GC::MarkObject(marklist,preparedNativeDefaults->input->keyEnum);
+        }
     }
     if(nativeEngineInstance) {
         engineEdges(nativeEngineInstance->values);
@@ -670,6 +730,50 @@ protected:
     }
 };
 std::unique_ptr<GCRoot<RuntimeEngineCollisionDomain>> persistentEngineCollision;
+struct RuntimeNativeInputDomain final : GCObject {
+    RuntimeObject *inputClass{},*inputExtClass{},*keyEnum{},*aliasStruct{};
+    // Default classes own their CDOs/Children. Alias is retained through the
+    // actual StructProperty.Struct edge, not an inventory root masking it.
+    std::vector<RuntimeObject*> defaultClasses,defaults,fields;
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        for(auto* cls:defaultClasses)marklist=GC::MarkObject(marklist,cls);
+        return GC::MarkObject(marklist,keyEnum);
+    }
+};
+std::unique_ptr<GCRoot<RuntimeNativeInputDomain>> persistentInputSchema;
+bool InputSchemaDefaultValid(const RuntimeObject* cls);
+bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object);
+std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain) {
+    using QuestVr::DecalStateDetail::Add;
+    using QuestVr::DecalStateDetail::Multiply;
+    if(domain.defaults.size()!=5u||domain.defaultClasses.size()!=5u||domain.fields.size()!=258u||!domain.aliasStruct)
+        throw std::runtime_error("Native Input schema retained graph is incomplete");
+    auto bytes=sizeof(RuntimeNativeInputDomain)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimeNativeInputDomain>)+sizeof(GCRootNode);
+    bytes=Add(bytes,Multiply(domain.defaults.capacity()+domain.defaultClasses.capacity()+domain.fields.capacity(),sizeof(RuntimeObject*)));
+    const auto object=[&](const RuntimeObject* value,const bool published) {
+        if(!value)throw std::runtime_error("Native Input retained graph contains null");
+        bytes=Add(bytes,sizeof(RuntimeObject)+sizeof(GCAllocation)+Multiply(value->references.capacity(),sizeof(RuntimeObject*)));
+        bytes=Add(bytes,RuntimeActorTextureOverrideBytes(value));
+        for(const auto* text:{&value->reflection.objectPath,&value->reflection.metaClass,&value->reflection.outerPath,
+            &value->reflection.basePath,&value->sourcePath,&value->nativePackageKey})bytes=Add(bytes,text->capacity()+1u);
+        if(value->nativeProperty)bytes=Add(bytes,sizeof(RuntimeNativeProperty)+value->nativeProperty->category.capacity()+1u);
+        if(value->nativeStruct)bytes=Add(bytes,sizeof(RuntimeNativeStruct));
+        if(value->preparedNativeDefaults) {
+            bytes=Add(bytes,sizeof(RuntimePreparedNativeDefaults));
+            if(const auto* input=value->preparedNativeDefaults->input.get()) {
+                bytes=Add(bytes,sizeof(RuntimeNativeInputValues));
+                for(const auto& alias:input->aliases)bytes=Add(bytes,alias.command.capacity()+1u);
+                for(const auto& binding:input->bindings)bytes=Add(bytes,binding.capacity()+1u);
+            }
+        }
+        if(published)bytes=Add(bytes,2u*(sizeof(std::string)+6u*sizeof(void*)+value->reflection.objectPath.capacity()+1u));
+    };
+    for(auto* value:domain.defaults)object(value,false);
+    for(auto* value:domain.fields)object(value,true);
+    object(domain.aliasStruct,true);
+    return bytes;
+}
 // One portable process collision domain. Its tables/tag are independent of a
 // particular hash instance. The current integration is rollback-only; no new
 // publishing world entry or checkpoint compatibility is implied by this owner.
@@ -691,6 +795,7 @@ std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& dom
     const auto object=[&](const RuntimeObject* value) {
         if(!value) throw std::runtime_error("Native collision retained inventory contains null");
         bytes=Add(bytes,sizeof(RuntimeObject)+sizeof(GCAllocation)+value->references.capacity()*sizeof(RuntimeObject*));
+        bytes=Add(bytes,RuntimeActorTextureOverrideBytes(value));
         for(const auto* text:{&value->reflection.objectPath,&value->reflection.metaClass,&value->reflection.outerPath,
             &value->reflection.basePath,&value->sourcePath,&value->nativePackageKey}) bytes=Add(bytes,text->capacity()+1u);
         if(value->preparedNativeDefaults) {bytes=Add(bytes,sizeof(RuntimePreparedNativeDefaults));values(value->preparedNativeDefaults->engine);}
@@ -753,6 +858,7 @@ std::size_t NativeClassRetainedBytes(const RuntimeEngineClassDomain& domain,cons
     for(const auto* cls:domain.classes) {
         if(!cls) throw std::runtime_error("Native engine registration contains a null UClass");
         bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(RuntimeObject)+sizeof(GCAllocation));
+        bytes=QuestVr::DecalStateDetail::Add(bytes,RuntimeActorTextureOverrideBytes(cls));
         for(const auto* value:{&cls->reflection.objectPath,&cls->reflection.metaClass,&cls->reflection.outerPath,
                 &cls->reflection.basePath,&cls->sourcePath})
             bytes=QuestVr::DecalStateDetail::Add(bytes,value->capacity()+1u);
@@ -2000,6 +2106,7 @@ bool NativePackageClassDefaultValid(const RuntimeObject* cls) {
         cls->defaultObject->nativePackageDefaults->ClassIndex()==cls->objectIndex.Index();
 }
 bool PreparedNativeClassDefaultValid(const RuntimeObject* cls) {
+    if(InputSchemaDefaultValid(cls))return true;
     if(!persistentEngineCollision || !cls || !cls->defaultObject) return false;
     const auto* defaults=cls->defaultObject;
     const auto& domain=*persistentEngineCollision->get();
@@ -2008,6 +2115,35 @@ bool PreparedNativeClassDefaultValid(const RuntimeObject* cls) {
         defaults->cls==cls && defaults->defaultOwner==cls && !defaults->outer && !defaults->lookupName &&
         !defaults->runtimeBirth && !defaults->nativeEngineInstance && !defaults->nativePrimitiveInstance &&
         defaults->preparedNativeDefaults->superDefault==(cls->base?cls->base->defaultObject:nullptr);
+}
+bool InputSchemaDefaultValid(const RuntimeObject* cls) {
+    if(!persistentInputSchema||!persistentInputSchema->get()||!cls||!cls->defaultObject)return false;
+    const auto& domain=*persistentInputSchema->get();const auto* defaults=cls->defaultObject;
+    const auto found=std::find(domain.defaultClasses.begin(),domain.defaultClasses.end(),cls);
+    if(found==domain.defaultClasses.end())return false;
+    const auto index=static_cast<std::size_t>(found-domain.defaultClasses.begin());
+    if(index>=domain.defaults.size()||domain.defaults[index]!=defaults||!defaults->preparedNativeDefaults)return false;
+    const auto& value=*defaults->preparedNativeDefaults;
+    return value.owner==cls&&defaults->cls==cls&&defaults->defaultOwner==cls&&!defaults->outer&&!defaults->lookupName&&
+        !defaults->runtimeBirth&&!defaults->nativeProperty&&!defaults->nativeStruct&&!defaults->nativeEngineInstance&&
+        !defaults->nativePrimitiveInstance&&value.superDefault==(cls->base?cls->base->defaultObject:nullptr);
+}
+bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object) {
+    if(!persistentInputSchema||!persistentInputSchema->get()||!object||!object->cls||object->defaultOwner||
+        object->runtimeBirth||!object->sourcePath.empty()||!object->lookupName||!object->objectIndex||
+        object->lookupControl!=persistentObjectLookup||!object->lookupControl||
+        object->exportIndex!=std::numeric_limits<std::size_t>::max())return false;
+    const auto& domain=*persistentInputSchema->get();
+    if(object==domain.aliasStruct)return object->nativeStruct&&!object->nativeProperty&&
+        object->cls->reflection.objectPath=="Core.Struct"&&InputSchemaDefaultValid(object->cls)&&object->outer==domain.inputClass;
+    if(!object->nativeProperty||object->nativeStruct||
+        std::find(domain.fields.begin(),domain.fields.end(),object)==domain.fields.end()||
+        !PreparedNativeClassDefaultValid(object->cls))return false;
+    const auto& property=*object->nativeProperty;
+    if(object->outer!=domain.inputClass&&object->outer!=domain.aliasStruct)return false;
+    if(object->cls->reflection.objectPath=="Core.StructProperty")return property.referencedStruct==domain.aliasStruct&&!property.inner;
+    return !property.referencedStruct&&!property.inner&&
+        (object->cls->reflection.objectPath=="Core.NameProperty"||object->cls->reflection.objectPath=="Core.StrProperty");
 }
 bool ActualNativeCollisionObjectValid(const RuntimeObject* object) {
     if(!persistentEngineCollision || !object || object->defaultOwner || object->runtimeBirth ||
@@ -3201,8 +3337,9 @@ public:
         // Original initialized default blocks have Name None and Outer null.
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
-        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty) {
-            if(!ActualNativeCollisionObjectValid(object)) throw std::runtime_error("Constructed collision UObject identity is invalid");
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct) {
+            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object))
+                throw std::runtime_error("Constructed native UObject identity is invalid");
             return object->reflection.objectPath;
         }
         if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass ||
@@ -3539,7 +3676,8 @@ public:
         const auto applied = QuestVr::ApplyActorAnimationCommand(mesh, next, command, velocitySpeed);
         if (!applied.error.empty()) throw std::runtime_error(applied.error);
         if (applied.applied) {
-            Touch(object); object->animationClock = std::move(next);
+            auto preparedClock=std::make_unique<QuestVr::ActorAnimationClock>(std::move(next));
+            Touch(object); object->animationClock = std::move(preparedClock);
             SynchronizeClock(object); object->committedScriptState = true;
         }
         return {};
@@ -5270,6 +5408,9 @@ public:
     void ValidateAdditionalPackageBudget(const std::size_t bytes) const {ValidateStateBudget(bytes);}
     void ValidateEngineCollisionBudget(const RuntimeEngineCollisionDomain& staged,const std::size_t staging=0u) const {
         ValidateStateBudget(QuestVr::DecalStateDetail::Add(EngineCollisionRetainedBytes(staged),staging));
+    }
+    void ValidateInputSchemaBudget(const RuntimeNativeInputDomain& staged,const std::size_t staging=0u) const {
+        ValidateStateBudget(QuestVr::DecalStateDetail::Add(InputSchemaRetainedBytes(staged),staging));
     }
     void ValidateLookupStagingBudget(const QuestVr::ObjectLookup::Index& next,const bool newControl=false,
         const std::size_t extraRetained=0u) const {
@@ -7560,9 +7701,9 @@ public:
                 key=="extension.tilewindow.rowarray")
                 throw std::runtime_error("Native Window private pointer-array storage is not a script-visible value");
         }
-        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty) {
-            if(!ActualNativeCollisionObjectValid(object))
-                throw std::runtime_error("Native collision UObject reflected read lost its actual identity");
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct) {
+            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object))
+                throw std::runtime_error("Native UObject reflected read lost its actual identity");
             const auto key=LowerAscii(property.key);
             if(key.rfind("core.object.",0u)==0u) {
                 if(!OwnsProperty(object->cls,property))
@@ -7592,8 +7733,32 @@ public:
         }
         const auto* nativeDefaults=object->preparedNativeDefaults?object->preparedNativeDefaults.get():
             object->classDescriptor && object->defaultObject?object->defaultObject->preparedNativeDefaults.get():nullptr;
+        if(nativeDefaults&&nativeDefaults->input) {
+            if(!object->defaultOwner||!InputSchemaDefaultValid(object->defaultOwner)||
+                !OwnsProperty(object->defaultOwner,property)||index>=property.arrayDimension)
+                throw std::runtime_error("Native Input default read lacks its actual field/default authority");
+            auto* field=Object(property.key);
+            if(!ActualNativeInputSchemaObjectValid(field)||!field->nativeProperty)
+                throw std::runtime_error("Native Input default field is not in its authenticated schema");
+            const auto& payload=*nativeDefaults->input;const auto& schema=*field->nativeProperty;
+            if(field->cls->reflection.objectPath=="Core.StructProperty"&&schema.offset==0x2cu&&
+                schema.dimension==40u&&schema.elementSize==0x10u&&schema.referencedStruct==persistentInputSchema->get()->aliasStruct) {
+                const auto& alias=payload.aliases[index];Value result;result.kind=Kind::Struct;
+                result.fields.emplace("alias",Value::Text(Kind::Name,alias.alias.ToString()));
+                result.fields.emplace("command",Value::Text(Kind::String,alias.command));return result;
+            }
+            if(field->cls->reflection.objectPath=="Core.StrProperty"&&schema.offset>=0x2acu&&
+                (schema.offset-0x2acu)%12u==0u&&schema.dimension==1u&&schema.elementSize==12u) {
+                const auto key=(schema.offset-0x2acu)/12u;
+                if(key<payload.bindings.size())return Value::Text(Kind::String,payload.bindings[key]);
+            }
+            throw std::runtime_error("Native Input default field has no audited typed payload slot");
+        }
         const auto* nativeValues=object->nativeEngineInstance?&object->nativeEngineInstance->values:
-            nativeDefaults && nativeDefaults->kind>=RuntimeNativeDefaultKind::Engine?&nativeDefaults->engine:nullptr;
+            nativeDefaults && (nativeDefaults->kind==RuntimeNativeDefaultKind::Engine||
+                nativeDefaults->kind==RuntimeNativeDefaultKind::GameEngine||
+                nativeDefaults->kind==RuntimeNativeDefaultKind::GameEngineExt||
+                nativeDefaults->kind==RuntimeNativeDefaultKind::DeusExGameEngine)?&nativeDefaults->engine:nullptr;
         if(nativeValues && LowerAscii(property.key).rfind("engine.engine.",0u)==0u) {
             auto* cls=object->defaultOwner?object->defaultOwner:object->classDescriptor?object:object->cls;
             if(index || property.arrayDimension!=1u || !OwnsProperty(cls,property))
@@ -7847,8 +8012,9 @@ public:
             if (cls->classDescriptor && !cls->classFieldLinksValid)
                 throw std::runtime_error("Runtime class Children/Next metadata is invalid: " + cls->reflection.objectPath);
             const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
-            if (found != persistentVmObjects.end() && found->second->property &&
-                found->second->linkedClassOwner == cls) selected = found->second;
+            if (found != persistentVmObjects.end() && found->second->linkedClassOwner == cls &&
+                (found->second->property || (found->second->nativeProperty&&ActualNativeInputSchemaObjectValid(found->second))))
+                selected = found->second;
         }
         if (selected) return Describe(selected);
         throw std::runtime_error("Runtime property metadata unavailable: " + name);
@@ -7864,9 +8030,13 @@ public:
         // Compiled inherited references retain their declaring field even
         // when the concrete class redeclares a field with the same name.
         auto* metadata = Object(property.key);
-        if (!metadata->property || !metadata->outer || !metadata->outer->classDescriptor ||
-            !metadata->outer->classFieldLinksValid || metadata->linkedClassOwner != metadata->outer)
-            return false;
+        if(metadata->nativeProperty) {
+            if(!ActualNativeInputSchemaObjectValid(metadata)||metadata->linkedClassOwner!=metadata->outer)return false;
+            const auto actual=Describe(metadata);
+            if(actual.key!=property.key||actual.name!=property.name||actual.flags!=property.flags||
+                actual.arrayDimension!=property.arrayDimension||!QuestVr::Vm::Equal(actual.zero,property.zero))return false;
+        }else if (!metadata->property || !metadata->outer || !metadata->outer->classDescriptor ||
+            !metadata->outer->classFieldLinksValid || metadata->linkedClassOwner != metadata->outer)return false;
         std::array<RuntimeObject*,128u> visited{};
         std::size_t depth{};
         bool owns{};
@@ -7880,7 +8050,8 @@ public:
         return owns;
     }
     RuntimeObject* DefaultClass(RuntimeObject* object) {
-        if(!object->defaultOwner && object->nativeEngineClass && PreparedNativeClassDefaultValid(object)) return object;
+        if(!object->defaultOwner && (object->nativeEngineClass||object->nativeMetadataClass) &&
+            PreparedNativeClassDefaultValid(object)) return object;
         auto* cls = object->classDescriptor ? object : object->cls;
         if (!cls || !cls->classDescriptor || cls->reflection.metaClass != "Class" ||
             object->defaultOwner || !cls->active ||
@@ -8852,8 +9023,8 @@ private:
     struct Before {
         decltype(RuntimeObject::scriptValues) values;
         decltype(RuntimeObject::classDefaultValues) defaults;
-        std::optional<QuestVr::ActorAnimationClock> clock;
-        std::optional<QuestVr::StateObject> state;
+        std::unique_ptr<QuestVr::ActorAnimationClock> clock;
+        std::unique_ptr<QuestVr::StateObject> state;
         std::optional<float> latentTimeLeft;
         std::optional<float> lastRenderTime;
         std::uint64_t revision{};
@@ -8912,9 +9083,9 @@ private:
     static bool SameOptionalFloat(const std::optional<float>& a,const std::optional<float>& b) {
         return a.has_value()==b.has_value() && (!a || SameBits(*a,*b));
     }
-    static bool SameStoredClock(const std::optional<QuestVr::ActorAnimationClock>& a,
-        const std::optional<QuestVr::ActorAnimationClock>& b) {
-        if (a.has_value()!=b.has_value()) return false;
+    static bool SameStoredClock(const std::unique_ptr<QuestVr::ActorAnimationClock>& a,
+        const std::unique_ptr<QuestVr::ActorAnimationClock>& b) {
+        if (bool(a)!=bool(b)) return false;
         if (!a) return true;
         const auto channel=[](const QuestVr::MeshAnimationChannel& x,const QuestVr::MeshAnimationChannel& y) {
             return x.sequence==y.sequence && SameBits(x.normalizedFrame,y.normalizedFrame) &&
@@ -8936,9 +9107,9 @@ private:
         }
         return true;
     }
-    static bool SameStoredState(const std::optional<QuestVr::StateObject>& a,
-        const std::optional<QuestVr::StateObject>& b) {
-        if (a.has_value()!=b.has_value()) return false;
+    static bool SameStoredState(const std::unique_ptr<QuestVr::StateObject>& a,
+        const std::unique_ptr<QuestVr::StateObject>& b) {
+        if (bool(a)!=bool(b)) return false;
         if (!a) return true;
         if (a->hasStack!=b->hasStack || a->frameOverride!=b->frameOverride || a->disabled!=b->disabled ||
             a->frame.has_value()!=b->frame.has_value()) return false;
@@ -9409,6 +9580,18 @@ private:
         return Layout::CoreColor4;
     }
     Property Describe(RuntimeObject* property) {
+        if(property->nativeProperty) {
+            if(!ActualNativeInputSchemaObjectValid(property))
+                throw std::runtime_error("Native Input property description lacks actual domain authority");
+            const auto& schema=*property->nativeProperty;Value zero;
+            if(property->cls->reflection.objectPath=="Core.NameProperty")zero=Value::Text(Kind::Name,"None");
+            else if(property->cls->reflection.objectPath=="Core.StrProperty")zero=Value::Text(Kind::String,{});
+            else if(property->cls->reflection.objectPath=="Core.StructProperty"&&schema.referencedStruct==persistentInputSchema->get()->aliasStruct) {
+                zero.kind=Kind::Struct;zero.fields.emplace("alias",Value::Text(Kind::Name,"None"));
+                zero.fields.emplace("command",Value::Text(Kind::String,{}));
+            }else throw std::runtime_error("Native Input property has no audited typed description");
+            return {property->reflection.objectPath,property->lookupName->ToString(),std::move(zero),schema.flags,schema.dimension};
+        }
         if (!property->property) throw std::runtime_error("VM object has no property descriptor");
         const auto& descriptor = *property->property;
         const auto dot = property->reflection.objectPath.find_last_of('.');
@@ -9725,8 +9908,9 @@ private:
             if(!object->cls) throw std::runtime_error("Native player UObject lacks actual class");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
-        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty) {
-            if(!ActualNativeCollisionObjectValid(object)) throw std::runtime_error("Constructed collision UObject cast identity is invalid");
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct) {
+            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object))
+                throw std::runtime_error("Constructed native UObject cast identity is invalid");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
         if(object->nativePackageInstance) {
@@ -9765,6 +9949,8 @@ private:
     Value TypedLiveValue(const Property& property, const Value& value) {
         auto normalized = QuestVr::Vm::Coerce(value, property.zero);
         auto* metadata = Object(property.key);
+        if(metadata->nativeProperty)
+            throw std::runtime_error("Native Input field writes require their unimplemented typed input/config service");
         const auto& descriptor = *metadata->property;
         if (descriptor.type == "ObjectProperty" || descriptor.type == "ClassProperty") {
             const auto expected = Qualified(Table(metadata->sourcePath), descriptor.type == "ClassProperty" ?
@@ -9831,8 +10017,10 @@ private:
                 object->committedScriptState=true;return;
             }
             if(WriteNativeConversationValue(object,property,index,defaults,value)) return;
-            auto* nativeOwner=object->defaultOwner?object->defaultOwner:object->classDescriptor?object:nullptr;
-            if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty ||
+            auto* nativeOwner=object->defaultOwner?object->defaultOwner:
+                (object->classDescriptor||object->nativeEngineClass||object->nativeMetadataClass)?object:nullptr;
+            if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct ||
+                (nativeOwner&&InputSchemaDefaultValid(nativeOwner))||
                 (nativeOwner && PreparedNativeClassDefaultValid(nativeOwner) &&
                     LowerAscii(property.key).rfind("engine.engine.",0u)==0u))
                 throw std::runtime_error("Native collision Engine/default writes require a typed journaled native service");
@@ -9948,7 +10136,10 @@ private:
             const auto windowBytes=object->nativeWindowState?
                 NativeWindowStorageBytes(*object->nativeWindowState,false):0u;
             ValidateStateBudget(windowBytes);
-            saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft, object->lastRenderTime,
+            saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues,
+                object->animationClock?std::make_unique<QuestVr::ActorAnimationClock>(*object->animationClock):nullptr,
+                object->stateObject?std::make_unique<QuestVr::StateObject>(*object->stateObject):nullptr,
+                object->latentTimeLeft, object->lastRenderTime,
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
                 object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding,
@@ -10483,6 +10674,7 @@ private:
         }
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
+        if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
         if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
         if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
             auto* model=persistentWorldActors.front()->nativeXLevel->nativeLevelModel;
@@ -10526,6 +10718,12 @@ private:
         }
         for(const auto& [object,before]:saved_) {
             static_cast<void>(object);
+            if(before.clock) {
+                defaults.Retain(sizeof(QuestVr::ActorAnimationClock));
+                defaults.Retain(before.clock->pose.main.sequence.capacity()+1u);
+                for(const auto& blend:before.clock->pose.blends)defaults.Retain(blend.sequence.capacity()+1u);
+            }
+            if(before.state)measured.MeasureStateObject(*before.state);
             if(before.conversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
             if(before.windowState) defaults.Retain(NativeWindowStorageBytes(*before.windowState,true));
         }
@@ -10566,6 +10764,17 @@ private:
                 persistentConversationNodes[objectIndex-exports.size()-windowObjects]:
                 persistentDumpObjects[objectIndex-exports.size()-windowObjects-persistentConversationNodes.size()];
             if(!object)continue;
+            if(object->animationClock) {
+                defaults.Retain(sizeof(QuestVr::ActorAnimationClock));
+                defaults.Retain(object->animationClock->pose.main.sequence.capacity()+1u);
+                for(const auto& blend:object->animationClock->pose.blends)defaults.Retain(blend.sequence.capacity()+1u);
+            }
+            if(object->moverMotion)defaults.Retain(sizeof(RuntimeMoverMotion));
+            // Authored source caches remain in the existing loader/asset
+            // ledger. Only objects whose RuntimeObject storage is charged
+            // below can add a separate lazy native payload to this budget.
+            if(object->nativeWindowObject||IsNativeConversationNode(object)||object->nativeDump)
+                defaults.Retain(RuntimeActorTextureOverrideBytes(object));
             if(object->nativeDump)valueBudget(valueBudget,object->nativeDump->initialLocation,0u);
             if(object->nativeConversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
             if(IsNativeConversationNode(object)) {
@@ -10700,7 +10909,8 @@ private:
         frame.control = QuestVr::StateControl{current.selectedPath, false, *current.liveProbeMask};
         QuestVr::StateObject state;
         state.hasStack = state.frameOverride = true; state.frame = std::move(frame);
-        Touch(object); object->stateObject = std::move(state); object->committedScriptState = true;
+        auto preparedState=std::make_unique<QuestVr::StateObject>(std::move(state));
+        Touch(object); object->stateObject = std::move(preparedState); object->committedScriptState = true;
         return &*object->stateObject->frame;
     }
     void InitializeActorExecution(RuntimeObject* actor) {
@@ -10716,7 +10926,7 @@ private:
         frame.control = QuestVr::StateControl{frame.codePath, false, ~std::uint64_t{0}};
         QuestVr::StateObject state;
         state.hasStack = state.frameOverride = true; state.frame = std::move(frame);
-        actor->stateObject = std::move(state); ++actor->stateLocalsRevision;
+        actor->stateObject = std::make_unique<QuestVr::StateObject>(std::move(state)); ++actor->stateLocalsRevision;
         actor->stateTransitionFlags = 0u; actor->committedScriptState = true;
         const auto property = PropertyNamed(actor, "ObjectFlags");
         ReferenceFor(actor, property, 0u, false)->write(Value::Integer(
@@ -10766,7 +10976,7 @@ private:
             state.hasStack = AnyFlags(static_cast<ObjectFlags>(object->reflection.flags), ObjectFlags::HasStack);
             auto& disabled = state.disabled[QuestVr::ScriptDispatch::FoldName(authored.stateName)];
             for (const auto& event : authored.disabledNames) disabled.insert(QuestVr::ScriptDispatch::FoldName(event));
-            object->stateObject = std::move(state);
+            object->stateObject = std::make_unique<QuestVr::StateObject>(std::move(state));
         }
         object->committedScriptState = true;
         return *object->stateObject;
@@ -10934,8 +11144,8 @@ private:
 struct PreparedScriptObject {
     RuntimeObject* target{};
     decltype(RuntimeObject::scriptValues) values;
-    std::optional<QuestVr::ActorAnimationClock> clock;
-    std::optional<QuestVr::StateObject> state;
+    std::unique_ptr<QuestVr::ActorAnimationClock> clock;
+    std::unique_ptr<QuestVr::StateObject> state;
     std::optional<float> latentTimeLeft;
     std::optional<float> lastRenderTime;
     std::vector<RuntimeObject*> children;
@@ -11166,7 +11376,7 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         capture.Retain(sizeof(record) + object->reflection.objectPath.size() + object->cls->reflection.objectPath.size() + 2u);
         record.path = object->reflection.objectPath;
         record.classPath = object->cls->reflection.objectPath;
-        record.clock = object->animationClock;
+        if(object->animationClock)record.clock = *object->animationClock;
         record.latentTimeLeft = object->latentTimeLeft;
         if (object->committedLifecycle) {
             record.lifecycle.emplace();
@@ -12096,9 +12306,9 @@ PreparedScriptState PrepareScriptSavedState(
                     throw std::runtime_error("Script save clock and reflected property disagree");
             }
         }
-        next.clock = record.clock;
+        if(record.clock)next.clock = std::make_unique<QuestVr::ActorAnimationClock>(*record.clock);
         next.latentTimeLeft = record.latentTimeLeft;
-        if (record.state) next.state = schema.StateValue(cls, record);
+        if (record.state) next.state = std::make_unique<QuestVr::StateObject>(schema.StateValue(cls, record));
         if (record.lifecycle) {
             next.lifecycle = true; next.removed = record.lifecycle->worldRemoved;
             next.touchSent = record.lifecycle->touchEventSent;
@@ -12400,8 +12610,8 @@ PortableRuntimeSummary InitializePortableRuntime(
                         ? slice.name + "." +
                             GetPortableObjectPath(*slice.package, reference)
                         : GetPortableObjectPath(*slice.package, reference));
-                    if (property.type == 5u) QuestVr::SetActorTextureOverride(
-                        object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
+                    if (property.type == 5u) CacheRuntimeActorTextureOverride(
+                        object, property.name.ToString(), property.arrayIndex, path);
                     object->objectPropertyPaths[property.name.ToString()] = path;
                     if (reference == 0) continue;
                     if (RuntimeObject* target = resolve(slice, reference)) {
@@ -12607,7 +12817,7 @@ static bool RequestRuntimeMover(RuntimeObject* actor, const bool open, const boo
             if (candidate != actor && candidate && candidate->active && !candidate->worldRemoved &&
                 IsDerivedFromPath(candidate->cls, "Engine.Mover")) members.push_back(candidate);
     }
-    std::vector<std::pair<RuntimeObject*, RuntimeMoverMotion>> staged;
+    std::vector<std::pair<RuntimeObject*, std::unique_ptr<RuntimeMoverMotion>>> staged;
     staged.reserve(members.size());
     for (auto* member : members) {
         if (ReadInheritedRuntimeBool(member, "bLocked") && !HasRuntimeMoverKey(member)) return false;
@@ -12622,7 +12832,7 @@ static bool RequestRuntimeMover(RuntimeObject* actor, const bool open, const boo
         // a current sample discoverable even if that correction ends at Idle;
         // never preserve the old closing sample as another blockable step.
         if (undoClosingStep) motion.beforeStep = motion.state;
-        staged.emplace_back(member, std::move(motion));
+        staged.emplace_back(member, std::make_unique<RuntimeMoverMotion>(std::move(motion)));
     }
     for (auto& [member, motion] : staged) {
         member->moverMotion = std::move(motion);
@@ -12979,6 +13189,7 @@ void ShutdownPortableRuntime() {
     while(persistentPublishedHead) RetireRuntimeLookupObject(persistentPublishedHead);
     if(persistentNativePackages) persistentNativePackages->active=false;
     persistentNativePackages.reset();
+    persistentInputSchema.reset();
     persistentEngineCollision.reset();
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
     persistentPrimitiveModelCache.Clear();
@@ -13734,6 +13945,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 }
 
 #include "portable_engine_collision.inl"
+#include "portable_input_schema.inl"
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {
@@ -14730,7 +14942,7 @@ std::optional<QuestVr::StateObject> ReadPortableActorStateObject(const std::stri
     PortableActorVmHost host;
     auto* actor = host.Object(actorPath);
     if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("State receiver is not Engine.Actor");
-    return actor->stateObject;
+    return actor->stateObject?std::optional<QuestVr::StateObject>{*actor->stateObject}:std::nullopt;
 }
 
 QuestVr::Vm::Result ResumePortableActorState(const std::string& actorPath, const QuestVr::Vm::Limits& limits) {
@@ -15309,8 +15521,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
                 const std::string path = ContextSourceValuePath(package,reference,reference == 0 ? std::string() : reference > 0
                     ? packageName + "." + GetPortableObjectPath(package, reference)
                     : GetPortableObjectPath(package, reference));
-                if (property.type == 5u) QuestVr::SetActorTextureOverride(
-                    object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
+                if (property.type == 5u) CacheRuntimeActorTextureOverride(
+                    object, property.name.ToString(), property.arrayIndex, path);
                 object->objectPropertyPaths[property.name.ToString()] = path;
                 if (reference == 0) continue;
                 if (RuntimeObject* target = resolve(reference)) {
@@ -15531,13 +15743,13 @@ static std::vector<PortableActorSnapshot> ReadPortableRuntimeActors(const bool i
         }
         snapshot.animationSourcePath = animationSource->reflection.objectPath;
         snapshot.animation = ReadRuntimeAnimationSnapshot(animationSource);
-        snapshot.materialOverrides = object->textureOverrides;
+        snapshot.materialOverrides = object->textureOverrides?*object->textureOverrides:QuestVr::ActorTextureOverrides{};
         for (const auto* name : {"Skin","Texture","MultiSkins"})
             for (std::uint32_t slot=0u;slot<(std::string_view(name)=="MultiSkins" ? 8u : 1u);++slot)
                 if (const auto* value=FindScriptOverlay(object,name,slot))
                     QuestVr::SetActorTextureOverride(snapshot.materialOverrides,name,slot,value->text);
         for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base)
-            QuestVr::InheritActorTextureOverrides(snapshot.materialOverrides, cls->textureOverrides);
+            if(cls->textureOverrides)QuestVr::InheritActorTextureOverrides(snapshot.materialOverrides, *cls->textureOverrides);
         snapshot.texturePath = snapshot.materialOverrides.texture.path;
         snapshot.brushPath = resolveInheritedObjectProperty("Brush");
         snapshot.ambientSoundPath = resolveInheritedObjectProperty("AmbientSound");
@@ -16844,7 +17056,8 @@ PortableHeldItemVisualDescriptor ReadPortableRuntimeHeldItemVisualDescriptor(
                         // MultiSkins independently. Its load-time typed texture
                         // override cache retains each actual source array slot.
                         if (SameInventoryIdentity(name,"Skin") || SameInventoryIdentity(name,"MultiSkins")) {
-                            const auto& texture = SameInventoryIdentity(name,"Skin") ? owner->textureOverrides.skin : owner->textureOverrides.multiSkins[slot];
+                            if(!owner->textureOverrides) { status = FieldStatus::MalformedProperty; return {}; }
+                            const auto& texture = SameInventoryIdentity(name,"Skin") ? owner->textureOverrides->skin : owner->textureOverrides->multiSkins[slot];
                             if (!texture.specified || !copy(value.text,texture.path)) { status = FieldStatus::MalformedProperty; return {}; }
                         } else {
                             const auto path = owner->objectPropertyPaths.find(tag->name.ToString());
@@ -17348,7 +17561,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         for (const auto& entry : damaged) {
             if (auto* object = prefixTarget(entry.first)) damagedTargets.emplace_back(object, entry.second);
         }
-        std::vector<std::pair<RuntimeObject*, RuntimeMoverMotion>> restoredMovers;
+        std::vector<std::pair<RuntimeObject*, std::unique_ptr<RuntimeMoverMotion>>> restoredMovers;
         restoredMovers.reserve(savedMovers.size());
         std::unique_ptr<ScriptSaveSchema> moverSchema;
         if (!savedMovers.empty())
@@ -17381,14 +17594,18 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             if (isActivated != (state.targetKey != 0u)) throw std::runtime_error("Mover checkpoint activation and motion disagree");
             if(!apply)continue;
             motion.state = state;
-            restoredMovers.emplace_back(target, std::move(motion));
+            restoredMovers.emplace_back(target, std::make_unique<RuntimeMoverMotion>(std::move(motion)));
         }
         // Old saves contain a boolean open state only. Migrate it to an actual
         // authored endpoint so the brush no longer vanishes after quick-load.
         if (formatVersion != 14u) for (auto* actor : activatedTargets) {
             if (!IsDerivedFromPath(actor->cls, "Engine.Mover")) continue;
-            try { restoredMovers.emplace_back(actor, ReadRuntimeMoverMotion(actor, true)); }
-            catch (const std::exception&) { /* Unsupported movers stay visible at their authored pose. */ }
+            RuntimeMoverMotion motion;
+            try { motion=ReadRuntimeMoverMotion(actor,true); }
+            catch (const std::exception&) { /* Unsupported movers stay visible at their authored pose. */ continue; }
+            // Allocate before restore publishes any state. Allocation failure
+            // is not an unsupported-mover fallback and must abort staging.
+            restoredMovers.emplace_back(actor,std::make_unique<RuntimeMoverMotion>(std::move(motion)));
         }
         std::optional<QuestVr::QuickBeltModel> restoredQuickBelt;
         if(savedQuickBelt) {

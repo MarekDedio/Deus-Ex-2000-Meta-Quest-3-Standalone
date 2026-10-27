@@ -190,7 +190,7 @@
         const auto scratch=QuestVr::DecalStateDetail::Add(4096u,QuestVr::DecalStateDetail::Multiply(strings,8u));
         QuestVr::NativeScratchScope reservation(nativeQueryScratchBytes_,scratch,[this](std::size_t extra){ValidateStateBudget(extra);});
         QuestVr::ScriptSavedState state;state.mapName=persistentMapPackageName;
-        QuestVr::ScriptSavedObject object;object.path=actor->reflection.objectPath;object.classPath=actor->cls->reflection.objectPath;object.clock=actor->animationClock;
+        QuestVr::ScriptSavedObject object;object.path=actor->reflection.objectPath;object.classPath=actor->cls->reflection.objectPath;object.clock=*actor->animationClock;
         state.objects.push_back(std::move(object));
         const QuestVr::ScriptStateLimits limits;
         QuestVr::ScriptStateDetail::Writer measured(limits,nullptr);measured.State(state);

@@ -1,8 +1,9 @@
-# Next original Input field/default phase (2026-10-27)
+# Original Input field/default phase (2026-10-27)
 
-First Training only. This is an implementation contract from read-only owned
-data/disassembly, not a claim that native Input fields/defaults already exist.
-The preceding two-UClass registration phase is separate. No account or
+First Training only. The genuine native field/link/pre-config-default graph is
+implemented and verified against the read-only owned evidence below. It is
+NOT configured Input, an instance, FExec or ReadInput. The preceding two-UClass
+registration phase is separate. No account or
 character-creation UI is needed. Live VR weapons, crate destruction, collectible
 loot and automatic gravity still require genuine startup/action/frame wiring.
 
@@ -29,6 +30,8 @@ Actual Engine.Actor.EInputKey export2290 has255 unique names, no NAME_None,
 first IK_None and last IK_OEMClear. StaticInitInput tests source FName identity
 against NAME_None at1039327E, NOT index0 or spelling IK_None. It therefore
 constructs255 raw fields; combined schema is one Struct plus258 Properties.
+Key239 is genuinely UK_Unknown10F, not IK_Unknown10F. Strip the first three
+UTF16 units exactly as the original does; do not require or normalize IK_.
 Do not silently omit key0. Its suffix None becomes NAME_None; native allocation
 then calls MakeUniqueObjectName (Core10157BB9..10157BD6). Reuse actual class
 unique-name counters and Outer collision checks, not a guessed StrProperty0.
@@ -72,38 +75,45 @@ logical size16 decimal. No fabricated serialized StructDescriptor is warranted.
 NameProperty's independently verified tuple/default/Link evidence is also in
 ORIGINAL-ENGINE-DEFAULT-LINK.md; reuse its collision-domain Class identity.
 
-## Production integration seam
+## Implemented production integration
 
-Use a separate authenticated RuntimeNativeInputDomain owning the schema and
-five defaults. Keep collision's closed11-default/4-field contract unchanged.
-Represent Alias as a genuine native-UStruct payload with logical size,
-FriendlyName, Children and linked heads. Add a referenced-Struct pointer to
-RuntimeNativeProperty; its existing inner is ArrayProperty.Inner, not this edge.
-Use real NameString Alias identities and typed fixed-size Alias/binding storage,
+The separate authenticated RuntimeNativeInputDomain owns the schema and five
+defaults without expanding collision's closed11-default/4-field contract.
+Alias has a genuine native-UStruct payload with logical size, FriendlyName,
+Children and linked heads. RuntimeNativeProperty has a distinct referencedStruct
+edge; its existing inner remains ArrayProperty.Inner. Real NameString Alias
+identities and typed fixed-size Alias/binding storage replace neither with
+serialized descriptors. These values use typed native schema checks,
 not pointer arithmetic over original32-bit offsets or an unordered alias map.
 
-Extend default validation for exact owning-domain members with actual
-Class/default-owner/Super-default checks. Leave collision instance validation
-closed; add separate native-input Struct/Property authority. Mark new Struct,
-default/schema/Enum GC edges and count allocations, capacities and strings once
-in retained budgets. Publish259 schema objects atomically through the existing
-weak lookup/publication journal; defaults are not named lookup aliases. Stage
-unique-name counters alongside allocations and all throwing validation.
+Default validation admits exact owning-domain members with actual Class/default-
+owner/Super-default checks; collision instance validation stays closed. Separate
+native-input Struct/Property authority, GC edges and retained budgets cover the
+new graph. Class/default/Children/heads/counter changes and259 schema lookup
+objects publish only after all throwing validation. Empty replacement namespace
+bucket arrays stage separately; existing/delta nodes transfer without cloning
+only during commit. Refusal does not reserve or change live namespace capacity.
+Defaults are not named lookup aliases. Names created during real constructors
+belong to the embedding's process-permanent FName arena, not a rollback journal.
 
-Header/string/cast/property/default access must recognize that authenticated
-native graph before serialized-source fallback. Describe/ClassProperty/
-OwnsProperty currently rely on serialized descriptors; Alias member ownership
-must follow its actual native Struct, not a forged ClassDescriptor. Do not just
-append new default-kind enum values: existing kind>=Engine checks would then
-misclassify Input payloads as Engine values. Use explicit kind/domain checks.
+Header/string/cast/property/default access recognizes the authenticated graph
+before serialized-source fallback. Describe/ClassProperty/OwnsProperty now admit
+these exact native fields, with Alias members owned by their actual Struct.
+Generic mutation of schema objects/defaults explicitly refuses rather than
+writing misleading script overlays. Explicit Engine-kind routing prevents the
+new default kinds from being treated as Engine payloads by enum ordering.
+
+Cpp Property construction also creates its category FName (Core10164FCC..FE4).
+RawKeys is absent from the owned package name tables, so preparation performs
+that real arena insertion, not just string storage. Detached reads only find
+the existing identity; they do not intern names. None remains genuine name0.
 
 Expose detached indices/lists/typed-default snapshots for tests. No need to
 invent public VM struct layouts or grant generic native construction authority.
 
 ## Config and instance boundary
 
-Nothing unknown prevents implementing this full field/link/pre-config-default
-batch. Track defaultsPrepared separately from configApplied. It is not all of
+Snapshots report defaultsPrepared=true/configApplied=false. This is not all of
 StaticInitInput until its final actual CDO LoadConfig(1,None,None) is handled.
 
 Use the explicitly bound User.ini, existing ordered INI and typed Name/String/
@@ -116,3 +126,66 @@ Actual InputExt instances still require audited constructor/default-reload
 order, Extension name bootstrap, actual Enum, Transient Outer, viewport lifetime
 and backedges, followed by the separately ordered ResetInput/platform service.
 Neither field/default snapshots nor registration alone prove those services.
+The complete next config/instance/ResetConfig evidence and explicit service
+boundaries are in ORIGINAL-INPUT-CONFIG-INSTANCE.md. The genuine post-Possess
+continuation is separately documented in ORIGINAL-TRAINING-POST-POSSESS.md.
+
+## Verification
+
+### Joint schema/HUD memory regression
+
+Adding the real schema initially pushed the existing32MiB combined retained
+budget over its limit during the two-Fire diagnostic's HUD construction. Lazy
+mover/texture storage alone moved that failure later, into compass creation.
+The final representation also makes Actor animation clocks and state objects
+lazy. Metadata/default/HUD UObjects no longer embed unused actor-only payloads.
+Actual payloads remain accounted; state before-images are deep copies and
+rollback/restore swap owned pointers without allocating during publication.
+Animation/state save values retain their existing wire representation. Authored
+texture caches remain in their pre-existing immutable loader/asset ledger.
+Neither the production budget nor the diagnostic native-work limit was raised.
+
+The complete cold/warm two-Fire test again reaches the prior authentic FExec
+boundary at228837 instructions/26047 writes, preserving48 rows/two cycles/two
+notifies/four traces/two crate changes/nine births and complete undo. This is
+the joint regression control, not a substituted earlier memory-failure result.
+The earlier budget failures remain in separate pre-lazy-storage/pre-lazy-clock
+logs. Real first-Training material checks preserve227 selected materials,
+128 nonnull MultiSkin slots and114 selected overrides, with zero null materials.
+Training recording-route coverage passes1232 checks, including paired-door
+mid-motion/key-door saves and explicit unsupported generated-map restore
+refusal. The generated two-Mover-only fixture has no native Level/restore
+authority; its prior success assumption was corrected without loosening the
+production save guard or removing real Training's positive restore tests.
+
+Owned integration passes26262 checks/1342 refusals: real Actor255-key enum;
+Alias plus258 native properties; exactly259 weak lookup records and265 GC
+objects including five default blocks/domain; literal layouts and independent
+source inherited-list order; header/default/property reads/casts; detached typed
+values; missing-phase refusal; unchanged prerequisite domains; dormant first
+Training checkpoint/warm restore/unload/reload/GC/shutdown and source integrity.
+
+Three fixture assumptions were corrected, not production behavior: key239's
+actual UK_ spelling; package baselines before/after map load/retirement; and
+real map Package constructor's attempted-but-absent legacy-module binding.
+No module is executed or loaded. Late allocation/budget failure is structurally
+staged but not fault-injected by these precondition refusal tests.
+
+Desktop build, strict GNU test/ARM64 runtime checks and Android-native link pass.
+Final shared CTest:219 executed/260 registered/41 owned-data skips/zero failures
+112.60s. The new owned test above runs explicitly rather than treating its CTest
+skip as a pass. Separate owned class registration10413/38, crate415/5,
+deferred429/21, animation588/24 and FastTrace252/0 regressions pass. Actual
+Training startup/doors/two-Fire probes remain rollback-only diagnostics, not
+committed startup, live VR weapon damage, usable loot or automatic gravity.
+Final startup repeat2 retains239200/19364 with144 dynamic slots/calls; paired
+door repeat2 retains239536/19432 and both56-unit moves/two ends. Both reach
+the precise missing configured Input service, not a new budget refusal. All
+three controls verify cold/warm immutable Model proof reuse, complete root
+undo and cold same-filename generation replacement. Final immutable audit
+confirms45 original files and9 compiler inputs unchanged by length/mtime/SHA256,
+with every compiler/test/probe handle terminal before commit.
+
+Ignored local evidence: artifacts/input-schema-final-*-20261027.log. Earlier
+discovery/owned-package failures are retained separately; the final owned-
+optimized log is the passing integration control after lazy storage. No new APK.

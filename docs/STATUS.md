@@ -1,5 +1,38 @@
 # Port status
 
+## Original Input field/default graph verified (2026-10-27)
+
+The real native Alias Struct,258 properties (including all255 raw-key fields),
+five superclass-copied defaults and actual Children/Property/Config/Constructor
+links are prepared atomically in a separate authenticated domain. Names,
+categories, Class/Outer/Struct identities, typed values and GC/lookup ownership
+are genuine; no serialized descriptor or Input instance is fabricated.
+Snapshots explicitly report defaultsPrepared=true/configApplied=false.
+
+Owned schema26262 checks/1342 refusals, class registration10413/38, crate415/5,
+deferred429/21, animation588/24 and FastTrace252/0 pass. Production actor/player
+Tick retains27971/584 before its final schema control and exits0. Shared CTest
+219 executed/260 registered/41 owned-data skips/zero failures112.60s. Desktop,
+Android-native and strict ARM64/GNU checks pass. First-Training material checks
+preserve227 selected materials/128 nonnull MultiSkin slots/114 selected actor
+overrides; the Training door/save route passes1232 checks.
+Final audit verifies45 original files/9 frozen compiler inputs unchanged by
+length/mtime/SHA256, with all compiler/test/probe processes terminal.
+
+Joint schema/HUD memory pressure required actual storage reduction, not a cap
+increase: unused mover, texture, animation-clock and state payloads are now
+lazy; live payloads/before-images remain accounted, restore/rollback swaps are
+nonallocating, and saved data formats are unchanged. The complete cold/warm
+two-Fire control again reaches the prior FExec boundary at228837/26047 with
+48 rows/two cycles/two notifies/four traces/two crate changes/nine births and
+whole-root undo. Earlier memory refusals remain separately logged.
+
+This is not live crate gameplay. Next are genuine User config/import, configured
+InputExt construction, viewport/platform/FExec services and post-Possess/startup
+continuation, then actual VR weapon/frame/publication wiring. See
+ORIGINAL-INPUT-NATIVE-FIELDS.md, ORIGINAL-INPUT-CONFIG-INSTANCE.md and
+ORIGINAL-TRAINING-POST-POSSESS.md. First Training only; no new APK.
+
 ## Original configured Input UClass phase verified (2026-10-27)
 
 The separate native Input/InputExt registration phase now publishes actual

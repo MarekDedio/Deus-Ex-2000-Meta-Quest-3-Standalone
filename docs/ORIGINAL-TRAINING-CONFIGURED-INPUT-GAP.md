@@ -1,8 +1,10 @@
 # First Training: configured viewport Input dependency
 
-Updated2026-10-27. The explicit native Input/InputExt class-registration and
-configured-class selection phase is implemented. Native fields, constructors,
-defaults/User config and ReadInput services remain unimplemented. The
+Updated2026-10-27. Explicit native Input/InputExt classes/configured-class
+selection and the complete native Alias/key field/link/pre-config-default
+graph are implemented. The latter passes26262 owned checks/1342 refusals;
+defaultsPrepared is true but configApplied remains false. Actual constructors,
+User config and ReadInput services remain unimplemented. The
 actual first-map discovery now reaches `Original viewport ReadInput configured
 Input service is not prepared` after the local-player camera/fresh-Player and
 actual viewport/session/backedge checks. The coordinator is documented in

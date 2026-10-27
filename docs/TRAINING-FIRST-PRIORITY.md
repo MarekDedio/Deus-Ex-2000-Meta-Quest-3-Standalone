@@ -2,6 +2,19 @@
 
 ## Required live crate bridge (current-source audit, 2026-10-26)
 
+Latest2026-10-27: real native Input Alias/255-key fields/five defaults/links
+now pass26262 owned checks/1342 refusals with configApplied=false. Lazy native
+payload storage resolves joint schema/HUD32MiB pressure without raising the
+cap; original cold/warm two-Fire again reaches its prior FExec boundary with
+whole-root undo. Class10413/38, crate415/5,deferred429/21,animation588/24,
+FastTrace252/0, Training materials and1232 door/save route checks pass.
+CTest219 executed/260 registered/41 skips/zero failures112.60s; desktop,
+Android-native/strict ARM64/GNU pass. Configured input, genuine startup and
+live weapon/frame/publication remain pending. No new APK. The full graph/
+memory regression evidence is in ORIGINAL-INPUT-NATIVE-FIELDS.md; next input
+config/instance and post-Possess contracts are documented separately.
+Final45-original/9-input fingerprints pass and all jobs are terminal.
+
 Passing rollback diagnostics is not completion of this milestone. Quest's
 FireTargetedActor still calls DamagePortableRuntimeActor, which accepts only
 Pawn targets; it cannot damage a crate. UseTargetedActor still reaches the
