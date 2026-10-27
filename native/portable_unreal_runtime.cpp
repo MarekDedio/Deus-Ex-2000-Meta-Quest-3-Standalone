@@ -4077,6 +4077,7 @@ public:
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
+        if(index==1413u) return WindowShowNative(Object(receiver),arguments,declaration,execution);
         if(index==1463u || index==1464u)
             return WindowPreferredAxisNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1465u) return WindowPreferredSizeNative(Object(receiver),arguments,declaration,execution);
@@ -4292,6 +4293,8 @@ public:
         switch(index) {
         case 1412u:path="Extension.Window.Lower";break;
         case 1414u:path="Extension.Window.Hide";break;
+        case 1413u:path="Extension.Window.Show";
+            parameters={{"bShow",Kind::Bool,0x90u,"BoolProperty",""}};break;
         case 1415u:path="Extension.Window.IsVisible";
             parameters={{"bRecurse",Kind::Bool,0x90u,"BoolProperty",""},
                 {"ReturnValue",Kind::Bool,0x580u,"BoolProperty",""}};break;
@@ -5766,7 +5769,7 @@ public:
             if(slot)throw std::runtime_error("TextWindow.SetText seed exceeds its one String argument");
             return Value::Text(Kind::String,{}); // Original wrapper constructs an empty FString.
         }
-        if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
+        if(index!=1410u && index!=1413u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
             index!=1454u && index!=1461u && index!=1463u && index!=1464u && index!=1465u && index!=1467u && index!=1477u && index!=1483u && index!=1510u && index!=1511u &&
             index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u && index!=1611u)
             return std::nullopt;
@@ -5784,6 +5787,10 @@ public:
         if(index==1415u) {
             if(slot!=0u) throw std::runtime_error("IsVisible has only one optional input slot");
             return Value::Bool(true); // Native wrapper default, not declaration zero.
+        }
+        if(index==1413u) {
+            if(slot!=0u)throw std::runtime_error("Window.Show has only one optional input slot");
+            return Value::Bool(true); // Original exec10051960 seeds INT1 before Step.
         }
         if(index==1483u) {
             if(slot!=0u) throw std::runtime_error("EnableTranslucentText has only one optional input slot");
@@ -5915,9 +5922,9 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
-        if(index==1483u) {
+        if(index==1483u || index==1413u) {
             RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
-            if(slot)throw std::runtime_error("EnableTranslucentText omission exceeds its original input slot");
+            if(slot)throw std::runtime_error("Window optional Bool omission exceeds its original input slot");
             return true;
         }
         if(index==1272u) {
@@ -7204,6 +7211,20 @@ public:
             if(!local.boolean) return false;
         }
         return true;
+    }
+    Evaluation WindowShowNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);static_cast<void>(WindowNativeDeclaration(1413u,declaration));
+        if(arguments.size()>1u)throw std::runtime_error("Window.Show accepts one optional Bool");
+        auto visible=arguments.empty()?Value::Bool(true):arguments.front().Load();
+        if(visible.kind==Kind::Nothing)visible=Value::Bool(true);
+        if(visible.kind!=Kind::Bool)throw std::runtime_error("Window.Show requires its original Bool input");
+        ValidateNativeWindowScalar(window,"Extension.Window.bIsVisible",Kind::Bool,"BoolProperty","",2u);
+        //1004C7D0 first compares the local bit, then notifies the actual parent
+        // virtual+84 (or direct visibility when unparented). Existing effective-
+        // visible/layout services retain their own explicit unsupported boundary.
+        SetHiddenChildVisibility(window,visible.boolean,execution);
+        return {};
     }
     Evaluation WindowVisibilityGetterNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
         const Function* declaration) {

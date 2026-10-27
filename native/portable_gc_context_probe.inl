@@ -366,6 +366,53 @@
         const auto margins=TextWindowSetterDeclaration(1557u,nullptr);
         static_cast<void>(execution.CallFunction(*margins,text->reflection.objectPath,
             {{Value::Float(0.0f),{}},{Value::Float(0.0f),{}}}));
+        // Genuine Show1413, not an unconditional flag store. Root remains
+        // actually hidden; effective-visible/focus/layout is a separate service.
+        const auto show=WindowNativeDeclaration(1413u,nullptr);
+        const auto setVisible=[&](const std::vector<Evaluation>& inputs) {
+            return execution.CallFunction(*show,text->reflection.objectPath,inputs);
+        };
+        guarded([&]{static_cast<void>(WindowShowNative(pawn,{},show.get(),execution));});
+        guarded([&]{static_cast<void>(WindowShowNative(text,{{Value::Integer(1),{}}},show.get(),execution));});
+        guarded([&]{static_cast<void>(WindowShowNative(text,{{Value::Bool(true),{}},{Value::Bool(false),{}}},show.get(),execution));});
+        auto wrongShow=*show;wrongShow.variables.front().flags=0x80u;
+        guarded([&]{static_cast<void>(WindowShowNative(text,{},&wrongShow,execution));});
+        for(const bool previous:{false,true})for(const bool requested:{false,true}) {
+            NativeWindowWrite(text,"Extension.Window.bIsVisible",Value::Bool(previous),execution);
+            for(const auto* name:{"bNeedsQuery","bNeedsReconfigure"})
+                NativeWindowWrite(root,("Extension.Window."+std::string(name)).c_str(),Value::Bool(false),execution);
+            before=execution.WriteCount();static_cast<void>(setVisible({{Value::Bool(requested),{}}}));
+            const auto changed=previous!=requested;
+            expect(execution.WriteCount()-before==(changed?(requested?1u:3u):0u)&&
+                Read(text,DescribeProperty("Extension.Window.bIsVisible"),0u).boolean==requested,
+                "Original Show changed its equal/hidden-parent show/hide store protocol");
+            for(const auto* name:{"bNeedsQuery","bNeedsReconfigure"})
+                expect(Read(root,DescribeProperty("Extension.Window."+std::string(name)),0u).boolean==(changed&&!requested),
+                    "Original Show skipped or invented the actual modal hide-only reconfiguration");
+            ++result.windowCases;
+            before=execution.WriteCount();static_cast<void>(setVisible({{Value::Bool(requested),{}}}));
+            expect(execution.WriteCount()==before,"Repeated Show notified its parent or wrote unchanged visibility");++result.windowCases;
+        }
+        for(const unsigned mode:{0u,1u,2u}) {
+            NativeWindowWrite(text,"Extension.Window.bIsVisible",Value::Bool(false),execution);
+            before=execution.WriteCount();
+            if(mode==0u)static_cast<void>(setVisible({}));
+            else {
+                Evaluation input{mode==1u?Value{}:Value::Bool(false),{}};
+                if(mode==2u)input.disposition=QuestVr::Vm::ResultDisposition::NoWrite;
+                static_cast<void>(setVisible({input}));
+            }
+            expect(execution.WriteCount()==before+1u&&Read(text,DescribeProperty("Extension.Window.bIsVisible"),0u).boolean,
+                "Show omission/Nothing/NoWrite lost its genuine INT1 default");++result.windowCases;
+        }
+        // A canonical equality must not even inspect a malformed parent edge.
+        // Restore the explicit fixture immediately, before any changed request.
+        WindowLinkWrite(text,"winParent",text,execution);before=execution.WriteCount();
+        static_cast<void>(setVisible({{Value::Bool(true),{}}}));
+        expect(execution.WriteCount()==before,"Equal Show inspected/notified an unrelated cyclic parent fixture");++result.windowCases;
+        WindowLinkWrite(text,"winParent",root,execution);
+        before=execution.WriteCount();static_cast<void>(execution.CallFunction(*show,root->reflection.objectPath,{{Value::Bool(false),{}}}));
+        expect(execution.WriteCount()==before,"Equal unparented Show fabricated a visible-root service");++result.windowCases;
         const auto content=NativeTextContentDeclaration(nullptr);
         const auto setText=[&](const std::string& input) {
             return execution.CallFunction(*content,text->reflection.objectPath,{{Value::Text(Kind::String,input),{}}});

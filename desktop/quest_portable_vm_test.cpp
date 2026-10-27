@@ -505,7 +505,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
+        if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1413u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
             index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
             index==1270u || index==1272u || index==1486u || index==1483u || index==1550u ||
@@ -4141,7 +4141,7 @@ void TextWindowInputSnapshotContracts() {
             {"b",Value::Byte(91u)},{"a",Value::Byte(203u)}};return result;
     };
     for(const auto index:{std::uint16_t{1476u},std::uint16_t{1572u},std::uint16_t{1573u},
-        std::uint16_t{1270u},std::uint16_t{1272u},std::uint16_t{1486u},std::uint16_t{1483u},std::uint16_t{1550u}})
+        std::uint16_t{1270u},std::uint16_t{1272u},std::uint16_t{1486u},std::uint16_t{1483u},std::uint16_t{1550u},std::uint16_t{1413u}})
         for(const bool declared:{false,true}) {
         TestHost host;
         const bool gcObject=index==1270u||index==1486u;
@@ -4155,11 +4155,11 @@ void TextWindowInputSnapshotContracts() {
             gcObject?Value::Text(Vm::Kind::Object,"OtherContext"):index==1550u?Value::Text(Vm::Kind::String,"Other"):Value::Bool(false);
         const auto layout=index==1476u?Vm::ResultLayout::CoreColor4:Vm::ResultLayout::Unknown;
         auto native=Function(index==1476u?"SetTextColor":index==1572u?"SetTextTimeout":index==1270u?"CopyGC":
-            index==1272u?"PopGC":index==1486u?"ReleaseGC":index==1483u?"EnableTranslucentText":index==1550u?"SetText":"PauseLog",{},
-            index==1476u||index==1486u||index==1483u?"Extension.Window":index==1270u||index==1272u?"Extension.GC":
+            index==1272u?"PopGC":index==1486u?"ReleaseGC":index==1483u?"EnableTranslucentText":index==1550u?"SetText":index==1413u?"Show":"PauseLog",{},
+            index==1476u||index==1486u||index==1483u||index==1413u?"Extension.Window":index==1270u||index==1272u?"Extension.GC":
                 index==1550u?"Extension.TextWindow":"Extension.TextLogWindow");
         native.flags=0x401u;native.nativeIndex=index;
-        native.variables={{native.path+".Input","Input",zero,index==1483u?0x90u:index==1550u?0x400880u:0x80u,1u,layout}};
+        native.variables={{native.path+".Input","Input",zero,index==1483u||index==1413u?0x90u:index==1550u?0x400880u:0x80u,1u,layout}};
         if(declared) host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
         if(index==1476u) {
             host.suppliedReferenceLayout=layout;
@@ -4172,7 +4172,7 @@ void TextWindowInputSnapshotContracts() {
             const Vm::Function*)->std::optional<Value> {
             if(actual!=index) return std::nullopt;
             Require(slot==0u,"TextLog scalar copy requested an extra initialized slot");
-            return index==1483u?Value::Bool(true):zero;
+            return index==1483u||index==1413u?Value::Bool(true):zero;
         };
         const auto call=declared?Call(0x1cu,7,{Ref(0x01u,1)}):Native(index,{Ref(0x01u,1)});
         const auto expression=Context(Ref(0x20u,9),call);
@@ -4914,14 +4914,19 @@ void WindowSelectabilityInputContracts() {
 }
 void WindowVisibilityInputContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
+    for(const auto nativeIndex:{std::uint16_t{1415u},std::uint16_t{1413u}})
     for(const bool declared:{false,true}) for(const int mode:{0,1,2,3,4,5,6,7}) {
-        TestHost host;auto native=Function("IsVisible",{},"Extension.Window");native.nativeIndex=1415u;native.flags=0x401u;
-        native.variables={{"IsVisible.bRecurse","bRecurse",Value::Bool(false),0x90u,1u},
-            {"IsVisible.ReturnValue","ReturnValue",Value::Bool(false),0x580u,1u}};
+        TestHost host;auto native=Function(nativeIndex==1415u?"IsVisible":"Show",{},"Extension.Window");
+        native.nativeIndex=nativeIndex;native.flags=0x401u;
+        native.variables={{native.path+".Input",nativeIndex==1415u?"bRecurse":"bShow",Value::Bool(false),0x90u,1u}};
+        if(nativeIndex==1415u)native.variables.push_back({"IsVisible.ReturnValue","ReturnValue",Value::Bool(false),0x580u,1u});
         host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
-        host.argumentSeed=[](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
-            if(index!=1415u) return std::nullopt;
-            Require(slot==0u,"IsVisible seeded a return/excess input slot");return Value::Bool(true);
+        host.argumentSeed=[nativeIndex](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index!=nativeIndex) return std::nullopt;
+            Require(slot==0u,"Visibility native seeded a return/excess input slot");return Value::Bool(true);
+        };
+        host.materializeOmission=[](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*) {
+            return index==1413u&&slot==0u;
         };
         host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
             Require(arguments.size()<=1u,"IsVisible exceeded its single optional input");
@@ -4933,8 +4938,8 @@ void WindowVisibilityInputContracts() {
         if(mode==1) input={0x0bu};
         else if(mode==2) input={0x28u};
         else if(mode>=3) input=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(mode==3?0u:mode==4?4u:mode-4u));
-        const auto expression=mode==0?(declared?Call(0x1c,7):Native(1415u)):
-            (declared?Call(0x1c,7,{input}):Native(1415u,{input}));
+        const auto expression=mode==0?(declared?Call(0x1c,7):Native(nativeIndex)):
+            (declared?Call(0x1c,7,{input}):Native(nativeIndex,{input}));
         const auto caller=Function("IsVisibleNativeDefault",Return(expression));
         const auto result=Vm::Execute(host,caller,"Self");
         if(mode>=5) Failed(result,Vm::Status::Unsupported,host,"IsVisible partial Bool temporary clearing remains explicit refusal");

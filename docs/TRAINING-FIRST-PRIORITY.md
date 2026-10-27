@@ -1,5 +1,19 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-27: original optional Window.Show1413 now preserves true defaults,
+copied Bool inputs, equality no-op and real parent callbacks. The dormant false
+quickbar setting invokes genuine HUD size queries;195 native objects/all27 GC
+saved/copied fields pass within the unchanged4MiB cap. Owned HUD10180,VM696622/
+930 and GC155/16 with60 Window/18 text cases pass. Desktop/Android-native/strict
+ARM64 pass; CTest225 executed/269 registered/44 skips/zero failures166.96s. All
+eight rebuilt owned first-map regressions and45-original/23-input fingerprint
+audits pass; all jobs terminal. Two-Fire repeat2 reaches actual GC.SetFont1242
+at255080/31256, preserving two notifies/four traces/two crate changes/nine births/
+full undo. Doors retain both56-unit moves and exact ReadInput refusal. No budget,
+save format or accepted VR-layout change. Next:GC font/text-extent and script-
+string native packets, remaining genuine startup, then the live bridge below.
+No new APK or completed live crate/loot/gravity claim. See ORIGINAL-WINDOW-SHOW.md.
+
 Latest2026-10-27: original TextWindow.SetText1550 now handles genuine copied
 FString inputs, UTF16 conversion/case equality, private content, accelerator
 key/modal dirtiness and layout in the caller's root. Policy886077/34,VM696529/

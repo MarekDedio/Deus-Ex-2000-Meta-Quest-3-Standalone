@@ -1,5 +1,31 @@
 # Port status
 
+## Latest: original optional Window.Show/parent visibility (2026-10-27)
+
+Show1413 now follows its real optional-true Bool packet, copied inputs, equality
+no-op and actual parent visibility callback. It reuses existing hidden-parent
+visibility/layout authority; no effective-visible/init-tree service was faked.
+The dormant player's false quickbar setting now reaches the HUD's genuine size
+query, including a completed received-item text query and the active mission-
+start GC acquisition. Exact195-object snapshot and all27 saved/copied GC fields
+pass within the unchanged4MiB cap. The accepted VR presentation layout is intact.
+
+Owned HUD10180 controls, VM696622/930 and GC155/16 (60 Window cases/18 text
+cases) pass. Full desktop build,current Android-native link and strict ARM64
+pass. CTest:269 registered,225 executed,44 explicit skips,zero failures166.96s.
+All eight rebuilt owned first-Training regressions pass. All45 originals/23
+frozen compiler inputs match length/mtime/SHA256; all jobs are terminal.
+
+Actual two-Fire repeat2 advances to HUDMissionStartTextDisplay's native1242
+GC.SetFont dependency at255080 instructions/31256 writes, preserving two
+notifies/four traces/two crate changes/nine births/full undo. Doors retain both
+56-unit moves/two endpoints and exact ReadInput refusal. Still rollback-only
+backend progress, NOT a playable startup, live crate/loot/gravity or new APK.
+Next:actual GC font/text-extent and script-string native packets, remaining
+original input/startup, then the committing VR weapon/frame/publication bridge.
+First Training only; no account/character-creation UI or other-map integration.
+See ORIGINAL-WINDOW-SHOW.md for accepted evidence and next contracts.
+
 ## Latest: original TextWindow content/accelerators (2026-10-27)
 
 TextWindow.SetText1550 now executes its actual required String packet, copied
