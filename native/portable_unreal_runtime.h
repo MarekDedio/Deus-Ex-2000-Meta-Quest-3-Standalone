@@ -720,6 +720,19 @@ struct PortableNativeConfigClassesSnapshot {
 // construct native defaults/instances or initialize an Engine/Cylinder.
 PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses();
 PortableNativeConfigClassesSnapshot ReadPortableRuntimeNativeConfigClasses();
+struct PortableNativeInputClassesSnapshot {
+    std::vector<PortableNativeMetadataClassSnapshot> classes;
+    std::optional<std::string> configuredInputClass;
+    std::string configName;
+    bool prepared{};
+};
+// Explicit CPU-owner class-registration phase for the two audited native-only
+// Input UClasses. Requires actual Core metadata and Packages; reads only Input
+// from the original Core source directory's DeusEx.ini and publishes atomically.
+// No fake serialized descriptors, native fields/defaults/config import, Input
+// instance, viewport preparation, ResetInput or ReadInput success is implied.
+PortableNativeInputClassesSnapshot PreparePortableRuntimeNativeInputClasses();
+PortableNativeInputClassesSnapshot ReadPortableRuntimeNativeInputClasses();
 struct PortableNativePackageSnapshot {
     std::string objectPath;
     std::uint32_t objectIndex{}, classIndex{}, outerIndex{}, objectFlags{}, packageFlags{};

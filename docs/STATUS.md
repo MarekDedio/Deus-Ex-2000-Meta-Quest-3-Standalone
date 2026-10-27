@@ -1,5 +1,31 @@
 # Port status
 
+## Original configured Input UClass phase verified (2026-10-27)
+
+The separate native Input/InputExt registration phase now publishes actual
+indexed Classes with genuine Super/Within/metaclass/Package edges and bounded
+independent DeusEx.ini Input selection. It retains the canonical selection
+across reads/repeated preparation, map/GC/save lifetime and shutdown, without
+fake serialized descriptors/defaults, an Input instance or empty input service.
+Owned integration10413 checks/38 refusals and config960 checks pass. Desktop,
+Android-native, strict GNU/ARM64 pass; CTest219 executed/259 registered/40 owned
+skips/zero failures105.87s. Exact original Training diagnostic behavior and
+full rollback remain unchanged; this does not turn its expected refusal into
+successful startup. See ORIGINAL-TRAINING-CONFIGURED-INPUT-GAP.md.
+
+Separate owned crate415/5, deferred429/21, animation588/24 and FastTrace252/0
+controls pass; production actor/player Tick retains27971/584 before its final
+schema control and exits0. Final audit confirms45 original files and9 frozen
+compiler inputs unchanged by length/mtime/SHA256, with all jobs terminal.
+
+Next complete field/link/pre-config-default contract is documented in
+ORIGINAL-INPUT-NATIVE-FIELDS.md, including all255 raw-key declarations and
+key0's actual unique-name path. Native fields/config/instances/platform input,
+post-Possess startup and real VR equip/Fire/frame/publication are still pending.
+Keep first Training priority; no account/character UI, other-map integration or
+new APK. Crate destruction, collectible loot and automatic gravity remain
+unverified in the live Quest build.
+
 ## Original local-player update sequence verified (2026-10-27)
 
 The native local-player coordinator now preserves the real Camera ShowFlags

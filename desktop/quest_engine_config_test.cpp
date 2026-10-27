@@ -20,6 +20,10 @@ void GameEngine(const std::string_view text, const std::string_view expected) {
     const auto result = QuestVr::EngineConfig::ParseGameEngineClass(text);
     Require(result && *result == expected, "INI GameEngine selection or preserved spelling is wrong");
 }
+void Input(const std::string_view text, const std::string_view expected) {
+    const auto result = QuestVr::EngineConfig::ParseInputClass(text);
+    Require(result && *result == expected, "INI Input selection or preserved spelling is wrong");
+}
 template<class Function> void Refused(Function&& function, const char* what) {
     ++checks;
     try { function(); }
@@ -32,6 +36,9 @@ void Invalid(const std::string_view text) {
 void InvalidGameEngine(const std::string_view text) {
     Refused([&] { (void)QuestVr::EngineConfig::ParseGameEngineClass(text); },
         "Malformed GameEngine INI was accepted");
+}
+void InvalidInput(const std::string_view text) {
+    Refused([&] { (void)QuestVr::EngineConfig::ParseInputClass(text); }, "Malformed Input INI was accepted");
 }
 template<class Function> void ErrorMessage(Function&& function, const std::string_view expected) {
     ++checks;
@@ -207,13 +214,88 @@ int main() {
         maximumEngineFile.resize(kMaxFileBytes, '\n');
         GameEngine(maximumEngineFile, "DeusEx.DeusExGameEngine");
 
+        // Input is another independently selected owned setting. In particular,
+        // missing/invalid Input never falls back to either engine or UI class.
+        constexpr std::string_view inputOriginal =
+            "[Engine.Engine]\r\nInput=Extension.InputExt\r\nGameEngine=DeusEx.DeusExGameEngine\r\nRoot=DeusEx.DeusExRootWindow\r\n";
+        Input(inputOriginal, "Extension.InputExt");
+        Root(inputOriginal, "DeusEx.DeusExRootWindow");
+        GameEngine(inputOriginal, "DeusEx.DeusExGameEngine");
+        Input(" \t[ENGINE.engine]\t\r\n \tInPuT \t= \tCustom_Package.MyInput_2\t", "Custom_Package.MyInput_2");
+        Input("[Engine.Engine]\rInput=My.Package.Input0\r", "My.Package.Input0");
+        Input("[Engine.Engine]\nInput=_Package._Input0", "_Package._Input0");
+        Input(";Input=Ignore.Comment\n//Input=Ignore.Other\n[Engine.Engine]\n"
+            " ;Input=Ignore.Comment\n //Input=Ignore.Other\nInput=Extension.InputExt", "Extension.InputExt");
+        Input("Input=Wrong.Unsectioned\n[Other]\nInput=Wrong.Other\n[Engine.Engine]\n"
+            "Input=Right.Input\n[Other]\nInput=Wrong.Last", "Right.Input");
+        Input("[Engine.Engine]\nInput=First.Input\nINPUT=first.INPUT\n[Other]\nInput=Ignored.Other\n"
+            "[engine.ENGINE]\nInput=FIRST.input", "First.Input");
+        Input("[Engine.Engine]\nInputClass=Ignored.Suffix\nInput[0]=Ignored.Array\n+Input=Ignored.Add\n"
+            "Input=Actual.Input", "Actual.Input");
+        Input("[Engine.Engine]\nRoot=\nRoot=Bad/Path\nGameEngine=\nGameEngine=Bad/Path\nInput=Actual.Input", "Actual.Input");
+        Input("[Engine.Engine]\nRoot=First.Root\nRoot=Second.Root\nGameEngine=First.Engine\n"
+            "GameEngine=Second.Engine\nInput=Actual.Input", "Actual.Input");
+        Root("[Engine.Engine]\nInput=\nInput=Bad/Path\nRoot=Actual.Root", "Actual.Root");
+        GameEngine("[Engine.Engine]\nInput=First.Input\nInput=Second.Input\nGameEngine=Actual.Engine", "Actual.Engine");
+        Input("[Engine.Engine]\nRoot=\xE9\nGameEngine=\xE9\nOther=\xE9\nInput=Good.Input", "Good.Input");
+        Require(!ParseInputClass(std::string_view{}), "Empty INI invented Input");
+        Require(!ParseInputClass(engineOriginal), "Root/GameEngine was used as Input fallback");
+        Require(!ParseInputClass("[Other]\nInput=Wrong.Input"), "Wrong section selected Input");
+        Require(!ParseInputClass("[ Engine.Engine ]\nInput=Wrong.Input"), "Input normalized bracket-internal spaces");
+        Require(!ParseInputClass("[Engine.Engine]\nInputClass=Wrong.Input\nInput[0]=Wrong.Input\n+Input=Wrong.Input\nInput"),
+            "Input accepted an alias or non-key line");
+        Require(!ParseInputClass("[Engine.Engine]\n=Ignored\n/\n# no recognized comment syntax"), "Ignored lines invented Input");
+        Require(!ParseRootClass("[Engine.Engine]\nInput=Actual.Input"), "Input was used as Root fallback");
+        Require(!ParseGameEngineClass("[Engine.Engine]\nInput=Actual.Input"), "Input was used as GameEngine fallback");
+        const std::vector<std::uint8_t> inputRaw(inputOriginal.begin(), inputOriginal.end());
+        Require(ParseInputClass(inputRaw) == ParseInputClass(inputOriginal), "Byte-vector Input parse differs from text parse");
+        Require(!ParseInputClass(std::vector<std::uint8_t>{}), "Empty byte vector invented Input");
+        for (const std::string_view invalid : {"", " ", "InputOnly", ".Input", "Package.", "Package..Input",
+            "1Package.Input", "Package.1Input", "Package/Input", "Package\\Input", "Package:Input", "Package.Input;comment",
+            "Package.Input //comment", "\"Package.Input\"", "Class'Package.Input'", "Package.Input=Other", "Package.In put",
+            "Package.Input\tMore", "Package.Inp\xC3\xBAt"})
+            InvalidInput(std::string("[Engine.Engine]\nInput=") + std::string(invalid));
+        InvalidInput("[Engine.Engine]\nInput=First.Input\nInput=Second.Input");
+        InvalidInput("[Engine.Engine]\nInput=First.Input\n[Other]\nInput=Ignored.Input\n[engine.engine]\nInput=Second.Input");
+        InvalidInput("[Engine.Engine]\nInput=\nInput=Later.Input");
+        InvalidInput("[Engine.Engine]\nInput=Valid.Input\nInput=\n");
+        for (const std::string_view invalid : {"[Engine.Engine", "[Engine.Engine] ;comment", "[Engine.Engine]]",
+            "[[Engine.Engine]", "[]", "[Eng\xC3\xADne.Engine]\nInput=Good.Input", "[Engine.Engine]\nInp\xC3\xBAt=Good.Input"})
+            InvalidInput(invalid);
+        for (unsigned byte = 0u; byte <= 255u; ++byte) {
+            if ((byte < 32u && byte != '\t' && byte != '\r' && byte != '\n') || byte == 127u) {
+                std::string invalid(inputOriginal); invalid.push_back(static_cast<char>(byte)); InvalidInput(invalid);
+            }
+            if (byte >= 128u) {
+                const auto invalid = std::string("[Engine.Engine]\nInput=Package.Inp") + static_cast<char>(byte);
+                InvalidInput(invalid);
+                Root(invalid + "\nRoot=Good.Root", "Good.Root");
+                GameEngine(invalid + "\nGameEngine=Good.Engine", "Good.Engine");
+            }
+        }
+        InvalidInput(std::string("\xEF\xBB\xBF") + std::string(inputOriginal));
+        const auto longestInput = std::string("Package.") + std::string(kMaxInputClassBytes - 8u, 'I');
+        Input("[Engine.Engine]\nInput=" + longestInput, longestInput);
+        InvalidInput("[Engine.Engine]\nInput=" + longestInput + 'I');
+        InvalidInput('[' + std::string(kMaxNameBytes + 1u, 'S') + "]\nInput=Good.Input");
+        InvalidInput("[Engine.Engine]\n" + std::string(kMaxNameBytes + 1u, 'K') + "=Ignored");
+        Input('[' + std::string(kMaxNameBytes, 'S') + "]\n" + std::string(inputOriginal), "Extension.InputExt");
+        Input(std::string(kMaxNameBytes, 'K') + "=Ignored\n" + std::string(inputOriginal), "Extension.InputExt");
+        InvalidInput(';' + std::string(kMaxLineBytes, 'C'));
+        InvalidInput(std::string(kMaxFileBytes + 1u, '\n'));
+        Require(!ParseInputClass(std::string(kMaxFileBytes, '\n')), "Maximum-size absent Input INI was refused");
+        Require(!ParseInputClass(';' + std::string(kMaxLineBytes - 1u, 'C')), "Maximum-length Input comment was refused");
+        std::string maximumInputFile(inputOriginal); maximumInputFile.resize(kMaxFileBytes, '\n');
+        Input(maximumInputFile, "Extension.InputExt");
+
         // Root's pre-existing public diagnostic text is preserved exactly.
-        // GameEngine uses its own setting label for the corresponding refusal.
-        for (const std::string_view key : {"Root", "GameEngine"}) {
+        // Each other setting uses only its own label for corresponding refusals.
+        for (const std::string_view key : {"Root", "GameEngine", "Input"}) {
             const auto invoke = [&](const std::string_view value) {
                 const auto bytes = std::string("[Engine.Engine]\n") + std::string(key) + '=' + std::string(value);
                 if (key == "Root") (void)ParseRootClass(bytes);
-                else (void)ParseGameEngineClass(bytes);
+                else if (key == "GameEngine") (void)ParseGameEngineClass(bytes);
+                else (void)ParseInputClass(bytes);
             };
             const auto prefix = std::string("Original engine INI ") + std::string(key) + " class ";
             ErrorMessage([&] { invoke(""); }, prefix + "is empty or oversized");
@@ -288,7 +370,45 @@ int main() {
         Write(ini, {});
         Require(!ReadGameEngineClassFile(ini), "Empty explicit INI invented GameEngine");
 
-        std::cout << "PASS original engine Root and GameEngine config: " << checks
+        Require(!ReadInputClassFile(fixture.path / "missing.ini"), "Missing explicit INI invented Input");
+        Require(!ReadInputClass(fixture.path / "missing-root"), "Missing owned directory invented Input");
+        Require(!ReadInputClass(fixture.path), "Empty owned INI invented Input");
+        Write(ini, inputOriginal);
+        const auto inputStamp = std::filesystem::last_write_time(ini);
+        Require(ReadInputClass(fixture.path) == std::optional<std::string>("Extension.InputExt"),
+            "Owned-root Input reader selected wrong path/class");
+        Require(ReadInputClassFile(ini) == ReadInputClass(fixture.path), "Explicit and owned-root Input readers differ");
+        Require(ReadRootClass(fixture.path) == std::optional<std::string>("DeusEx.DeusExRootWindow") &&
+            ReadGameEngineClass(fixture.path) == std::optional<std::string>("DeusEx.DeusExGameEngine"),
+            "Input file support changed Root/GameEngine selection");
+        Write(fixture.path / "DeusEx.ini", "[Engine.Engine]\nInput=Wrong.Location");
+        Require(ReadInputClass(fixture.path) == std::optional<std::string>("Extension.InputExt"), "Input reader fell back to another INI location");
+        Require(Read(ini) == inputOriginal && std::filesystem::last_write_time(ini) == inputStamp,
+            "Input config readers changed owned INI bytes/mtime");
+        Write(ini, "[Engine.Engine]\nRoot=Actual.Root\nGameEngine=Actual.Engine");
+        Require(!ReadInputClass(fixture.path), "File missing Input invented a class");
+        Write(ini, "[Engine.Engine]\nRoot=Bad/Path\nGameEngine=Bad/Path\nInput=Actual.Input");
+        Require(ReadInputClass(fixture.path) == std::optional<std::string>("Actual.Input"), "Input file reader validated unrelated settings");
+        Write(ini, "[Engine.Engine]\nRoot=Actual.Root\nGameEngine=Actual.Engine\nInput=Bad/Path");
+        Refused([&] { (void)ReadInputClass(fixture.path); }, "Invalid Input file was accepted");
+        Require(ReadRootClass(fixture.path) == std::optional<std::string>("Actual.Root") &&
+            ReadGameEngineClass(fixture.path) == std::optional<std::string>("Actual.Engine"),
+            "Existing file readers validated unrelated Input value");
+        Write(ini, "[Engine.Engine]\nInput=Extension.InputExt\nInput=extension.INPUTEXT");
+        Require(ReadInputClassFile(ini) == std::optional<std::string>("Extension.InputExt"), "Same-identity file Input duplicates failed");
+        Write(ini, "[Engine.Engine]\nInput=Extension.InputExt\nInput=Engine.Input");
+        Refused([&] { (void)ReadInputClass(fixture.path); }, "Conflicting file Input was accepted");
+        Write(ini, maximumInputFile);
+        Require(ReadInputClassFile(ini) == std::optional<std::string>("Extension.InputExt"), "Maximum-size valid Input file was refused");
+        Write(ini, std::string(kMaxFileBytes + 1u, '\n'));
+        Refused([&] { (void)ReadInputClass(fixture.path); }, "Oversized Input file was accepted");
+        Refused([&] { (void)ReadInputClassFile(fixture.path / "System"); }, "Directory was accepted as Input INI");
+        Write(ini, std::string("[Engine.Engine]\nInput=Good.Input\n") + '\0');
+        Refused([&] { (void)ReadInputClass(fixture.path); }, "NUL-containing Input file was accepted");
+        Write(ini, {});
+        Require(!ReadInputClassFile(ini), "Empty explicit INI invented Input");
+
+        std::cout << "PASS original engine Root, GameEngine and Input config: " << checks
             << " checks; independent owned settings, preserved Root diagnostics, bounded ASCII identity, comments/CRLF, absent settings, same-identity duplicates, read-only filesystem checks and explicit ambiguous/malformed refusals\n";
         return 0;
     } catch (const std::exception& error) {

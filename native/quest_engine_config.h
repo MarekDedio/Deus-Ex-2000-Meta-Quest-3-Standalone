@@ -12,7 +12,7 @@
 
 namespace QuestVr::EngineConfig {
 
-// This is a bounded reader for the owned System/DeusEx.ini Root and GameEngine
+// This is a bounded reader for the owned System/DeusEx.ini Root, GameEngine and Input
 // settings, not a general UE1 config backend. Bounds are port resource limits, not claims
 // about the original engine's maximum valid INI or FName lengths.
 inline constexpr std::size_t kMaxFileBytes = 1024u * 1024u;
@@ -20,6 +20,7 @@ inline constexpr std::size_t kMaxLineBytes = 16u * 1024u;
 inline constexpr std::size_t kMaxNameBytes = 1024u;
 inline constexpr std::size_t kMaxRootClassBytes = 1024u;
 inline constexpr std::size_t kMaxGameEngineClassBytes = 1024u;
+inline constexpr std::size_t kMaxInputClassBytes = 1024u;
 
 namespace Detail {
 inline unsigned char FoldAscii(const unsigned char value) {
@@ -83,9 +84,9 @@ inline void RootClass(const std::string_view path) {
 // duplicate key. Retail duplicate precedence has not been established: this
 // reader therefore accepts only same-identity duplicates of the selected key
 // and explicitly refuses conflicts. It does not unwrap quotes, strip inline comments, expand
-// variables, follow includes or substitute a default class. Only the two public
-// Root and GameEngine entry points below select a setting; this is not a general
-// configuration backend. Invalid values of the other setting remain unrelated.
+// variables, follow includes or substitute a default class. Only the three public
+// Root, GameEngine and Input setting entry points below select a setting; this is
+// not a general configuration backend. Invalid values of other settings remain unrelated.
 inline std::optional<std::string> ParseClass(const std::string_view bytes,
     const std::string_view selectedKey, const std::size_t classLimit) {
     if (bytes.size() > kMaxFileBytes)
@@ -156,6 +157,15 @@ inline std::optional<std::string> ParseGameEngineClass(const std::vector<std::ui
     return ParseGameEngineClass(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 
+inline std::optional<std::string> ParseInputClass(const std::string_view bytes) {
+    return Detail::ParseClass(bytes, "Input", kMaxInputClassBytes);
+}
+
+inline std::optional<std::string> ParseInputClass(const std::vector<std::uint8_t>& bytes) {
+    if (bytes.empty()) return ParseInputClass(std::string_view{});
+    return ParseInputClass(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+}
+
 // Missing is distinct from unreadable/invalid: a deployment with no INI may
 // defer possession, whereas an existing malformed configuration must not be
 // silently replaced with a hardcoded class. Never writes the owned INI.
@@ -201,6 +211,14 @@ inline std::optional<std::string> ReadGameEngineClassFile(const std::filesystem:
 
 inline std::optional<std::string> ReadGameEngineClass(const std::filesystem::path& originalGameRoot) {
     return ReadGameEngineClassFile(originalGameRoot / "System" / "DeusEx.ini");
+}
+
+inline std::optional<std::string> ReadInputClassFile(const std::filesystem::path& iniPath) {
+    return Detail::ReadClassFile(iniPath, "Input", kMaxInputClassBytes);
+}
+
+inline std::optional<std::string> ReadInputClass(const std::filesystem::path& originalGameRoot) {
+    return ReadInputClassFile(originalGameRoot / "System" / "DeusEx.ini");
 }
 
 } // namespace QuestVr::EngineConfig

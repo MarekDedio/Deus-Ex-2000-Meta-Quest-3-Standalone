@@ -44,6 +44,7 @@
 #include "quest_actor_pawn_context.h"
 #include "quest_actor_pawn_tick.h"
 #include "quest_player_local_tick.h"
+#include "quest_native_input_classes.h"
 #include "quest_actor_timer_phase.h"
 #include "quest_actor_last_rendered.h"
 #include "quest_scripted_pawn_tick.h"
@@ -737,6 +738,8 @@ protected:
 std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentEngineClasses;
 std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentMetadataClasses;
 std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentConfigClasses;
+std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentInputClasses;
+std::optional<std::string> persistentInputClass;
 std::optional<std::string> persistentGameEngineClass;
 std::size_t NativeClassRetainedBytes(const RuntimeEngineClassDomain& domain,const std::size_t expected) {
     // A closed audited registration phase, not an unbounded missing-class
@@ -766,6 +769,10 @@ std::size_t NativeMetadataClassRetainedBytes(const RuntimeEngineClassDomain& dom
 }
 std::size_t NativeConfigClassRetainedBytes(const RuntimeEngineClassDomain& domain) {
     return NativeClassRetainedBytes(domain,QuestVr::NativeConfigClasses.size());
+}
+std::size_t NativeInputClassRetainedBytes(const RuntimeEngineClassDomain& domain,const std::string& configured) {
+    return QuestVr::DecalStateDetail::Add(NativeClassRetainedBytes(domain,QuestVr::NativeInputClasses.size()),
+        configured.capacity()+1u);
 }
 struct RuntimeWindowDomain final : GCObject {
     // Current domain consists only of explicitly rooted windows and their
@@ -5254,6 +5261,9 @@ public:
     void ValidateConfigClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
         ValidateStateBudget(NativeConfigClassRetainedBytes(staged));
     }
+    void ValidateInputClassRegistrationBudget(const RuntimeEngineClassDomain& staged,const std::string& configured) const {
+        ValidateStateBudget(NativeInputClassRetainedBytes(staged,configured));
+    }
     void ValidatePackageRegistrationBudget(const RuntimeNativePackageIndex& staged) const {
         ValidateStateBudget(NativePackageRetainedBytes(staged));
     }
@@ -9585,6 +9595,11 @@ private:
                 const std::string canonical(entry.path);
                 return QuestVr::ObjectCastClass{canonical,canonical.substr(canonical.find('.')+1u),std::string(entry.base)};
             }
+        for(const auto& entry:QuestVr::NativeInputClasses)
+            if(LowerAscii(path)==LowerAscii(std::string(entry.path))) {
+                const std::string canonical(entry.path);
+                return QuestVr::ObjectCastClass{canonical,canonical.substr(canonical.find('.')+1u),std::string(entry.base)};
+            }
         static constexpr std::pair<const char*, const char*> registered[] = {
             {"Core.Object", ""}, {"Core.Package", "Core.Object"},
             {"Core.Field", "Core.Object"}, {"Core.Const", "Core.Field"},
@@ -10462,6 +10477,10 @@ private:
             defaults.Retain(NativeMetadataClassRetainedBytes(*persistentMetadataClasses->get()));
         if(persistentConfigClasses && persistentConfigClasses->get())
             defaults.Retain(NativeConfigClassRetainedBytes(*persistentConfigClasses->get()));
+        if(persistentInputClasses && persistentInputClasses->get()) {
+            if(!persistentInputClass)throw std::runtime_error("Native Input class domain lost its configured identity");
+            defaults.Retain(NativeInputClassRetainedBytes(*persistentInputClasses->get(),*persistentInputClass));
+        }
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
         if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
@@ -12974,6 +12993,7 @@ void ShutdownPortableRuntime() {
     persistentDumpObjects.clear();persistentDumpServices.reset();persistentDumpSession={};
     persistentWindowDomain.reset();persistentRootWindowClass.reset();
     persistentConfigClasses.reset();
+    persistentInputClasses.reset();persistentInputClass.reset();
     persistentMetadataClasses.reset();
     persistentEngineClasses.reset();persistentGameEngineClass.reset();
     persistentPlayerSession.reset();
@@ -13520,6 +13540,86 @@ PortableNativePackagesSnapshot PreparePortableRuntimeNativePackages() {
     for(std::size_t i=0u;i<sourceRoots.size();++i) runtime.sourceLinkers[i].root=sourceRoots[i];
     runtime.mapLinkerRoot=mapRoot;index->active=true;persistentNativePackages=std::move(index);
     return result;
+}
+
+PortableNativeInputClassesSnapshot ReadPortableRuntimeNativeInputClasses() {
+    if(!persistentInputClasses || !persistentInputClasses->get()) {
+        if(persistentInputClass)throw std::runtime_error("Native Input selection has no owning class domain");
+        return {};
+    }
+    if(!persistentMetadataClasses||!persistentNativePackages||!persistentInputClass)
+        throw std::runtime_error("Native Input classes lost their actual metadata/package/config authority");
+    const auto metadata=MetadataClassSnapshot(*persistentInputClasses->get(),QuestVr::NativeInputClasses);
+    const auto selected=std::find_if(metadata.classes.begin(),metadata.classes.end(),[](const auto& cls) {
+        return cls.classPath==*persistentInputClass;
+    });
+    if(selected==metadata.classes.end())throw std::runtime_error("Native Input classes lost their selected actual UClass");
+    PortableNativeInputClassesSnapshot result;
+    result.prepared=true;result.classes=metadata.classes;result.configuredInputClass=persistentInputClass;
+    result.configName=std::string(QuestVr::NativeInputConfigName);return result;
+}
+
+PortableNativeInputClassesSnapshot PreparePortableRuntimeNativeInputClasses() {
+    CollectBirthGarbageAtBoundary collect;PortableActorVmHost host;
+    if(persistentInputClasses)return ReadPortableRuntimeNativeInputClasses();
+    if(!persistentMetadataClasses||!ReadPortableRuntimeNativeMetadataClasses().prepared||
+        !persistentNativePackages||!ReadPortableRuntimeNativePackages().prepared)
+        throw std::runtime_error("Native Input class registration requires actual Core metadata and native Packages");
+    auto* objectClass=host.Object("Core.Object");auto* subsystem=host.Object("Core.Subsystem");auto* meta=host.Object("Core.Class");
+    for(auto* base:{objectClass,subsystem}) {
+        if(!base->classDescriptor||base->defaultOwner||!base->classFieldLinksValid||base->cls!=meta||
+            base->reflection.metaClass!="Class"||!(base->reflection.flags&0x04000000u)||
+            base->nativeClientClass||base->nativeEngineClass||base->nativeMetadataClass)
+            throw std::runtime_error("Native Input registration requires actual original base UClass metadata");
+    }
+    if(!objectClass->classDescriptor||!subsystem->classDescriptor||subsystem->base!=objectClass||
+        subsystem->cls!=meta||objectClass->sourcePath.empty()||subsystem->classDescriptor->classFlags!=0x112u)
+        throw std::runtime_error("Native Input class registration lacks actual Object/Subsystem superclass authority");
+    const auto configured=QuestVr::EngineConfig::ReadInputClassFile(
+        std::filesystem::path(objectClass->sourcePath).parent_path()/"DeusEx.ini");
+    if(!configured)throw std::runtime_error("Native Input class registration requires its actual configured Input setting");
+    const auto selected=std::find_if(QuestVr::NativeInputClasses.begin(),QuestVr::NativeInputClasses.end(),
+        [&](const auto& entry){return LowerAscii(std::string(entry.path))==LowerAscii(*configured);});
+    if(selected==QuestVr::NativeInputClasses.end())
+        throw std::runtime_error("Configured Input is not an audited native Input/InputExt registration");
+    if(persistentQualifiedObjects.size()>1'000'000u-QuestVr::NativeInputClasses.size()||
+        persistentVmObjects.size()>1'000'000u-QuestVr::NativeInputClasses.size())
+        throw std::runtime_error("Native Input class registration exceeds its object lookup budget");
+    std::optional<std::string> selection{std::string(selected->path)};
+    pendingBirthGarbage=true;
+    GCRoot<RuntimeEngineClassDomain> staged(GC::Alloc<RuntimeEngineClassDomain>());
+    auto* domain=staged.get();domain->classes.reserve(QuestVr::NativeInputClasses.size());
+    auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
+    std::vector<GCRoot<RuntimeObject>> allocations;allocations.reserve(QuestVr::NativeInputClasses.size());
+    for(const auto& entry:QuestVr::NativeInputClasses) {
+        if(IsContextExcludedPath(std::string(entry.path)))
+            throw std::runtime_error("Native Input registration cannot replace a context-excluded source UClass");
+        if(nextVm.count(LowerAscii(std::string(entry.path)))||nextQualified.count(std::string(entry.path)))
+            throw std::runtime_error("Native Input registration collides with an existing actual UObject/UClass");
+        const auto found=nextVm.find(LowerAscii(std::string(entry.base)));
+        if(found==nextVm.end()||!found->second||found->second->cls!=meta||
+            (found->second!=subsystem&&(domain->classes.empty()||found->second!=domain->classes.front())))
+            throw std::runtime_error("Native Input registration lacks its actual canonical registered superclass");
+        allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+            std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
+        auto* cls=allocations.back().get();cls->nativeMetadataClass=&entry;cls->lookupName=NativeRegistrationName(entry);
+        cls->exportIndex=std::numeric_limits<std::size_t>::max();cls->base=found->second;
+        cls->nativeClassWithin=objectClass;cls->cls=meta;cls->outer=RegisteredNativePackage(entry.package);
+        if(!cls->outer)throw std::runtime_error("Native Input registration lacks its actual owning native Package");
+        domain->classes.push_back(cls);
+        if(!nextQualified.emplace(std::string(entry.path),cls).second||!nextVm.emplace(LowerAscii(std::string(entry.path)),cls).second)
+            throw std::runtime_error("Native Input registration identity collision");
+    }
+    const auto metadata=MetadataClassSnapshot(*domain,QuestVr::NativeInputClasses);
+    PortableNativeInputClassesSnapshot result;result.prepared=true;result.classes=metadata.classes;
+    result.configuredInputClass=selection;result.configName=std::string(QuestVr::NativeInputConfigName);
+    auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
+    host.ValidateInputClassRegistrationBudget(*domain,*selection);
+    auto lookup=StageRuntimeLookupObjects(domain->classes);
+    if(lookup)host.ValidateLookupStagingBudget(*lookup,false,NativeInputClassRetainedBytes(*domain,*selection));
+    PublishRuntimeLookupObjects(lookup,domain->classes);
+    persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+    persistentInputClass.swap(selection);persistentInputClasses=std::move(owner);return result;
 }
 
 PortableObjectLookupState ReadPortableRuntimeObjectLookup() {

@@ -10,13 +10,35 @@ Do not call more native-class admissions a finished live interaction fix.
 
 The faithful remaining route is genuine bound player/input/HUD initialization
 (including the reached key-query FExec dependency and post-Possess continuation),
-an explicitly committing startup entry owned by the runtime worker, VR aim/
+an explicitly committing startup entry on the exclusive runtime CPU owner, VR aim/
 equip/Fire and ParseRightClick bridges to that actual JC, and the complete
 clock/distance/actor frame schedule. Publish committed births/deaths/poses/
 colliders through the existing actor-publication path. Verify destruction,
 falling upper crate, collectible loot and save/load in the actual headset.
 Quest currently calls neither the startup probe nor the original dynamic-actor
 phase. Preserve the first-map-only scope; no accounts or character-creation UI.
+
+The current asynchronous workers own initial/map loading only; their futures
+are joined before live frame/UI runtime mutations on the main thread. There is
+no permanent gameplay worker/command queue to reuse. The first bridge can use
+that existing exclusive ownership; introducing a new worker is not an extra
+prerequisite. Reuse the existing actor-publication path for committed births,
+deaths and poses rather than creating another renderer. Route Training doors
+through original Frob/mover state too: the current demo mover motion is not
+the original Location/hash, so mixing visibly open demo doors with original
+weapon traces/physics can leave an invisible blocker. Do not double-step a
+live original world with the separate demo mover clock.
+
+Latest Input-class phase2026-10-27: two real native UClasses and canonical
+configured selection now pass10413 owned checks/38 refusals; config960,
+desktop/Android-native/strict GNU+ARM64 and219 executed/259 registered/40 skips
+CTest pass. Separate owned crate415/5,deferred429/21,animation588/24,FastTrace
+252/0 and production Tick27971/584 before final schema remain passing. All45
+originals/9 compiler inputs unchanged and all jobs terminal. This does not
+provide Input fields/defaults/config/instances or ReadInput. Actual startup/
+doors/two-Fire diagnostics retain their prior precise refusal and full undo;
+no partial player/gameplay or new APK. Next complete native field/default
+contract: ORIGINAL-INPUT-NATIVE-FIELDS.md, then genuine Input/weapon/frame bridge.
 
 Latest2026-10-27: actual local-player native sequence is coordinated and bound:
 Camera ShowFlags0800, fresh Player pre/post, raw delta/checked PlayerInput/
