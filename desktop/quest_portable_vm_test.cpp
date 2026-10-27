@@ -508,7 +508,7 @@ struct TestHost final:Vm::Host {
         if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
             index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
-            index==1270u || index==1272u || index==1486u || index==1483u ||
+            index==1270u || index==1272u || index==1486u || index==1483u || index==1550u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(index==1465u?argument.value:argument.Load());
@@ -4141,24 +4141,25 @@ void TextWindowInputSnapshotContracts() {
             {"b",Value::Byte(91u)},{"a",Value::Byte(203u)}};return result;
     };
     for(const auto index:{std::uint16_t{1476u},std::uint16_t{1572u},std::uint16_t{1573u},
-        std::uint16_t{1270u},std::uint16_t{1272u},std::uint16_t{1486u},std::uint16_t{1483u}})
+        std::uint16_t{1270u},std::uint16_t{1272u},std::uint16_t{1486u},std::uint16_t{1483u},std::uint16_t{1550u}})
         for(const bool declared:{false,true}) {
         TestHost host;
         const bool gcObject=index==1270u||index==1486u;
         const auto zero=index==1476u?color(0u):index==1572u?Value::Float(0.0f):index==1272u?Value::Integer(-1):
-            gcObject?Value::Text(Vm::Kind::Object,{}):Value::Bool(false);
+            gcObject?Value::Text(Vm::Kind::Object,{}):index==1550u?Value::Text(Vm::Kind::String,{}):Value::Bool(false);
         const auto original=index==1476u?color(11u):index==1572u?Value::Float(-0.0f):index==1272u?Value::Integer(17):
-            gcObject?Value::Text(Vm::Kind::Object,"OriginalContext"):Value::Bool(true);
+            gcObject?Value::Text(Vm::Kind::Object,"OriginalContext"):index==1550u?Value::Text(Vm::Kind::String,"Original|nText"):Value::Bool(true);
         const auto replacement=index==1476u?color(99u):index==1572u?Value::Float(99.0f):index==1272u?Value::Integer(99):
-            gcObject?Value::Text(Vm::Kind::Object,"ReplacementContext"):Value::Bool(false);
+            gcObject?Value::Text(Vm::Kind::Object,"ReplacementContext"):index==1550u?Value::Text(Vm::Kind::String,"Replacement"):Value::Bool(false);
         const auto other=index==1476u?color(23u):index==1572u?Value::Float(23.0f):index==1272u?Value::Integer(23):
-            gcObject?Value::Text(Vm::Kind::Object,"OtherContext"):Value::Bool(false);
+            gcObject?Value::Text(Vm::Kind::Object,"OtherContext"):index==1550u?Value::Text(Vm::Kind::String,"Other"):Value::Bool(false);
         const auto layout=index==1476u?Vm::ResultLayout::CoreColor4:Vm::ResultLayout::Unknown;
         auto native=Function(index==1476u?"SetTextColor":index==1572u?"SetTextTimeout":index==1270u?"CopyGC":
-            index==1272u?"PopGC":index==1486u?"ReleaseGC":index==1483u?"EnableTranslucentText":"PauseLog",{},
-            index==1476u||index==1486u||index==1483u?"Extension.Window":index==1270u||index==1272u?"Extension.GC":"Extension.TextLogWindow");
+            index==1272u?"PopGC":index==1486u?"ReleaseGC":index==1483u?"EnableTranslucentText":index==1550u?"SetText":"PauseLog",{},
+            index==1476u||index==1486u||index==1483u?"Extension.Window":index==1270u||index==1272u?"Extension.GC":
+                index==1550u?"Extension.TextWindow":"Extension.TextLogWindow");
         native.flags=0x401u;native.nativeIndex=index;
-        native.variables={{native.path+".Input","Input",zero,index==1483u?0x90u:0x80u,1u,layout}};
+        native.variables={{native.path+".Input","Input",zero,index==1483u?0x90u:index==1550u?0x400880u:0x80u,1u,layout}};
         if(declared) host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
         if(index==1476u) {
             host.suppliedReferenceLayout=layout;

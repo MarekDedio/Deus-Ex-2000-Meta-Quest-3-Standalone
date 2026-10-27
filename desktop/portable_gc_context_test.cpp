@@ -88,7 +88,7 @@ int main(int argc,char** argv) {
             Require(!result.execution.passed()&&!result.execution.committed&&
                 result.execution.error=="Native GC context diagnostic complete; rollback required",
                 "Native GC fixture failed before diagnostic completion: "+result.execution.error);
-            Require(result.contextCases==262u&&result.rawCases==15u&&result.stackCases==9u&&result.windowCases==43u&&result.referenceCases==21u&&result.textCases==3u,
+            Require(result.contextCases==262u&&result.rawCases==15u&&result.stackCases==9u&&result.windowCases==43u&&result.referenceCases==21u&&result.textCases==18u,
                 "Native GC fixture omitted actual context/stack/reference controls");
             Require(result.reusedPushWrites==35u&&result.freshPushWrites>35u&&result.nestedObjects==5u&&
                 !result.firstSavedPath.empty()&&result.firstSavedPath!=result.secondSavedPath,"Native GC saved-node identity/store counts differ");

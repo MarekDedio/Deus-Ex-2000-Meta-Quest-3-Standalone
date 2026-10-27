@@ -221,9 +221,9 @@ int main(int argc,char** argv) {
             " opcode="<<unsigned(pending.execution.opcode)<<" objects="<<pending.objects.size()<<
             " writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDReceivedDisplay.CreateReceivedLabel" && pending.execution.offset==54u &&
-            pending.execution.opcode==102u && pending.execution.error=="Unsupported runtime native 1550" &&
-            pending.execution.writes==14091u && pending.objects.size()==193u &&
+            pending.execution.function=="DeusEx.HUDObjectBelt.SetVisibility" && pending.execution.offset==0u &&
+            pending.execution.opcode==101u && pending.execution.error=="Unsupported runtime native 1413" &&
+            pending.execution.writes==14117u && pending.objects.size()==193u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -672,10 +672,9 @@ int main(int argc,char** argv) {
         // The original Tile callbacks have now returned. Damage, compass,
         // multi-skills and information children completed construction. The
         // Hidden HUDLogDisplay/TextLog sizing now returns through genuine
-        // GetGC/Copy/Pop. Mission-start text and the bark display now finish;
-        // received-item label creation next refuses1550 before outer assignment.
-        // The later Root.hud assignment is still pending.
-        edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
+        // GetGC/Copy/Pop. All HUD controls, including received-item text, now
+        // finish. Root.hud is assigned before UpdateSettings reaches Show1413.
+        edge(rootView,"DeusEx.DeusExRootWindow.hud",hudView.path);
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",beltView.path);
         edge(display,"Extension.Window.parentOwner",rootView.path);edge(display,"Extension.Window.winParent",rootView.path);
@@ -692,7 +691,7 @@ int main(int argc,char** argv) {
         edge(hudView,"DeusEx.DeusExHUD.augDisplay",augmentationDisplay.path);
         edge(hudView,"DeusEx.DeusExHUD.startDisplay",missionStart.path);
         edge(hudView,"DeusEx.DeusExHUD.barkDisplay",barkDisplay.path);
-        edge(hudView,"DeusEx.DeusExHUD.receivedItems",{});
+        edge(hudView,"DeusEx.DeusExHUD.receivedItems",receivedDisplay.path);
         edge(damage,"DeusEx.DamageHUDDisplay.Player",player);
         // Original DamageHUDDisplay.InitWindow PC29..848 assigns each of the
         // seven sIconInfo records, including every authored DamageType[3]
@@ -776,7 +775,7 @@ int main(int argc,char** argv) {
             edge(view,"Extension.Window.winParent",hudView.path);edge(view,"Extension.Window.parentOwner",hudView.path);
             edge(view,"Extension.Window.prevSibling",laterChildren[index-1u]->path);
             edge(view,"Extension.Window.nextSibling",index+1u==laterChildren.size()?std::string{}:laterChildren[index+1u]->path);
-            Require(field(view,"Extension.Window.lockCount").value.integer==(index==8u?1:0) &&
+            Require(field(view,"Extension.Window.lockCount").value.integer==0 &&
                 field(view,"Extension.Window.bIsVisible").value.boolean==(index<3u || index==5u),
                 "Original later HUD NewChild visibility/lock prefix differs");
         }
@@ -835,26 +834,28 @@ int main(int argc,char** argv) {
             if(view==&barkDisplay)edge(tile,"Extension.Window.firstChild",{});
             else {
                 const auto& label=object(field(tile,"Extension.Window.firstChild").value.text);
-                Require(label.classPath=="Extension.TextWindow"&&label.outerPath==tile.path&&
+                const auto receivedLabel=ReadPortableClassDefault("DeusEx.HUDReceivedDisplay","TextReceivedLabel");
+                Require(receivedLabel.kind==Kind::String&&!receivedLabel.text.empty()&&
+                    label.classPath=="Extension.TextWindow"&&label.outerPath==tile.path&&
                     field(label,"Extension.TextWindow.Text").value.kind==Kind::String&&
-                    field(label,"Extension.TextWindow.Text").value.text.empty(),
-                    "Pending1550 label was omitted or its unexecuted Text setter fabricated content");
+                    QuestVr::Vm::Equal(field(label,"Extension.TextWindow.Text").value,receivedLabel),
+                    "Completed received-item label lost the original localized string passed to1550");
                 edge(tile,"Extension.Window.lastChild",label.path);
                 edge(label,"Extension.Window.winParent",tile.path);edge(label,"Extension.Window.parentOwner",tile.path);
             }
         }
         Require(hudView.outerPath==rootView.path && ammoView.outerPath==hudView.path &&
             hitView.outerPath==hudView.path && crossView.outerPath==hudView.path && beltView.outerPath==hudView.path &&
-            !field(hudView,"Extension.Window.bIsVisible").value.boolean &&
+            field(hudView,"Extension.Window.bIsVisible").value.boolean &&
             field(ammoView,"Extension.Window.bIsVisible").value.boolean && field(hitView,"Extension.Window.bIsVisible").value.boolean &&
             field(crossView,"Extension.Window.bIsVisible").value.boolean && field(beltView,"Extension.Window.bIsVisible").value.boolean &&
             !field(hudView,"Extension.Window.bIsSensitive").value.boolean && field(ammoView,"Extension.Window.bIsSensitive").value.boolean &&
-            field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==0 &&
+            field(hudView,"Extension.Window.lockCount").value.integer==0 && field(ammoView,"Extension.Window.lockCount").value.integer==0 &&
             field(hitView,"Extension.Window.lockCount").value.integer==0 && field(crossView,"Extension.Window.lockCount").value.integer==0 &&
             field(beltView,"Extension.Window.lockCount").value.integer==0 && field(activeItems,"Extension.Window.lockCount").value.integer==0 &&
             field(damage,"Extension.Window.lockCount").value.integer==0 &&
             field(activeItems,"Extension.Window.bIsVisible").value.boolean && field(damage,"Extension.Window.bIsVisible").value.boolean,
-            "Original hidden HUD sensitivity or in-flight child lock state was skipped/fabricated");
+            "Completed original HUD below the hidden root lost its visibility, sensitivity or child lock state");
         edge(activeItems,"DeusEx.HUDBaseWindow.Player",player);
         const auto& augsBorder=object(field(activeItems,"DeusEx.HUDActiveItemsDisplay.winAugsContainer").value.text);
         const auto& itemsBorder=object(field(activeItems,"DeusEx.HUDActiveItemsDisplay.winItemsContainer").value.text);
@@ -1547,9 +1548,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDReceivedDisplay.CreateReceivedLabel" &&
-            rootAttempt.offset==54u && rootAttempt.opcode==102u && rootAttempt.writes==14091u &&
-            rootAttempt.error=="Unsupported runtime native 1550" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDObjectBelt.SetVisibility" &&
+            rootAttempt.offset==0u && rootAttempt.opcode==101u && rootAttempt.writes==14117u &&
+            rootAttempt.error=="Unsupported runtime native 1413" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

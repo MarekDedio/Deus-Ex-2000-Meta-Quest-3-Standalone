@@ -58,6 +58,7 @@
 #include "quest_native_window_configure.h"
 #include "quest_native_window_toggle.h"
 #include "quest_native_text_window_setters.h"
+#include "quest_native_text_content.h"
 #include "quest_native_text_log_storage.h"
 #include "quest_native_gc_context.h"
 #include "quest_native_font_metrics.h"
@@ -4090,6 +4091,7 @@ public:
         if(index==1432u) return WindowPositionNative(Object(receiver),arguments,declaration,execution);
         if(index==1475u || index==1476u) return WindowColorNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1483u) return WindowTextTranslucencyNative(Object(receiver),arguments,declaration,execution);
+        if(index==1550u) return NativeTextContentMethod(Object(receiver),arguments,declaration,execution);
         if(index==1556u || index==1557u || index==1558u)
             return TextWindowSetterNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1572u || index==1573u)
@@ -5758,6 +5760,11 @@ public:
             const auto authored=TextWindowSetterDeclaration(index,declaration);
             if(slot>=2u) throw std::runtime_error("Text setter seed exceeds its original two input slots");
             return authored->variables[slot].zero;
+        }
+        if(index==1550u) {
+            RequireNativeTextWindowSetters(Object(receiver));static_cast<void>(NativeTextContentDeclaration(declaration));
+            if(slot)throw std::runtime_error("TextWindow.SetText seed exceeds its one String argument");
+            return Value::Text(Kind::String,{}); // Original wrapper constructs an empty FString.
         }
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
             index!=1454u && index!=1461u && index!=1463u && index!=1464u && index!=1465u && index!=1467u && index!=1477u && index!=1483u && index!=1510u && index!=1511u &&
@@ -7684,6 +7691,7 @@ public:
     }
 #include "portable_window_toggle.inl"
 #include "portable_text_window_setters.inl"
+#include "portable_text_content.inl"
 #include "portable_text_log_window.inl"
 #include "portable_gc_context.inl"
 #include "portable_gc_context_probe.inl"

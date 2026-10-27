@@ -366,7 +366,11 @@
         const auto margins=TextWindowSetterDeclaration(1557u,nullptr);
         static_cast<void>(execution.CallFunction(*margins,text->reflection.objectPath,
             {{Value::Float(0.0f),{}},{Value::Float(0.0f),{}}}));
-        NativeWindowWrite(text,"Extension.TextWindow.Text",Value::Text(Kind::String,"A B"),execution);
+        const auto content=NativeTextContentDeclaration(nullptr);
+        const auto setText=[&](const std::string& input) {
+            return execution.CallFunction(*content,text->reflection.objectPath,{{Value::Text(Kind::String,input),{}}});
+        };
+        static_cast<void>(setText("A B"));
         const auto query=[&](std::uint16_t index,float constraint) {
             const auto function=WindowNativeDeclaration(index,nullptr);
             return execution.CallFunction(*function,text->reflection.objectPath,{{Value::Float(constraint),{}}});
@@ -389,6 +393,52 @@
         expect(boundedHeight.kind==Kind::Float&&boundedHeight.floating==static_cast<float>(2*(space.height+1)),
             "Constrained wrapped native text did not use real space-glyph line bounds");++result.textCases;
         expect(!nativeFontMetrics_.empty(),"Native text query did not retain its admitted current Font metrics");
+        const auto contentGuard=[&](const auto& call) {
+            const auto writes=execution.WriteCount();bool refused{};
+            try{call();}catch(const std::exception&){refused=true;}
+            expect(refused&&execution.WriteCount()==writes,"Text content guard accepted invalid ingress or wrote a prefix");
+        };
+        contentGuard([&]{static_cast<void>(NativeTextContentMethod(root,{},content.get(),execution));});
+        contentGuard([&]{static_cast<void>(NativeTextContentMethod(text,{},content.get(),execution));});
+        contentGuard([&]{static_cast<void>(NativeTextContentMethod(text,{{Value::Integer(1),{}}},content.get(),execution));});
+        auto wrongContent=*content;wrongContent.variables.front().flags=0x80u;
+        contentGuard([&]{static_cast<void>(NativeTextContentMethod(text,
+            {{Value::Text(Kind::String,"bad"),{}}},&wrongContent,execution));});
+        struct ContentCase {const char* input;const char* expected;std::int32_t key;};
+        for(const auto& item:std::array<ContentCase,13u>{
+            ContentCase{"Alpha|nBeta","Alpha\nBeta",0},ContentCase{"ALPHA|nBETA","Alpha\nBeta",0},
+            ContentCase{"one |&K two |&Z","one |&K two |&Z",75},ContentCase{"one |&K two |&Z","one |&K two |&Z",75},
+            ContentCase{"none","none",0},ContentCase{"||&A","||&A",0},ContentCase{"||n","||n",0},
+            ContentCase{"|N","|N",0},ContentCase{"|&\xc3\xbe","|&\xc3\xbe",254},
+            ContentCase{"|&\xc3\xbf","|&\xc3\xbf",0},ContentCase{"\xce\xa9|n\xe4\xb8\xad","\xce\xa9\n\xe4\xb8\xad",0},
+            ContentCase{"ends|","ends|",0},ContentCase{"","",0}}) {
+            const auto previousText=Read(text,DescribeProperty("Extension.TextWindow.Text"),0u);
+            const auto currentKey=Read(text,DescribeProperty("Extension.Window.acceleratorKey"),0u);
+            const auto dirty=Read(root,DescribeProperty("Extension.ModalWindow.bDirtyAccelerators"),0u);
+            before=execution.WriteCount();static_cast<void>(setText(item.input));
+            const auto actual=Read(text,DescribeProperty("Extension.TextWindow.Text"),0u);
+            const bool changed=actual.text!=previousText.text;
+            expect(actual.kind==Kind::String&&actual.text==item.expected&&
+                Read(text,DescribeProperty("Extension.Window.acceleratorKey"),0u).integer==item.key,
+                "Authentic SetText changed string conversion/case retention/first accelerator key");
+            const auto expectedWrites=changed?(currentKey.integer!=item.key?5u:4u):0u;
+            expect(execution.WriteCount()-before==expectedWrites,
+                "Authentic SetText changed text/key/dirty/layout store sequence");
+            if(!changed)expect(NativeGcProbeSameValue(Read(root,DescribeProperty("Extension.ModalWindow.bDirtyAccelerators"),0u),dirty),
+                "Equal SetText dirtied the actual modal");
+            ++result.textCases;
+        }
+        NativeWindowWrite(text,"Extension.TextWindow.bTextIsAccelerator",Value::Bool(false),execution);
+        NativeWindowWrite(text,"Extension.Window.acceleratorKey",Value::Integer(91),execution);
+        before=execution.WriteCount();static_cast<void>(setText("|&Q"));
+        expect(execution.WriteCount()==before+3u&&Read(text,DescribeProperty("Extension.Window.acceleratorKey"),0u).integer==91,
+            "Disabled native text accelerator rewrote its key or omitted genuine layout");++result.textCases;
+        // A NoWrite argument Steps into the wrapper's genuine empty FString.
+        Evaluation noText{Value::Text(Kind::String,"must not survive"),{}};
+        noText.disposition=QuestVr::Vm::ResultDisposition::NoWrite;
+        static_cast<void>(execution.CallFunction(*content,text->reflection.objectPath,{noText}));
+        expect(Read(text,DescribeProperty("Extension.TextWindow.Text"),0u).text.empty(),
+            "NoWrite SetText retained a stale String instead of its empty native temporary");++result.textCases;
         if(mode==PortableGcContextProbeMode::LateFailure)
             throw std::runtime_error("Native GC context diagnostic forced late failure");
         throw std::runtime_error("Native GC context diagnostic complete; rollback required");

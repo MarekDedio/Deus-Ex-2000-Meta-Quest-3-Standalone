@@ -1,5 +1,20 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-27: original TextWindow.SetText1550 now handles genuine copied
+FString inputs, UTF16 conversion/case equality, private content, accelerator
+key/modal dirtiness and layout in the caller's root. Policy886077/34,VM696529/
+922,owned GC155/16 with18 text cases and HUD9679 pass. The193-object HUD
+finishes control creation and Root.hud assignment before the actual next
+Show1413 boundary at HUDObjectBelt.SetVisibility PC0/14117 writes. Two-Fire
+repeat2 reaches254688/30914, retaining two attack notifies/four traces/two
+crate changes/nine births/full undo; doors retain both56-unit moves and precise
+ReadInput refusal. Desktop/Android-native/strict ARM64 pass; CTest225 executed/
+269 registered/44 skips/zero failures165.61s. All eight rebuilt owned first-map
+regressions and45-original/23-input fingerprint audits pass; all jobs terminal.
+No budget, save format or accepted VR layout change. Next:Show1413/remaining
+genuine startup, then the live bridge below. No new APK or completed live
+crate/loot/gravity claim. See ORIGINAL-TEXT-CONTENT.md.
+
 Latest2026-10-27: original Window.EnableTranslucentText1483 is implemented with
 the exact optional-true/equality/Window/drawing-GC protocol and no layout effect.
 The full193-object HUD prefix is captured within the unchanged4MiB limit after

@@ -1,5 +1,32 @@
 # Port status
 
+## Latest: original TextWindow content/accelerators (2026-10-27)
+
+TextWindow.SetText1550 now executes its actual required String packet, copied
+empty-FString input, UTF16 |n/bar conversion, case-insensitive no-op, private
+Text replacement, first |& accelerator/key/modal-dirty stores and layout order.
+Audited Text/TextLog/Button/Toggle virtuals use the original base method; separate
+native overrides remain explicit. Scoped conversion/encoding ownership shares
+the existing root budgets and journal. No limits, save formats or accepted VR
+HUD layout were changed; no commercial original code was executed.
+
+The expanded setter policy passes886077 checks/34 refusals, VM696529/922,
+owned GC155/16 with18 text cases and owned HUD9679 pass. All193 HUD objects
+are captured within the unchanged4MiB cap. Received-item text now initializes
+and Root.hud is assigned; the next actual boundary is HUDObjectBelt.SetVisibility
+PC0/native1413 at14117 writes. Two-Fire repeat2 reaches that later Show call at
+254688 instructions/30914 writes, preserving two notifies/four traces/two crate
+changes/nine births/full undo. Doors retain both56-unit moves and exact ReadInput
+refusal. These are still rollback-only diagnostics, not live gameplay.
+
+Full desktop build,current Android-native link and strict ARM64 pass. CTest:
+269 registered,225 executed,44 explicit skips,zero failures165.61s. All eight
+rebuilt owned first-Training regressions pass. All45 originals/23 frozen compiler
+inputs match length/mtime/SHA256; all jobs are terminal. No new APK. Next:the
+actually reached original Show1413, remaining input/startup services, then the
+committing VR weapon/frame/publication bridge. First Training only; no account/
+character-creation UI or other-map integration. See ORIGINAL-TEXT-CONTENT.md.
+
 ## Latest: original text translucency and longer HUD initialization (2026-10-27)
 
 Window.EnableTranslucentText1483 now follows the original optional-true argument,
