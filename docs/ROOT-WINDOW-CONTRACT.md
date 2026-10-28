@@ -1,5 +1,13 @@
 # Original native root-window bridge (2026-10-14)
 
+Current continuation2026-10-28: original script InitWindow and the initial
+first-Training native activation/visible-layout path now complete at16025
+writes. The198-object pre-activation graph remains independently captured.
+See ORIGINAL-WINDOW-ACTIVATION.md for current implementation, verification
+and explicit remaining branches. The dated implementation history below is
+not the current first unsupported call. WindowReady is still separate PreRender
+work; bound startup also requires actual FExec/config and initialized Input.
+
 This is a required player/UI prerequisite, not completed HUD or possession.
 All original DLL inspection was static/read-only; no original executable or
 DLL was run. Commercial classes/textures stay in the owned installation.

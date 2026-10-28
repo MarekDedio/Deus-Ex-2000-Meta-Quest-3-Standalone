@@ -1,5 +1,25 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-28:original unbound InitRootWindow completes script AND initial
+native activation/layout at16025 writes,within unchanged budgets. Owned HUD
+11225 verifies198 objects/65 Windows,17 visible-uninitialized nodes matching
+root.initCount17,no premature initialized bits,no retained locks and full undo.
+Native ResizeChild1462 and audited configuration overrides now participate in
+real visible reconfiguration. Pure activation145/23,GC155/16,metadata13896/125
+and all eight owned first-map regressions pass;desktop/Android-native/strict
+ARM64 pass. Final CTest226 executed/270 registered/44 explicit skips/zero failures
+88.66s. Accepted VR layout/save format/budgets are unchanged.
+All45 originals/618 frozen compiler inputs match length/UTCmtime/SHA256;all
+jobs terminal.
+
+Two-Fire repeat2 remains271677/32553 with real SET InputExt T Talk FExec refusal,
+two notifies/four traces/two crate changes/nine births/full undo. Doors retain
+both56-unit moves and exact unprepared ReadInput refusal. Next:actual app-owned
+transactional config/FExec,initialized Input/PreRender,then the LIVE VR bridge
+below. No new APK or live crate/loot/gravity completion;no other-map integration
+or account UI. See ORIGINAL-WINDOW-ACTIVATION.md for supported activation and
+explicit remaining native branches.
+
 Latest2026-10-27:original GetEnum native0 now uses authenticated declaration-
 specific None/INT0 input copies,actual current Class/immutable Enum data and
 signed Name/None lookup. Metadata13896/125 (1128 queries/159 enums),VM701113/1024,

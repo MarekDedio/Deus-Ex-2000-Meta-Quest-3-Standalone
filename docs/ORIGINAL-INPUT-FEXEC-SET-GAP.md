@@ -79,3 +79,36 @@ separate required services; preserve original Init/Possess/Reset order. Their
 current contracts are in ORIGINAL-ROOT-ACTIVATION-GAP.md and
 ORIGINAL-TRAINING-CONFIGURED-INPUT-GAP.md. Immediate integration remains first
 Training; no account/character-creation UI or other-map integration is needed.
+
+## Follow-up implementation audit (2026-10-28)
+
+Read-only review identifies these additional concrete backend constraints; none
+is implemented by the root-activation batch:
+
+- OrderedIni currently exposes immutable entries. A controlled copy-on-write
+  SetString/export must retain ordering and duplicates, not rebuild from Scalar
+  lookups. The explicit static Editor-profile implementation1021BF90..1021C2A3
+  updates the newest matching duplicate, retains earlier entries and ignores
+  case-only value changes through appStricmp. Its serializer1021A770 emits raw
+  section/key/value CRLF records without JSON escaping. This profile is not
+  proof of the packed retail launcher's config-factory binding.
+- VM Touch/Before does not capture nativeInputInstance payloads, prepared native
+  defaults, the domain config document or staged persistence generations. Add
+  dedicated bounded first-touch beforeimages and allocation-free restoration
+  before provisional objects are retired. Count both retained old state and
+  new/staged serialization bytes in the shared state budget.
+- Input schema passes==3 and InputExt constructor configReloads==2/configPasses==4
+  are bootstrap evidence. Do not increment them as running SET counters and
+  invalidate all existing schema/snapshot checks; use separate mutation/flush
+  revisions and local per-reload invocation statistics.
+- PublishSaveBundleFileAtomically's bool is not a transactional config decision:
+  on POSIX, rename may publish successfully before directory fsync/close fails.
+  Distinguish NotPublished, PublishedDurabilityUnknown and Durable, and finish
+  memory commit without throwing once publication occurred. Do not roll old
+  memory back over a newly published file. Rollback-only probes never stage or
+  publish configuration at all.
+
+Bind a canonical port-owned writable directory separately from the immutable
+seed, rejecting unsafe links or equivalence to original files. Preserve genuine
+live-instance -> target CDO -> export all Config fields -> flush -> ancestor-CDO
+reload ordering; a one-binding mutation is not this service.

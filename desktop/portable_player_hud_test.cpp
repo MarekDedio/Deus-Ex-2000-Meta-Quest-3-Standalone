@@ -3,6 +3,7 @@
 #include "portable_engine_collision.h"
 #include "portable_object_lookup.h"
 #include "portable_unreal_runtime.h"
+#include "portable_root_window_activation_probe.h"
 #include "portable_model_geometry.h"
 #include "quest_script_state.h"
 #include "quest_save_bundle.h"
@@ -221,11 +222,10 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " opcode="<<unsigned(pending.execution.opcode)<<" objects="<<pending.objects.size()<<
             " writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
-        Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.DeusExRootWindow.InitWindow" && pending.execution.offset==196u &&
-            pending.execution.opcode==11u && pending.execution.error=="RootWindow native SetVisibility/init-tree/reconfiguration is not implemented" &&
-            pending.execution.writes==15491u && pending.objects.size()==198u &&
-            pending.execution.callStack==std::vector<std::string>{"Extension.PlayerPawnExt.InitRootWindow"} &&
+        Require(pending.execution.status==QuestVr::Vm::Status::Unsupported && !pending.execution.committed && pending.inspectionError.empty() &&
+            pending.execution.function.empty() && pending.execution.offset==0u && pending.execution.opcode==0u &&
+            pending.execution.error=="Non-publishing native root initialization probe completed; rollback required" &&
+            pending.execution.writes==16025u && pending.objects.size()==198u && pending.execution.callStack.empty() &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -1595,15 +1595,63 @@ int main(int argc,char** argv) {
         }
         std::cout<<"ORIGINAL native1611 controls: equality no-op, typed appearance, registered Radio replacement/one-check, "
             "reentrant empty HUD slot, initialized-false no-result, malformed ingress and late whole-root rollback\n";
-        const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
+        const auto activation=ProbePortableRootWindowActivation(player);
+        const auto& rootAttempt=activation.execution;
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" writes="<<rootAttempt.writes<<" "<<rootAttempt.error<<std::endl;
         for(const auto& frame:rootAttempt.callStack)std::cout<<"ORIGINAL root boundary active frame: "<<frame<<'\n';
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DeusExRootWindow.InitWindow" &&
-            rootAttempt.offset==196u && rootAttempt.opcode==11u && rootAttempt.writes==15491u &&
-            rootAttempt.error=="RootWindow native SetVisibility/init-tree/reconfiguration is not implemented" &&
-            rootAttempt.callStack==std::vector<std::string>{"Extension.PlayerPawnExt.InitRootWindow"},
-            "Native1052 did not complete original script InitWindow before its genuine activation boundary");
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function==pending.execution.function &&
+            rootAttempt.offset==pending.execution.offset && rootAttempt.opcode==pending.execution.opcode && rootAttempt.writes==pending.execution.writes &&
+            rootAttempt.error==pending.execution.error && rootAttempt.callStack==pending.execution.callStack,
+            "Native1052 did not complete original script InitWindow AND native activation before diagnostic rollback");
+        Require(activation.inspectionError.empty() && activation.pawnRootPath==pending.pawnRootPath &&
+            activation.rootedWindows==pending.rootedWindows && activation.objects.size()==198u,
+            "Native activation did not retain its actual complete rooted graph for inspection");
+        const auto activatedObject=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
+            const auto found=std::find_if(activation.objects.begin(),activation.objects.end(),
+                [&](const auto& view){return view.path==path;});
+            Require(found!=activation.objects.end(),"Activated root references an uncaptured Window");return *found;
+        };
+        const auto activatedField=[&](const PortableNativeWindowObjectSnapshot& view,const char* name)->const Value& {
+            const auto found=std::find_if(view.fields.begin(),view.fields.end(),
+                [&](const auto& entry){return entry.declaration==name && entry.arrayIndex==0u;});
+            Require(found!=view.fields.end(),"Activated Window lacks its original captured field");return found->value;
+        };
+        std::size_t visibleUninitialized{},windowCount{};
+        for(const auto& view:activation.objects) {
+            const auto flag=std::find_if(view.fields.begin(),view.fields.end(),[](const auto& entry) {
+                return entry.declaration=="Extension.Window.bIsVisible";
+            });
+            if(flag==view.fields.end()) continue; // Actual GC objects are not Windows.
+            ++windowCount;
+            const auto& initialized=activatedField(view,"Extension.Window.bIsInitialized");
+            Require(initialized.kind==Kind::Bool && !initialized.boolean,
+                "Activation fabricated WindowReady or an initialized-bit store before PreRender");
+            bool visible=true;const auto* current=&view;std::size_t depth{};
+            while(current) {
+                Require(++depth<=activation.objects.size(),"Activated visibility ancestry cycles");
+                const auto& local=activatedField(*current,"Extension.Window.bIsVisible");
+                Require(local.kind==Kind::Bool,"Activated visibility is not typed Bool storage");
+                if(!local.boolean) {visible=false;break;}
+                const auto& parent=activatedField(*current,"Extension.Window.winParent");
+                Require(parent.kind==Kind::Object,"Activated parent is not typed Object storage");
+                current=parent.text.empty()?nullptr:&activatedObject(parent.text);
+            }
+            if(visible) ++visibleUninitialized;
+            const auto& lock=activatedField(view,"Extension.Window.lockCount");
+            Require(lock.kind==Kind::Int && lock.integer==0,"Activation retained a native configuration lock");
+        }
+        const auto& activatedRoot=activatedObject(activation.pawnRootPath);
+        Require(windowCount==65u && visibleUninitialized>0u &&
+            activatedField(activatedRoot,"Extension.Window.bIsVisible").boolean &&
+            !activatedField(activatedRoot,"Extension.Window.bNeedsReconfigure").boolean &&
+            activatedField(activatedRoot,"Extension.RootWindow.initCount").kind==Kind::Int &&
+            activatedField(activatedRoot,"Extension.RootWindow.initCount").integer==static_cast<std::int32_t>(visibleUninitialized) &&
+            activatedField(activatedRoot,"Extension.ModalWindow.bDirtyAccelerators").boolean,
+            "Activated root visibility/layout/init count/modal dirtiness differs from its actual visible tree");
+        std::cout<<"ORIGINAL native activation: windows="<<windowCount<<" visible-uninitialized="<<visibleUninitialized<<
+            " initCount="<<activatedField(activatedRoot,"Extension.RootWindow.initCount").integer<<
+            "; every initialized bit false until actual PreRender; every configuration lock released\n";
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
         Require(windowsAfter.objects==0u && windowsAfter.roots==0u &&
             windowsAfter.configuredRootNameCounter==windowBaseline.configuredRootNameCounter &&
@@ -1613,7 +1661,7 @@ int main(int argc,char** argv) {
             GetPortableRuntimeWorldRevision()==windowRevision && GetPortableRuntimeMapActors(true).size()==count &&
             SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
             "Root callback failure retained native roots/GC objects/names/player edges or map/save changes");
-        const auto repeatedRoot=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
+        const auto repeatedRoot=ProbePortableRootWindowActivation(player).execution;
         Require(repeatedRoot.status==rootAttempt.status && repeatedRoot.function==rootAttempt.function &&
             repeatedRoot.offset==rootAttempt.offset && repeatedRoot.opcode==rootAttempt.opcode &&
             repeatedRoot.error==rootAttempt.error && repeatedRoot.callStack==rootAttempt.callStack,

@@ -1482,3 +1482,13 @@ add_test(NAME quest_native_font_metrics_original COMMAND quest_native_font_metri
 set_tests_properties(quest_native_font_metrics_original PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME portable_gc_context COMMAND portable_gc_context_test)
 set_tests_properties(portable_gc_context PROPERTIES SKIP_RETURN_CODE 77)
+
+# SetChildVisibility ordering only; explicit mock tree/layout providers.
+add_executable(quest_native_window_activation_test quest_native_window_activation_test.cpp)
+target_compile_features(quest_native_window_activation_test PRIVATE cxx_std_20)
+target_include_directories(quest_native_window_activation_test PRIVATE "${PORT_NATIVE}")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_native_window_activation_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_native_window_activation_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_native_window_activation COMMAND quest_native_window_activation_test)

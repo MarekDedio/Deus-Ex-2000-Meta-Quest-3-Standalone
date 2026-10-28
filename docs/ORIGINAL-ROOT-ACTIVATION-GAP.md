@@ -1,5 +1,12 @@
 # Original root activation and input continuation
 
+Update2026-10-28: the initial first-Training native activation and visible-layout
+path below is implemented; the original unbound InitRootWindow completes at
+16025 writes within unchanged budgets. See ORIGINAL-WINDOW-ACTIVATION.md for
+implementation/verification and explicit unsupported branches. WindowReady in
+PreRender, initialized Input and FExec/config persistence remain distinct gaps.
+The2026-10-27 text below records the prior static implementation contract.
+
 2026-10-27 static/read-only audit. This is an implementation contract, not a
 claim that visible original roots, input, live physics or an APK are finished.
 No original commercial DLL/EXE code was loaded or executed. Current compiler

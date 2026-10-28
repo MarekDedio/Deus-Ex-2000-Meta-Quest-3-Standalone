@@ -56,6 +56,7 @@
 #include "quest_native_window_clip.h"
 #include "quest_native_window_resize.h"
 #include "quest_native_window_configure.h"
+#include "quest_native_window_activation.h"
 #include "quest_native_window_toggle.h"
 #include "quest_native_text_window_setters.h"
 #include "quest_native_text_content.h"
@@ -4084,6 +4085,14 @@ public:
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
         if(index==1460u) return WindowAskParentForReconfigureNative(Object(receiver),arguments,declaration,execution);
+        if(index==1462u) {
+            auto* window=Object(receiver);RequireNativeWindow(window);
+            static_cast<void>(WindowNativeDeclaration(1462u,declaration));
+            if(!arguments.empty()) throw std::runtime_error("ResizeChild takes no arguments");
+            // exec10053050 consumes EndFunctionParms, then1004eab0. The
+            // internal implementation already preserves query/lock/clip order.
+            ResizeNativeWindowChild(window,execution);return {};
+        }
         if(index==1413u) return WindowShowNative(Object(receiver),arguments,declaration,execution);
         if(index==1463u || index==1464u)
             return WindowPreferredAxisNative(index,Object(receiver),arguments,declaration,execution);
@@ -4347,6 +4356,7 @@ public:
             for(const auto* name:{"newX","newY","newWidth","NewHeight"})
                 parameters.push_back({name,Kind::Float,0x80u,"FloatProperty",""});
             break;
+        case 1462u:path="Extension.Window.ResizeChild";break;
         case 1438u:path="Extension.Window.SetWindowAlignments";
             parameters={{"HAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EHAlign"},
                 {"VAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EVAlign"}};
@@ -6213,11 +6223,7 @@ public:
         RequireNativeWindow(window);NativeWindowResizeOperations operations{*this,window,execution};
         QuestVr::ResizeNativeWindowChild(operations);
     }
-    void NativeWindowConfigurationChanged(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
-        const auto native=NativeWindowAncestor(window->cls);
-        if(native!="extension.window" && native!="extension.textwindow" &&
-            native!="extension.buttonwindow" && native!="extension.togglewindow")
-            throw std::runtime_error("Native ConfigurationChanged virtual override is not implemented: "+native);
+    void InvokeNativeWindowConfigurationScript(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         // XWindow10003600 uses optional most-derived ProcessScript, without a
         // packet. Native Radio/Tile/Root have distinct overrides, not this call.
         if(const auto identity=OptionalNativeWindowEvent(window,"ConfigurationChanged")) {
@@ -6229,6 +6235,16 @@ public:
                     throw std::runtime_error("Native window ConfigurationChanged has an unexpected parameter");
             static_cast<void>(execution.CallFunction(*callback,window->reflection.objectPath,{}));
         }
+    }
+#include "portable_window_configuration.inl"
+    void NativeWindowConfigurationChanged(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        if(ConfigureNativeWindowOverride(window,execution)) return;
+        const auto native=NativeWindowAncestor(window->cls);
+        if(native!="extension.window" && native!="extension.textwindow" &&
+            native!="extension.buttonwindow" && native!="extension.togglewindow")
+            throw std::runtime_error("Native ConfigurationChanged virtual override is not implemented: "+native);
+        InvokeNativeWindowConfigurationScript(window,execution);
     }
     void ChangeNativeWindowConfiguration(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         //10050f90 has TWO live sibling walks. The script can add/reorder or
@@ -7023,8 +7039,44 @@ public:
             if(parent.kind!=Kind::Object) throw std::runtime_error("Native window parent is not an Object");
             current=parent.text.empty()?nullptr:Object(parent.text);
         }
-        throw std::runtime_error("Visible native Window reconfiguration is not implemented");
+        if(nativeReconfigureDepth_>=128u)
+            throw std::runtime_error("Native visible reconfiguration exceeds its recursion bound");
+        struct RequestScope {
+            PortableActorVmHost& host;RuntimeObject* previous;std::size_t depth;
+            ~RequestScope() {host.nativeConfiguringWindow_=previous;host.nativeReconfigureDepth_=depth;}
+        };
+        RequestScope scope{*this,nativeConfiguringWindow_,nativeReconfigureDepth_};++nativeReconfigureDepth_;
+        if(auto* parent=WindowLink(window,"winParent")) {
+            bool accepted{};
+            {
+                RequestScope callback{*this,nativeConfiguringWindow_,nativeReconfigureDepth_};
+                nativeConfiguringWindow_=parent;
+                accepted=NativeChildRequestedReconfiguration(parent,window,execution);
+            }
+            if(!accepted) {
+                // Read the parent again: the callback may have reparented Self.
+                auto* current=WindowLink(window,"winParent");
+                if(!current) throw std::runtime_error("Native reconfiguration callback detached its requester");
+                AskHiddenWindowForReconfigure(current,execution);
+            }
+            auto* current=WindowLink(window,"winParent");
+            if(!current) throw std::runtime_error("Native reconfiguration propagation detached its requester");
+            nativeConfiguringWindow_=current;
+            if(NativeWindowBool(window,"bNeedsReconfigure")) ResizeNativeWindowChild(window,execution);
+        } else {
+            //1004e1c4 clears the flag BEFORE entering the virtual callback.
+            NativeWindowWrite(window,"Extension.Window.bNeedsReconfigure",Value::Bool(false),execution);
+            if(nativeConfigurationDepth_>=128u)
+                throw std::runtime_error("Native root configuration callback depth exceeds its bound");
+            struct ConfigurationScope {
+                PortableActorVmHost& host;std::size_t before;
+                ~ConfigurationScope() {host.nativeConfigurationDepth_=before;}
+            } configuration{*this,nativeConfigurationDepth_};
+            ++nativeConfigurationDepth_;nativeConfiguringWindow_=window;
+            NativeWindowConfigurationChanged(window,execution);
+        }
     }
+#include "portable_window_activation.inl"
     Evaluation WindowAskParentForReconfigureNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
         const Function* declaration,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);static_cast<void>(WindowNativeDeclaration(1460u,declaration));
@@ -7287,15 +7339,8 @@ public:
     }
     void SetHiddenChildVisibilityDirect(RuntimeObject* window,const bool visible,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
-        const auto local=Read(window,DescribeProperty("Extension.Window.bIsVisible"),0u);
-        if(local.kind!=Kind::Bool) throw std::runtime_error("Native child visibility is not Bool");
-        if(local.boolean==visible) return;
-        const auto before=WindowEffectiveVisibility(window);
-        NativeWindowWrite(window,"Extension.Window.bIsVisible",Value::Bool(visible),execution);
-        if(before!=WindowEffectiveVisibility(window))
-            throw std::runtime_error("Effective native Window visibility/init/focus/layout is not implemented");
-        // SetChildVisibility1004ee20 returns immediately when effective state
-        // is unchanged. Reconfiguration on a TabGroup hide is its caller's job.
+        NativeWindowVisibilityOperations operations{*this,window,execution};
+        QuestVr::SetNativeWindowChildVisibility(operations,visible);
     }
     void SetHiddenChildVisibility(RuntimeObject* window,const bool visible,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
@@ -7905,8 +7950,8 @@ public:
             NativeWindowWrite(object,planeKey.c_str(),plane,execution);
         }
     }
-    // Shared native constructor only. Production still resolves its configured
-    // class, calls its original InitWindow and refuses unfinished visibility.
+    // Shared native constructor. Production resolves the configured class and
+    // subsequently runs its original InitWindow and native activation.
     RuntimeObject* ConstructNativeRootWindow(RuntimeObject* pawn,RuntimeObject* cls,
         QuestVr::Vm::Execution& execution) {
         const auto pawnField=DescribeProperty("Extension.PlayerPawnExt.RootWindow");
@@ -7974,10 +8019,12 @@ public:
         const auto init=Member(root,"InitWindow");
         if(!init) throw std::runtime_error("Native root FindFunctionChecked InitWindow is unavailable");
         static_cast<void>(execution.CallFunction(*init,root->reflection.objectPath,{}));
-        // SetVisibility invokes original VisibilityChanged, init-tree and
-        // reconfiguration/focus/native destruction. Do not replace it with a
-        // successful Bool write while those contracts remain unimplemented.
-        throw std::runtime_error("RootWindow native SetVisibility/init-tree/reconfiguration is not implemented");
+        if(nativeRootScriptReturnObserver_) nativeRootScriptReturnObserver_();
+        SetHiddenChildVisibility(root,true,execution);
+        return {}; // WindowReady remains the later Root.PreRender phase.
+    }
+    void ObserveNativeRootScriptReturn(std::function<void()> observer) {
+        nativeRootScriptReturnObserver_=std::move(observer);
     }
 #include "portable_conversation_bind.inl"
 #include "portable_dump_location.inl"
@@ -9645,8 +9692,9 @@ private:
     // Original Extension global layout-call bookkeeping is transient, scoped
     // to this VM host. Exception guards restore it; UObject writes journal in
     // the outer transaction. It is never persisted as guessed script fields.
-    std::size_t nativeConfigureChildDepth_{},nativeConfigurationDepth_{},nativeTileSizeDepth_{};
+    std::size_t nativeConfigureChildDepth_{},nativeConfigurationDepth_{},nativeTileSizeDepth_{},nativeReconfigureDepth_{};
     RuntimeObject* nativeConfiguringWindow_{};
+    std::function<void()> nativeRootScriptReturnObserver_;
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
 
@@ -14520,8 +14568,8 @@ PortableNativeWindowSummary ReadPortableRuntimeNativeWindowSummary() {
     return result;
 }
 
-PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
-    const std::string& playerActorPath,const QuestVr::Vm::Limits& limits) {
+static PortableRootWindowProbeResult ProbeNativeRootWindow(
+    const std::string& playerActorPath,const QuestVr::Vm::Limits& limits,bool captureActivation) {
     CollectBirthGarbageAtBoundary collect;
     PortableRootWindowProbeResult result;
     try {
@@ -14762,20 +14810,31 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                 result.objects.push_back(std::move(view));
             }
         };
+        bool captured{};
+        if(!captureActivation) host.ObserveNativeRootScriptReturn([&] {capture();captured=true;});
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution)->QuestVr::Vm::Value {
             const auto init=host.Member(pawn,"Extension.PlayerPawnExt.InitRootWindow");
             try { static_cast<void>(execution.CallFunction(*init,pawn->reflection.objectPath,{})); }
             catch(...) {
-                try {capture();} catch(const std::exception& error) {result.inspectionError=error.what();}
+                try {if(!captured) capture();} catch(const std::exception& error) {result.inspectionError=error.what();}
                 throw; // Keep the original first poisoned callback failure.
             }
-            capture();
+            if(!captured) capture();
             throw std::runtime_error("Non-publishing native root initialization probe completed; rollback required");
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
     }
     return result;
+}
+
+PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
+    const std::string& playerActorPath,const QuestVr::Vm::Limits& limits) {
+    return ProbeNativeRootWindow(playerActorPath,limits,false);
+}
+PortableRootWindowProbeResult ProbePortableRootWindowActivation(
+    const std::string& playerActorPath,const QuestVr::Vm::Limits& limits) {
+    return ProbeNativeRootWindow(playerActorPath,limits,true);
 }
 
 PortableTextLogProbeResult ProbePortableNativeTextLogWindow(const std::string& playerActorPath,

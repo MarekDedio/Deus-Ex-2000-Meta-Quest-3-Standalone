@@ -1,5 +1,34 @@
 # Port status
 
+## Latest: original first-Training root activation/layout (2026-10-28)
+
+Original InitRootWindow now completes both script initialization and native
+activation at16025 writes within the unchanged default allowance. Effective
+visibility drives real init-count updates, callback/sound ordering, visible
+reconfiguration and final modal accelerator dirtiness; native ResizeChild1462
+now binds to the existing original resize/query/configure/clip implementation.
+Audited Root/TabGroup/Modal,Radio,Tile and TextLog configuration overrides are
+implemented without forcing constructor flags or fabricating WindowReady.
+
+Owned HUD11225 checks pass with two independent198-object snapshots:65 Windows,
+root visible/layout dirtiness cleared,17 visible-uninitialized nodes matching
+initCount17,all initialized bits still false until actual PreRender,and no
+retained locks. Full rollback/repeat/write-budget controls pass. Pure activation
+policy145/23,owned GC155/16,metadata13896/125 and all eight rebuilt owned first-
+Training regressions pass. Desktop/Android-native/strict ARM64 pass;final CTest
+226 executed/270 registered/44 explicit skips/zero failures88.66s.
+All45 originals/618 frozen compiler inputs match length/UTCmtime/SHA256;all
+jobs terminal. Discovery failures are not counted as passing runs.
+
+Bound original two-Fire repeat2 remains at271677/32553 and the actual FExec SET
+InputExt T Talk refusal;door repeat2 retains both56-unit moves and exact missing
+ReadInput service. These remain rollback-only diagnostics,not live crates.
+Next:app-owned transactional config/FExec,initialized Input and actual PreRender,
+then the committing VR equip/weapon/frame/publication bridge. Nonnull focus/grab,
+parented Modal handling,visibility audio and deferred destruction still refuse
+honestly. No new APK,other-map integration,account UI or accepted VR-layout change.
+See ORIGINAL-WINDOW-ACTIVATION.md and ORIGINAL-INPUT-FEXEC-SET-GAP.md.
+
 ## Latest: original Core.GetEnum and completed root script callback (2026-10-27)
 
 Declaration-specific native0 GetEnum now copies None/INT0 inputs once,authenticates
