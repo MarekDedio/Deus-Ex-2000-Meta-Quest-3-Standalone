@@ -1,10 +1,10 @@
 # Original viewport Console construction and Init
 
-Read-only/static audit2026-10-28. This contract is NOT implemented by the
-current Canvas batch and does not prove successful original startup, a working
+Original static contract and verified constructor/Init implementation2026-10-28.
+This does not prove successful original startup, a working
 Console/FExec provider, platform OpenWindow or initialized Input. No original
-commercial DLL or EXE was loaded or executed. Source/compiler inputs stayed
-frozen during this audit; only this documentation file was added.
+commercial DLL or EXE is loaded or executed. All compiler inputs remain frozen
+through each build/test phase; the original static audit used documentation only.
 
 ## Configuration, class identity and construction order
 
@@ -31,12 +31,17 @@ do not replace the requested flags by a fabricated persistent object header.
 
 Construction returns an actual non-Actor UObject. GameEngine stores it in
 viewport+34 at10389702, then calls its virtual+54 Init(actual viewport) at
-10389705..0A. Only AFTER Console.Init does GameEngine call platform OpenWindow
-at1038972F, followed by Input.Init at1038975F..65. Viewport's earlier native
+10389705..0A. AFTER Console.Init, actual Level.SpawnPlayActor runs at1038972F,
+then Input.Init at1038975F..65, then viewport.OpenWindow at10389776. Viewport's earlier native
 constructor already constructed/initialized configured Canvas and constructed
 configured Input, in that order; see ORIGINAL-VIEWPORT-CANVAS.md. Console setup
 must not silently run OpenWindow, set RenDev, reset/poll Input or bypass these
-actual phase boundaries.
+actual phase boundaries. The earlier audit misidentified1038972F as OpenWindow:
+it calls virtual+A8 on GameEngine+68's actual Level. ULevel's UObject vtable
+10428AFC+A8 contains1030209A, the SpawnPlayActor export thunk to10396BD0.
+The real later OpenWindow is viewport virtual+74, after successful player spawn
+and Input.Init, not a prerequisite for ResetInput. See the retained read-only
+disassembly in artifacts/console-startup-order-static-20261028.log.
 
 ## Native constructor preserves copied data
 
@@ -174,13 +179,87 @@ The Canvas constructor/API is the closest current lifecycle pattern:
   map saves. Native-client identity already has explicit script-save refusal;
   native Console lifecycle must preserve that transient exclusion.
 
-An appropriately explicit next API is
+The explicit implementation API is
 `PreparePortableRuntimeViewportConsole(viewportIdentity, engineIni, commit,
 limits)` plus a detached `ReadPortableRuntimeViewportConsole`. Its name and
 snapshot should certify constructor/Init only. Require configured actual class,
 current viewport/Canvas/Input constructor authority and the original phase
 order; refuse unaudited native subclass overrides instead of treating them as
 Engine.Console merely because they derive from it.
+
+## Portable implementation under verification
+
+portable_viewport_console_host.inl and its API construct the exact selected
+Engine.Console with an actual indexed Transient identity. The snapshot preserves
+323 non-address property slots (including all indexed arrays); vtblOut is retained
+only as authenticated native provider identity, never exposed as a number. All
+effective default slots are frozen at birth and nonempty Object slots acquire
+per-property/index GC edges before publication. The native NoInit constructors
+do not clear strings/names. Console.Viewport remains mutable reflected storage,
+distinct from non-owning constructor provenance; the owning viewport.Console
+edge is journaled and GC-marked. Teardown clears provenance before the owner can
+retire and unindexes the transient Console.
+
+The native Init performs actual Viewport/TopLine63/BorderSize1 stores, then a
+journaled class-backed Core state-frame creation and a separate HasStack flag
+write: ten root writes including object headers and the viewport owner edge.
+The state has Class Node/StateNode, null Code/locals, all-one probes and no
+Typing/BeginState transition. The independent weak inventory meters retired
+escaped objects, actual reflected-edge allocations and owning payloads; live
+StateObjects feed the shared cumulative writer separately. The inventory's old
+allocation is retained by swap for allocation-free rollback before provisional
+roots retire. No allowance or save format was changed.
+
+Integrated discovery found that densely materializing all323 default slots
+exceeded the unchanged32MiB combined state cap during Training root creation.
+The birth representation now shares immutable authored tags/typed zero through
+the retained Class, storing only bit-exact differences from the effective CDO.
+Instance fallback never consults subsequent mutable CDO patches, so this retains
+the same birth snapshot, including explicit zero/None overrides of nonzero tags.
+Every effective indexed Object slot still acquires its own GC edge. This is a
+storage optimization, not reduced field coverage or a larger allowance; the
+integrated rerun must still prove actual headroom and the original boundary.
+
+The integrated first-Training probe now prepares Canvas, constructs Input, then
+constructs/initializes Console before its existing original startup diagnostic.
+This sequence does not bind RenDev/OpenWindow, initialize Input or authorize a
+fallback command decline. Desktop/Android-native/strict ARM64 and owned tests
+pass as detailed below; no live gameplay or new APK is claimed.
+
+## Verified checkpoint
+
+Owned Console5148 checks/26 refusals pass, including all323 non-address fields,
+actual header/declared properties and both qualified and leaf/Outer lookup,
+ten write-prefix controls, native-work/VM-retained-byte refusals, whole save/
+revision/GC/inventory/name/index rollback, distinct viewports, map retention and
+client teardown. The unmodified owned CDO needs zero sparse overrides; all323
+effective values still match its actual defaults except the three Init stores.
+The header and reflected ObjectFlags are checked independently after HasStack.
+
+Final desktop and Android-native builds and strict ARM64 checks pass. CTest
+executes229/276 registered tests with47 explicit owned-data skips and zero
+failures (153.23s). Separate rebuilt owned runs pass Canvas145/10, HUD11225,
+Core SET9548/6, GC155/16, metadata13896/125, Input schema34355/1357, crate415/5,
+deferred429/21, animation588/24, FastTrace252/0, Input classes10413/38,
+viewport Input10310/20, Training route1232 and materials1308actors/227selected/
+0null. All45 original files and636 frozen compiler inputs match length/UTCmtime/
+SHA256 and all build/test jobs are terminal.
+
+With the sparse representation, integrated first-Training two-Fire repeat2
+again reaches the genuine FExec SET guard at271677 instructions/32553 writes,
+retaining two attack notifies/four traces/two crate changes/nine births/full undo.
+Door repeat2 reaches the exact ReadInput guard at239536/19432 with both56-unit
+moves/two ends/full undo. This proves recovery past the discovered32MiB failure,
+not successful startup, an initialized Input provider or published VR gameplay.
+
+Discovery failures are retained, not counted as passing: a class-only resolver
+incorrectly encountered a Function in the field chain; physical Console flags
+initially diverged from reflected flags; a test supplied a qualified name plus
+an explicit Outer; dense default copies exceeded the actual integrated state
+cap. The fixes use general field identity resolution, journaled native header
+stores, independent correct lookup forms and sparse immutable-default sharing.
+Superseded verification lanes were explicitly stopped before source changes.
+The32MiB cap, other allowances and accepted VR layout remain unchanged.
 
 ## Bounded implementation acceptance plan
 

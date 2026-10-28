@@ -1,5 +1,35 @@
 # Port status
 
+## Latest: original Console constructor/Init/state frame (2026-10-28)
+
+Configured actual Engine.Console now constructs after Canvas/Input with original
+Transient Outer, real indexed header/flags and all323 exposed property slots.
+Native NoInit preserves defaults; Init stores Viewport/TopLine63/BorderSize1,
+creates the actual Class-backed state frame and writes HasStack to synchronized
+native/reflected header storage. No Typing/BeginState/Input.Init/FExec provider
+success is fabricated. Mutable Viewport differs from non-owning provenance;
+per-slot copied Object edges, GC, journals and inventory allocation undo are real.
+
+Dense default copies exposed a genuine32MiB integrated-root failure. Sparse
+bit-exact overrides now share immutable tagged/zero defaults while retaining
+all323 birth values and GC edges, restoring the original boundary without a cap
+increase. Owned Console5148/26 and Canvas145/10 pass, alongside HUD11225,
+Core SET9548/6, GC155/16, metadata13896/125, schema34355/1357 and all eight
+first-Training regressions. Desktop/Android-native/strict ARM64 pass; CTest229
+executed/276 registered/47 explicit skips/zero failures153.23s. All45 originals/
+636 frozen compiler inputs match length/UTCmtime/SHA256; all jobs are terminal.
+
+Integrated two-Fire repeat2 retains271677/32553, two notifies/four traces/two
+crate changes/nine births/full undo before exact FExec SET refusal. Doors retain
+239536/19432, both56-unit moves/two ends/full undo before exact ReadInput refusal.
+These are rollback diagnostics, not successful startup or live VR crates/loot/
+gravity. Corrected static order is Console.Init -> SpawnPlayActor -> Input.Init/
+ResetInput -> OpenWindow; the prior OpenWindow label was wrong. Next: genuine
+Quest input-provider binding plus complete FExec/startup/input services, then
+committing VR gameplay/publication. No new APK, other-map integration, account
+UI, save-format or accepted layout change. See ORIGINAL-VIEWPORT-CONSOLE.md and
+ORIGINAL-QUEST-INPUT-PROVIDER.md. Discovery failures/stopped lanes are not passes.
+
 ## Latest: original viewport Canvas constructor/Init (2026-10-28)
 
 Configured actual Engine.Canvas now constructs before Input with original

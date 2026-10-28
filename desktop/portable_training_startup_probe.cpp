@@ -5,6 +5,7 @@
 #include "portable_retail_collision.h"
 #include "portable_startup_weapon_fire_probe.h"
 #include "portable_viewport_canvas.h"
+#include "portable_viewport_console.h"
 #include "quest_native_work.h"
 #include "quest_native_config.h"
 #include "quest_runtime_script_packages.h"
@@ -609,6 +610,11 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const auto input=PreparePortableRuntimeViewportInput(Viewport,PortableInputLoggingProfile::Ordinary);
     Require(input.constructed&&input.execInstalled&&!input.initialized&&!input.nativeViewportIndex,
         "Cannot construct the real configured viewport Input without prematurely executing Init");
+    const auto console=PreparePortableRuntimeViewportConsole(Viewport,ini);
+    Require(console.execution.passed()&&console.execution.committed&&console.console.initialized,
+        "Cannot construct/initialize original configured Console after Canvas/Input: "+console.execution.error);
+    std::cout<<"VIEWPORT CONSOLE "<<console.console.objectPath<<" class="<<console.console.classPath
+        <<" viewport="<<console.console.viewportPath<<"; original constructor/Init/frame only, NOT FExec or OpenWindow/Input.Init\n";
     const auto loaded=LoadPortableRuntimeMap(map);
     Require(loaded.passed,"Cannot load actual first Training map");
     Require(loaded.exports==1356u&&loaded.contextExcludedExports==1991u&&loaded.actors==312u,

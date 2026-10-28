@@ -6,6 +6,15 @@ The short recording route below is the earlier introductory checkpoint, not
 the full current acceptance target. Neither the full tutorial nor original
 campaign startup is claimed complete.
 
+Latest2026-10-28: original configured Console constructor/Init and class-backed
+state frame are verified (5148 checks/26 refusals). Sparse default storage fixes
+an actual integrated32MiB budget failure without increasing the cap. Original
+two-Fire and door repeat2 retain their exact FExec/ReadInput boundaries/full undo;
+the broad desktop suite executes229 tests/47 explicit skips/zero failures.
+This is still not a published VR crate/loot/gravity loop or a new APK. The next
+input-provider contract preserves actual player spawn before Input.Init and
+OpenWindow afterward; it does not introduce account/character-creation UI.
+
 2026-10-28 backend checkpoint: original viewport Canvas constructor/Init now
 precedes Input in the first-Training startup diagnostic. Owned Canvas145/10 and
 the rebuilt Training/HUD/config/GC regressions pass, with229 executed desktop

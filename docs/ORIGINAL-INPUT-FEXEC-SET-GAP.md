@@ -115,15 +115,21 @@ reload ordering; a one-binding mutation is not this service.
 
 ## Next viewport provider audit (2026-10-28)
 
-The explicit Core SET service is under implementation/verification separately;
+The explicit Core SET service is implemented/verified separately;
 it is not permission to skip the following actual earlier providers.
 
-Current native session objects retain viewport identity, Actor and Input, but
-no constructed viewport Console/RenDev/Canvas payload. Constructor-null native
+At the start of this audit, native session objects retained viewport identity,
+Actor and Input, but no constructed viewport Console/RenDev/Canvas payload.
+Canvas and Console constructor/Init are now verified separately in
+ORIGINAL-VIEWPORT-CANVAS.md and ORIGINAL-VIEWPORT-CONSOLE.md; RenDev remains
+unbound. Constructor-null native
 Engine.render/audio do NOT establish viewport.RenDev=None. Original GameEngine
 Init103896D5..1038970A constructs the configured Console, stores viewport+34 and
-calls its +54 Init(viewport), THEN opens the platform window at1038972F, THEN
-calls Input.Init at1038975F..65. The actual rendering/input adapter must bind
+calls its +54 Init(viewport), THEN calls actual Level.SpawnPlayActor at1038972F,
+THEN Input.Init at1038975F..65, THEN viewport.OpenWindow(+74) at10389776.
+The earlier audit incorrectly labeled the Level virtual+A8 as OpenWindow;
+actual ULevel vtable10428AFC+A8 resolves to SpawnPlayActor1030209A->10396BD0.
+The actual rendering/input adapter must bind
 these platform services, not infer their state from identity-only wrappers.
 
 Selected DeusExGameEngine.Exec1000ED70 first recognizes SAVEGAME/DELETEGAME and

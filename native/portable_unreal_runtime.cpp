@@ -90,6 +90,7 @@
 #include "quest_core_set_command.h"
 #include "portable_core_static_exec.h"
 #include "portable_viewport_canvas.h"
+#include "portable_viewport_console.h"
 #include "quest_native_config_import.h"
 #include "quest_native_struct_import.h"
 #include "quest_input_key_queries.h"
@@ -238,6 +239,7 @@ struct RuntimeObjectLookupControl {
 void RetireRuntimeLookupObject(RuntimeObject*) noexcept;
 void RetireRuntimeInputObject(RuntimeObject*) noexcept;
 void RetireRuntimeCanvasObject(RuntimeObject*) noexcept;
+void RetireRuntimeConsoleObject(RuntimeObject*) noexcept;
 struct RuntimeNativePackageIndex;
 void RetireRuntimeNativePackage(RuntimeObject*) noexcept;
 class RuntimeAIManager;
@@ -378,6 +380,9 @@ public:
     // Viewport.Canvas / Canvas.Viewport are reciprocal native owning edges.
     RuntimeObject* nativeCanvasPeer{};
     bool nativeCanvasObject{};
+    RuntimeObject* nativeViewportConsole{}; // Actual viewport owning edge.
+    RuntimeObject* nativeConsoleOwner{}; // Non-owning constructor provenance.
+    bool nativeConsoleObject{};
     std::unique_ptr<RuntimeNativeInputInstance> nativeInputInstance;
     bool nativePlayerBinding{};
     // Native Extension window-domain objects are neither Actor births nor
@@ -528,6 +533,7 @@ protected:
         RetireRuntimeLookupObject(this);
         if(nativeInputInstance)RetireRuntimeInputObject(this);
         if(nativeCanvasObject)RetireRuntimeCanvasObject(this);
+        if(nativeConsoleObject)RetireRuntimeConsoleObject(this);
         if(nativeConversation && nativeConversation->node) RetireRuntimeConversationObject(this);
         if(nativeDump)RetireRuntimeDumpObject(this);
         if(nativePackageInstance) RetireRuntimeNativePackage(this);
@@ -631,6 +637,7 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     marklist = GC::MarkObject(marklist, nativeViewportActor);
     marklist = GC::MarkObject(marklist, nativeViewportInput);
     marklist = GC::MarkObject(marklist, nativeCanvasPeer);
+    marklist = GC::MarkObject(marklist, nativeViewportConsole);
     if(nativeInputInstance) {
         marklist=GC::MarkObject(marklist,nativeInputInstance->ownerViewport);
         marklist=GC::MarkObject(marklist,nativeInputInstance->values.viewport);
@@ -933,6 +940,7 @@ std::unique_ptr<GCRoot<RuntimePlayerSession>> persistentPlayerSession;
 // still metered until their real last script/native root is collected.
 std::vector<RuntimeObject*> persistentNativeInputs;
 std::vector<RuntimeObject*> persistentNativeCanvases;
+std::vector<RuntimeObject*> persistentNativeConsoles;
 using RuntimeNativePropertyRoots=decltype(RuntimeObject::nativeWindowPropertyRoots);
 std::size_t NativeObjectPropertyRootBytes(const RuntimeNativePropertyRoots& graph) {
     using QuestVr::DecalStateDetail::Add;using QuestVr::DecalStateDetail::Multiply;
@@ -1005,6 +1013,14 @@ std::size_t NativeInputInventoryBytes() {
         bytes=Add(bytes,NativeSessionObjectBytes(object));
     }
     return bytes;
+}
+std::size_t NativeConsoleInventoryBytes() {
+    using QuestVr::DecalStateDetail::Add;auto bytes=persistentNativeConsoles.capacity()*sizeof(RuntimeObject*);
+    for(auto* object:persistentNativeConsoles) {
+        if(!object||!object->nativeConsoleObject)throw std::runtime_error("Native Console weak inventory is invalid");
+        bytes=Add(bytes,NativeSessionObjectBytes(object));
+    }
+    return bytes; // StateObject is measured separately by the shared state writer.
 }
 struct RuntimeEngineClassDomain final : GCObject {
     std::vector<RuntimeObject*> classes;
@@ -1083,6 +1099,14 @@ void RetireRuntimeCanvasObject(RuntimeObject* object) noexcept {
     if(folded!=persistentVmObjects.end()&&folded->second==object)persistentVmObjects.erase(folded);
     persistentNativeCanvases.erase(std::remove(persistentNativeCanvases.begin(),persistentNativeCanvases.end(),object),persistentNativeCanvases.end());
     if(persistentNativeCanvases.empty())std::vector<RuntimeObject*>{}.swap(persistentNativeCanvases);
+}
+void RetireRuntimeConsoleObject(RuntimeObject* object) noexcept {
+    const auto canonical=persistentQualifiedObjects.find(object->reflection.objectPath);
+    if(canonical!=persistentQualifiedObjects.end()&&canonical->second==object)persistentQualifiedObjects.erase(canonical);
+    const auto folded=persistentVmObjects.find(object->birthVmKey);
+    if(folded!=persistentVmObjects.end()&&folded->second==object)persistentVmObjects.erase(folded);
+    persistentNativeConsoles.erase(std::remove(persistentNativeConsoles.begin(),persistentNativeConsoles.end(),object),persistentNativeConsoles.end());
+    if(persistentNativeConsoles.empty())std::vector<RuntimeObject*>{}.swap(persistentNativeConsoles);
 }
 struct RuntimeDumpServices {
     std::string userIni,searchDirectory;
@@ -1545,6 +1569,9 @@ void ClearNativePlayerObjects() noexcept {
     auto* session=persistentPlayerSession->get();
     unindex(session->client);
     for(auto* viewport:session->viewports) {
+        if(auto* console=viewport->nativeViewportConsole) {
+            console->nativeConsoleOwner=nullptr;viewport->nativeViewportConsole=nullptr;unindex(console);
+        }
         if(auto* canvas=viewport->nativeCanvasPeer) {
             canvas->nativeCanvasPeer=nullptr;viewport->nativeCanvasPeer=nullptr;unindex(canvas);
         }
@@ -3337,6 +3364,7 @@ public:
             persistentWindowDomain->get()->roots.size() : 0u;
         beforeConversationNodes_=persistentConversationNodes.size();
         beforeCanvasInventory_.reset();
+        beforeConsoleInventory_.reset();
         beforeDumpSession_=persistentDumpSession;
         clientDependent_ = false;
         soundClientIdentity_ = 0u;
@@ -3405,6 +3433,7 @@ public:
         if(retailCollisionRoot_) retailCollisionRoot_->PrepareCommit();
         ValidateNativeInputMutationLeases();
         for(const auto& canvas:provisionalCanvases_)RequireNativeViewportCanvas(canvas.get());
+        for(const auto& console:provisionalConsoles_)RequireNativeViewportConsole(console.get());
         PublishNativeUserConfig(); // Last fallible preparation, then no rollback after a rename.
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
@@ -3416,6 +3445,7 @@ public:
         CommitConversationObjects();
         ClearNativeInputJournal();
         beforeCanvasInventory_.reset();provisionalCanvases_.clear();
+        beforeConsoleInventory_.reset();provisionalConsoles_.clear();
         provisionalDumps_.clear();
         provisionalLookupObjects_.clear();
         beforeLinkerSlots_.clear();
@@ -3522,6 +3552,7 @@ public:
             entry.first->nativeViewportActor = persistentNativeClient.HasClient() ? entry.second.viewportActor : nullptr;
             entry.first->nativeRootWindow=entry.second.rootWindow;
             entry.first->nativeCanvasPeer=entry.second.canvasPeer;
+            entry.first->nativeViewportConsole=entry.second.viewportConsole;
             entry.first->uniqueObjectCounter=entry.second.uniqueCounter;
             entry.first->nativeWindowPropertyRoots.swap(entry.second.windowPropertyRoots);
             entry.first->nativeWindowState.swap(entry.second.windowState);
@@ -3567,6 +3598,15 @@ public:
         }
         if(beforeCanvasInventory_)persistentNativeCanvases.swap(*beforeCanvasInventory_);
         beforeCanvasInventory_.reset();provisionalCanvases_.clear();
+        for(auto& root:provisionalConsoles_) {
+            auto* console=root.get();console->nativeConsoleOwner=nullptr;
+            const auto canonical=persistentQualifiedObjects.find(console->reflection.objectPath);
+            if(canonical!=persistentQualifiedObjects.end()&&canonical->second==console)persistentQualifiedObjects.erase(canonical);
+            const auto folded=persistentVmObjects.find(console->birthVmKey);
+            if(folded!=persistentVmObjects.end()&&folded->second==console)persistentVmObjects.erase(folded);
+        }
+        if(beforeConsoleInventory_)persistentNativeConsoles.swap(*beforeConsoleInventory_);
+        beforeConsoleInventory_.reset();provisionalConsoles_.clear();
         for(auto& root:provisionalDumps_)RetireRuntimeDumpObject(root.get());
         provisionalDumps_.clear();persistentDumpSession=beforeDumpSession_;
         beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
@@ -4420,6 +4460,7 @@ public:
     }
 #include "portable_core_static_exec.inl"
 #include "portable_viewport_canvas_host.inl"
+#include "portable_viewport_console_host.inl"
     std::shared_ptr<const Function> WindowNativeDeclaration(const std::uint16_t index,const Function* declaration) {
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
         const char* path{};std::vector<Parameter> parameters;
@@ -8286,6 +8327,8 @@ public:
                 if(key=="engine.canvas.frameptr"||key=="engine.canvas.renderptr")
                     throw std::runtime_error("Native Canvas raw render pointer has no script-visible portable address");
             }
+            if(object->nativeConsoleObject&&(key=="engine.console.vtblout"||key=="core.object.objectinternal"))
+                throw std::runtime_error("Native Console raw address has no script-visible portable value");
             const auto identity=reinterpret_cast<std::uintptr_t>(object);
             const auto* location=key=="engine.actor.location"?nativeActorPoses_.FindLocation(identity):nullptr;
             const auto* rotation=key=="engine.actor.rotation"?nativeActorPoses_.FindRotation(identity):nullptr;
@@ -9539,6 +9582,7 @@ private:
         bool playerBinding{};
         RuntimeObject* rootWindow{};
         RuntimeObject* canvasPeer{};
+        RuntimeObject* viewportConsole{};
         std::int32_t uniqueCounter{};
         decltype(RuntimeObject::nativeWindowPropertyRoots) windowPropertyRoots;
         std::unique_ptr<RuntimeNativeWindowState> windowState;
@@ -9679,6 +9723,7 @@ private:
             before.lifecycle==actor->committedLifecycle && before.removed==actor->worldRemoved &&
             before.playerBinding==actor->nativePlayerBinding && before.player==actor->nativePlayer &&
             before.viewportActor==actor->nativeViewportActor && before.rootWindow==actor->nativeRootWindow &&
+            before.canvasPeer==actor->nativeCanvasPeer && before.viewportConsole==actor->nativeViewportConsole &&
             before.uniqueCounter==actor->uniqueObjectCounter && before.windowPropertyRoots==actor->nativeWindowPropertyRoots &&
             !actor->nativeWindowState && !before.windowState && before.objectFlags==actor->reflection.flags &&
             SameNativeLinkerHeader(actor);
@@ -9727,6 +9772,8 @@ private:
     std::size_t beforeConversationNodes_{};
     std::optional<std::vector<RuntimeObject*>> beforeCanvasInventory_;
     std::vector<GCRoot<RuntimeObject>> provisionalCanvases_;
+    std::optional<std::vector<RuntimeObject*>> beforeConsoleInventory_;
+    std::vector<GCRoot<RuntimeObject>> provisionalConsoles_;
     std::optional<BeforeDecals> beforeDecals_;
     std::optional<std::pair<RuntimeObject*,double>> beforeLevelClock_;
     std::optional<std::pair<RuntimeObject*,RuntimeNativeLevelTickContext>> beforeLevelTickContext_;
@@ -10517,6 +10564,8 @@ private:
         result->write = [this, object, property, index, defaults](const Value& value) {
             if(object->nativeCanvasObject&&(property.flags&2u)&&LowerAscii(property.key).rfind("engine.canvas.",0u)==0u)
                 throw std::runtime_error("Native Canvas const pointer/dimensions require its actual Init/Update service");
+            if(object->nativeConsoleObject&&(LowerAscii(property.key)=="engine.console.vtblout"||LowerAscii(property.key)=="core.object.objectinternal"))
+                throw std::runtime_error("Native Console output provider is not a writable script address");
             if(object->nativeWindowObject && LowerAscii(property.key)=="extension.textlogwindow.lines")
                 throw std::runtime_error("Native TextLog Lines mutation requires its typed journaled storage service");
             if(object->nativeDump) {
@@ -10588,7 +10637,7 @@ private:
             };
             rejectDumpEscape(rejectDumpEscape,normalized);
             std::vector<RuntimeObject*> windowRoots;
-            if(target->nativeWindowObject||target->nativeCanvasObject) {
+            if(target->nativeWindowObject||target->nativeCanvasObject||target->nativeConsoleObject) {
                 const auto collect=[&](const auto& self,const Value& member,const std::size_t depth)->void {
                     LifecycleStep();
                     if(depth>64u || windowRoots.size()>4096u)
@@ -10602,6 +10651,14 @@ private:
                 collect(collect,normalized,0u);
             }
             Touch(target);
+            if(target->nativeConsoleObject&&nativeKey=="core.object.objectflags") {
+                if(index||property.arrayDimension!=1u||normalized.kind!=Kind::Int)
+                    throw std::runtime_error("Native Console ObjectFlags requires its actual scalar Int header");
+                // A native Console has no immutable serialized header: keep
+                // the real transient header and reflected write synchronized.
+                // Touch journals both; VM undo and host rollback restore them.
+                target->reflection.flags=std::bit_cast<std::uint32_t>(normalized.integer);
+            }
             if(!target->classDescriptor&&nativeKey=="engine.actor.lastrendertime") {
                 static_cast<void>(OriginalAnimationField(target,"Engine.Actor","LastRenderTime",Kind::Float,0u,"FloatProperty"));
                 if(index||normalized.kind!=Kind::Float)
@@ -10611,7 +10668,7 @@ private:
             if (target->classDescriptor) {
                 target->classDefaultValues[LowerAscii(property.name)][index] = std::move(normalized);
             } else {
-                if(target->nativeWindowObject||target->nativeCanvasObject) {
+                if(target->nativeWindowObject||target->nativeCanvasObject||target->nativeConsoleObject) {
                     const auto key=LowerAscii(property.key);
                     if(!windowRoots.empty())target->nativeWindowPropertyRoots[key][index]=std::move(windowRoots);
                     else {
@@ -10668,7 +10725,7 @@ private:
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
                 object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding,
-                object->nativeRootWindow,object->nativeCanvasPeer,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,
+                object->nativeRootWindow,object->nativeCanvasPeer,object->nativeViewportConsole,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,
                 object->nativeWindowState?std::make_unique<RuntimeNativeWindowState>(*object->nativeWindowState):nullptr,
                 object->nativeRetailHash,object->nativeConversation?
                     std::optional<RuntimeNativeConversationState>{*object->nativeConversation}:std::nullopt,
@@ -11207,6 +11264,11 @@ private:
         if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
         defaults.Retain(NativePlayerSessionBytes());
         defaults.Retain(NativeCanvasInventoryBytes());
+        defaults.Retain(NativeConsoleInventoryBytes());
+        if(beforeConsoleInventory_)defaults.Retain(beforeConsoleInventory_->capacity()*sizeof(RuntimeObject*));
+        defaults.Retain(provisionalConsoles_.capacity()*sizeof(GCRoot<RuntimeObject>)+provisionalConsoles_.size()*sizeof(GCRootNode));
+        for(const auto* console:persistentNativeConsoles)
+            if(console->stateObject)measured.MeasureStateObject(*console->stateObject);
         if(beforeCanvasInventory_)defaults.Retain(beforeCanvasInventory_->capacity()*sizeof(RuntimeObject*));
         defaults.Retain(provisionalCanvases_.capacity()*sizeof(GCRoot<RuntimeObject>)+provisionalCanvases_.size()*sizeof(GCRootNode));
         defaults.Retain(NativeInputInventoryBytes());
@@ -14660,6 +14722,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
 
 #include "portable_viewport_input.inl"
 #include "portable_viewport_canvas_api.inl"
+#include "portable_viewport_console_api.inl"
 
 QuestVr::Vm::Result SetPortableRuntimePlayer(const std::uint64_t viewportIdentity,
     const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
