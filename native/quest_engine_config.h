@@ -160,6 +160,9 @@ inline std::optional<std::string> ParseGameEngineClass(const std::vector<std::ui
 inline std::optional<std::string> ParseInputClass(const std::string_view bytes) {
     return Detail::ParseClass(bytes, "Input", kMaxInputClassBytes);
 }
+inline std::optional<std::string> ParseCanvasClass(const std::string_view bytes) {
+    return Detail::ParseClass(bytes,"Canvas",kMaxInputClassBytes);
+}
 
 inline std::optional<std::string> ParseInputClass(const std::vector<std::uint8_t>& bytes) {
     if (bytes.empty()) return ParseInputClass(std::string_view{});
@@ -215,6 +218,9 @@ inline std::optional<std::string> ReadGameEngineClass(const std::filesystem::pat
 
 inline std::optional<std::string> ReadInputClassFile(const std::filesystem::path& iniPath) {
     return Detail::ReadClassFile(iniPath, "Input", kMaxInputClassBytes);
+}
+inline std::optional<std::string> ReadCanvasClassFile(const std::filesystem::path& iniPath) {
+    return Detail::ReadClassFile(iniPath,"Canvas",kMaxInputClassBytes);
 }
 
 inline std::optional<std::string> ReadInputClass(const std::filesystem::path& originalGameRoot) {

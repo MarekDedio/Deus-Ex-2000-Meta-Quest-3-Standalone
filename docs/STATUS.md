@@ -1,5 +1,30 @@
 # Port status
 
+## Latest: original viewport Canvas constructor/Init (2026-10-28)
+
+Configured actual Engine.Canvas now constructs before Input with original
+Transient Outer/NameNone-derived identity/flags0, copied defaults and only
+the genuine Init Viewport pointer store. No Reset/Update/frame dimensions or
+drawing is fabricated. Reciprocal GC ownership, namespace/index publication,
+name counter, shared writes/work, reflected-edge allocation accounting and
+allocation-free inventory rollback are verified; client retirement still meters
+escaped objects until collection. No resource allowance was increased.
+
+Owned Canvas145/10, HUD11225, Core SET9548/6, GC155/16, metadata13896/125,
+schema34355/1357 and all eight first-Training regressions pass. Desktop,
+Android-native and strict ARM64 pass; CTest229 executed/275 registered/46 explicit
+skips/zero failures258.55s. All45 originals/632 frozen compiler inputs match
+length/UTCmtime/SHA256 and all jobs are terminal.
+
+Integrated original two-Fire repeat2 retains271677/32553 and exact FExec SET
+guard/full undo; doors retain239536/19432, both56-unit moves/two ends and exact
+ReadInput refusal/full undo. These are rollback-only diagnostics, not live VR
+crate/loot/gravity acceptance. Next is actual Console construction/Init/frame,
+then authenticated OpenWindow/RenDev/Input/provider routing and the committing
+VR weapon/world/publication bridge. No new APK, other-map integration, account
+UI, save-format or accepted VR-layout change. See ORIGINAL-VIEWPORT-CANVAS.md
+and the statically verified next contract ORIGINAL-VIEWPORT-CONSOLE.md.
+
 ## Latest: transactional Core SET and app-owned User config (2026-10-28)
 
 The original Core.StaticExec SET service now has phased token/Class/property

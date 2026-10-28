@@ -6,6 +6,13 @@ The short recording route below is the earlier introductory checkpoint, not
 the full current acceptance target. Neither the full tutorial nor original
 campaign startup is claimed complete.
 
+2026-10-28 backend checkpoint: original viewport Canvas constructor/Init now
+precedes Input in the first-Training startup diagnostic. Owned Canvas145/10 and
+the rebuilt Training/HUD/config/GC regressions pass, with229 executed desktop
+tests/46 explicit skips/zero failures. This does not publish startup or connect
+live VR melee/loot/gravity. Next: actual Console/viewport/input services and the
+committing VR gameplay bridge. No new APK or accepted headset-layout change.
+
 ## First recording route
 
 Start from a fresh Training session, not an older quick-save. The coordinates

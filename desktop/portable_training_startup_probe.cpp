@@ -4,6 +4,7 @@
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "portable_startup_weapon_fire_probe.h"
+#include "portable_viewport_canvas.h"
 #include "quest_native_work.h"
 #include "quest_native_config.h"
 #include "quest_runtime_script_packages.h"
@@ -600,6 +601,11 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,Client);
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");
+    const auto canvas=PreparePortableRuntimeViewportCanvas(Viewport,ini);
+    Require(canvas.execution.passed()&&canvas.execution.committed&&canvas.canvas.initialized,
+        "Cannot construct/initialize original configured Canvas before Input: "+canvas.execution.error);
+    std::cout<<"VIEWPORT CANVAS "<<canvas.canvas.objectPath<<" class="<<canvas.canvas.classPath<<
+        " viewport="<<canvas.canvas.viewportPath<<"; original Init only, NOT frame Update/drawing or completed viewport startup\n";
     const auto input=PreparePortableRuntimeViewportInput(Viewport,PortableInputLoggingProfile::Ordinary);
     Require(input.constructed&&input.execInstalled&&!input.initialized&&!input.nativeViewportIndex,
         "Cannot construct the real configured viewport Input without prematurely executing Init");

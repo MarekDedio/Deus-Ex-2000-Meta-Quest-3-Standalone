@@ -167,3 +167,16 @@ Next implementation must establish actual viewport payload/Canvas/Console
 identity, ownership, GC and transactional lifecycle, then the authenticated
 port OpenWindow/RenDev and real Input.Init/Reset services. Existing identity-only
 wrappers or absent fields do not prove any of these constructor side effects.
+
+Console virtual+38 is now identified statically (2026-10-28): Console's UObject
+vtable104297C0+38 contains1040C710 ->IAT10599AD0. The Core import entry resolves
+to UObject.InitExecution,Core thunk1010286F ->10150750. It frees an existing
+StateFrame,allocates a real40-byte FStateFrame with Node/StateNode=actual Class,
+Object=Self,Code/Locals/Previous=None,ProbeMask=all ones,then stores it and ORs
+RF_HasStack0x02000000 into ObjectFlags. It does NOT choose an auto state or call
+BeginState at this point. Implement the actual constructor-frame/flag journal
+before treating Console.Init as complete; this is not an empty optional event.
+
+The initial configured Canvas constructor/Init is implemented separately in
+ORIGINAL-VIEWPORT-CANVAS.md. Its successful pointer store does not establish
+Console,RenDev,platform OpenWindow,Input.Init or any FExec decline authority.
