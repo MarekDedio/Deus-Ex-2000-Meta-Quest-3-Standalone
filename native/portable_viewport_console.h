@@ -43,3 +43,8 @@ struct PortableConsoleExecPrefixResult {
 // implemented. This is not UViewport/UPlayer fallback or successful startup.
 PortableConsoleExecPrefixResult ExecutePortableRuntimeConsoleExecPrefix(std::uint64_t viewportIdentity,
     const std::string& command,const QuestVr::Vm::Limits& limits={});
+// Same actual Core.ScriptConsoleExec selection on a current-map Actor. Native
+// virtual inheritance is authenticated; no Actor event or parameter call is
+// invented. This entry has no executor (matching the GameEngine Game offer).
+PortableConsoleExecPrefixResult ExecutePortableRuntimeActorConsoleExecPrefix(const std::string& actorPath,
+    const std::string& command,const QuestVr::Vm::Limits& limits={});

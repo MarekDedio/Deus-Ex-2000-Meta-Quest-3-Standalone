@@ -155,12 +155,14 @@ executor,before UEngine.Exec. This corrects the earlier provisional interpretati
 as a viewport Actor. These real Level/Game providers may repeat earlier offers
 in UPlayer routing; do not deduplicate them merely because they declined once.
 
-UEngine.Exec10380F03..25 offers the actual imported GExec first, then reaches
-Core.StaticExec10380F44..4F. Standalone embedding needs an explicit GExec provider
-authority/no-provider profile. Later cache/system/render/audio command branches
-are not reached after genuine Core SET handles the command, but all earlier
-providers must actually decline it. This is additional routing work, not a
-reason to turn unknown Input queries directly into Core SET.
+CORRECTION2026-10-28: UEngine.Exec10380F03..25 offers actual imported GSys first,
+then Core.StaticExec10380F44..4F. PE IAT10599EB4 is Core.GSys(USystem*),not GExec.
+GExec is IAT10599EA8 and appears only AFTER StaticExec/cache at10380F6A..7E.
+The port needs real System construction/config/rooted-lifetime authority before
+using its command decline; do not add a fake absent-GExec profile or jump over
+GSys. The actual UPlayer/Level/Game/GameEngine unknown-command route now reaches
+this GSys service boundary. See ORIGINAL-PLAYER-FEXEC-ROUTE.md for verified
+field mappings,conditional/repeated offers and next native System contract.
 
 Further exact first-provider dependencies:
 

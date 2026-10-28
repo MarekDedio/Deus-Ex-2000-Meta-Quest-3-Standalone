@@ -1,5 +1,16 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-28:actual UPlayer/Level/Game/myHUD/Inventory/GameEngine command
+routing now reaches the next real GSys dependency in the same Execution/root.
+GSys,not GExec,is the original pre-Core SET provider; the prior import label
+was wrong. Two-Fire/doors repeat2 retain original observations/full undo.
+Pure460/340,Console/Actor5503/36,all eight first-map regressions and CTest233/280,
+47 skips/zero failures116.76s pass,alongside desktop/strict ARM64/Android-native.
+All45 originals/649 frozen compiler inputs unchanged;all jobs terminal. Next:
+real System defaults/config/constructor/lifetime,Core SET fallthrough,input
+startup,then the LIVE VR bridge. No new APK or live crate/loot/gravity claim.
+See ORIGINAL-PLAYER-FEXEC-ROUTE.md;no other-map or account UI work is added.
+
 Latest2026-10-28:the actual viewport command prefix now passes the old Input/
 Console SET boundary and reaches missing UPlayer FExec routing. Actual pre-open
 render-slot authority,eleven native discriminators and ScriptConsoleExec lookup

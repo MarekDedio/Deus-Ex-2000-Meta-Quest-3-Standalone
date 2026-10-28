@@ -71,6 +71,8 @@
 #include "quest_unreal_string.h"
 #include "quest_process_console_exec.h"
 #include "quest_viewport_exec_commands.h"
+#include "quest_player_exec_route.h"
+#include "quest_engine_exec_commands.h"
 #include "quest_decal_checkpoint.h"
 #include "quest_decal_projection.h"
 #include "quest_unreal_int_array.h"
@@ -3769,7 +3771,7 @@ public:
         if (index==0u && declaration && LowerAscii(declaration->path)=="engine.pawn.clienthearsound")
             return ClientHearSoundNative(object,arguments,*declaration);
         if (index==0u && declaration && LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
-            return PlayerPawnConsoleCommand(object,arguments,*declaration);
+            throw std::runtime_error("PlayerPawn ConsoleCommand requires its original shared execution context");
         // Native event wrappers have no presentation-active gate. Their actual
         // identity/Level checks remain in AiNative; unrelated native receivers
         // retain the existing explicit inactive guard.
@@ -4245,6 +4247,8 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if(index==0u&&declaration&&LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
+            return PlayerPawnConsoleCommand(Object(receiver),arguments,*declaration,execution);
         if(index==229u) return CoreGetAxesNative(arguments,declaration);
         if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum")
             return CoreGetEnumNative(arguments,declaration);
@@ -4440,7 +4444,7 @@ public:
     }
 
     Evaluation PlayerPawnConsoleCommand(RuntimeObject* pawn,const std::vector<Evaluation>& arguments,
-        const Function& declaration) {
+        const Function& declaration,QuestVr::Vm::Execution& execution) {
         // Retail Engine.dll execConsoleCommand103ba200 initializes its return
         // FString before checking Player at103ba2c7. An unbound camera returns
         // empty without forwarding to Actor.ConsoleCommand or executing input.
@@ -4491,7 +4495,7 @@ public:
         const auto command=arguments.front().Load().text;
         const auto queried=ExecuteNativeInputQuery(viewport->nativeViewportInput,command,
             [this]{LifecycleStep();},[this](std::size_t bytes){ValidateStateBudget(bytes);});
-        if(!queried.handled)return {Value::Text(Kind::String,ViewportExecAfterInput(viewport,command)),{}};
+        if(!queried.handled)return {Value::Text(Kind::String,ViewportExecAfterInput(viewport,command,execution)),{}};
         return {Value::Text(Kind::String,queried.output),{}};
     }
 #include "portable_core_static_exec.inl"

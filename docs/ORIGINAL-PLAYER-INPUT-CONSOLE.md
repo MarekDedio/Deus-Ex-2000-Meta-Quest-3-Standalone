@@ -125,6 +125,14 @@ then Actor.Level+40's FExec+28. All calls preserve the actual command/output
 device, and false is returned if none handles it. This audit does not assign
 unproven field names to the A8/628/C0 providers or implement their services.
 
+2026-10-28 follow-up: actual mappings are now independently verified and the
+unknown-command route implemented: A8=Actor.Level(LevelInfo),544=LevelInfo.Game,
+628=PlayerPawn.myHUD(NOT Pawn.Weapon3D0),C0=Actor.Inventory. Actual native Level,
+Game,HUD,Self,live Inventory and GameEngine offers retain their original order,
+Actor rereads and next-after-callback semantics. The integrated SET diagnostic
+now reaches missing UEngine.GSys,not a fabricated Core SET shortcut. See
+ORIGINAL-PLAYER-FEXEC-ROUTE.md for precise authority,scope and verification.
+
 ## UInput KEYNAME and KEYBINDING
 
 UInput FExec export thunk1030178F ->10393E10. Its ECX/ESI is the secondary FExec

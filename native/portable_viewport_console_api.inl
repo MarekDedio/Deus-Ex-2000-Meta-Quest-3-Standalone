@@ -41,3 +41,17 @@ PortableConsoleExecPrefixResult ExecutePortableRuntimeConsoleExecPrefix(std::uin
     }
     return result;
 }
+PortableConsoleExecPrefixResult ExecutePortableRuntimeActorConsoleExecPrefix(const std::string& actorPath,
+    const std::string& command,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableConsoleExecPrefixResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
+            result.handled=host.ScriptConsoleCommandPrefix(host.Object(actorPath),command,nullptr);
+            return QuestVr::Vm::Value::Bool(result.handled);
+        },limits);
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}

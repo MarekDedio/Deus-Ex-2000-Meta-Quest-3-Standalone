@@ -1,5 +1,29 @@
 # Port status
 
+## Latest: genuine UPlayer/Level/GameEngine command route (2026-10-28)
+
+Bound PlayerPawn.ConsoleCommand now keeps its actual shared Execution through
+the original Level,Game,myHUD,Self,live Inventory and GameEngine providers.
+Typed field/native virtual authority,Actor rereads,next-after-callback and
+repeated Level/Game offers are preserved. Unknown commands pass actual native
+discriminators; recognized unsupported bodies still refuse. Fresh imports
+correct a prior audit: UEngine offers GSys(USystem) before Core.StaticExec;
+GExec comes later. No fake null/provider decline or direct Core SET leap exists.
+
+Two-Fire repeat2 now reaches the genuine GSys preparation boundary at unchanged
+271677/32553,two notifies/four traces/two crate changes/nine births/full undo.
+Doors repeat2 retains239536/19432,both56-unit moves/two ends/exact ReadInput
+refusal/full undo. Pure460/340,Console/Actor5503/36,metadata22230/133,config9989/48,
+Input classes10446/38,schema34368/1357,viewport Input10315/24,Canvas150/14,HUD11225,
+Core SET9548/6,GC155/16 and all eight first-map regressions pass. Desktop/strict
+ARM64/Android-native pass;CTest233/280,47 explicit skips,zero failures116.76s.
+All45 originals/649 frozen inputs unchanged;all jobs terminal.
+
+Next:real System defaults/config/constructor/rooted-lifetime service,then genuine
+Core SET fallthrough,input startup,and live VR weapon/world/render publication.
+No new APK,live crate/loot/gravity completion,other-map/account UI/layout/cap
+change. See ORIGINAL-PLAYER-FEXEC-ROUTE.md for the implemented route and GSys audit.
+
 ## Latest: viewport/Console command prefix and real UFunction binding (2026-10-28)
 
 The real bound PlayerPawn command now continues after Input through the audited

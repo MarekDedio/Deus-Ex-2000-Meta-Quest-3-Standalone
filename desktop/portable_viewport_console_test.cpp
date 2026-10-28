@@ -234,6 +234,16 @@ int main(int argc,char** argv) {
                 queried.execution.error==std::string("Original ScriptConsoleExec command parameter/call service is not implemented: Engine.Console.")+command,
                 "Actual Console Exec match became a fabricated decline/success: "+queried.execution.error);++refusals;
         }
+        for(const auto* actor:{"00_Training.LevelInfo0","00_Training.Doctor1","00_Training.WeaponCrowbar1"}) {
+            for(const auto* command:{"SET InputExt T Talk","QuestAbsentActorConsolePrefix20261028","Tick"}) {
+                const auto queried=ExecutePortableRuntimeActorConsoleExecPrefix(actor,command);
+                Require(queried.execution.passed()&&queried.execution.committed&&!queried.handled&&!queried.execution.writes,
+                    "Actual Actor ScriptConsoleExec miss/non-Exec did not decline cleanly: "+queried.execution.error);
+            }
+        }
+        const auto classReceiver=ExecutePortableRuntimeActorConsoleExecPrefix("Engine.PlayerPawn","SET InputExt T Talk");
+        Require(!classReceiver.execution.passed()&&!classReceiver.execution.committed,"ScriptConsoleExec acquired an invented Actor instance from a UClass");++refusals;
+        Require(!NameString::FindCompareIndex("QuestAbsentActorConsolePrefix20261028"),"Actor command provider interned an unknown name");
         for(const auto work:{0u,1u,4u}) {
             QuestVr::Vm::Limits limits;limits.nativeWork=work;
             const auto queried=ExecutePortableRuntimeConsoleExecPrefix(992u,"SET InputExt T Talk",limits);
