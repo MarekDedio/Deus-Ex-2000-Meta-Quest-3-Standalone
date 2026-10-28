@@ -1,5 +1,15 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-28:actual constructed Input now checks all40 current aliases with
+original token/name/first-match/shared-guard semantics. Actual +7C callback is
+ExecInputCommands,not another Exec; it still refuses missing running/action/
+line-dispatch authority. Input10315/24,pure259/52 and all eight first-map
+regressions pass;desktop/strict ARM64/Android-native pass;CTest231/278 with47
+explicit skips/zero failures141.72s. All45 originals/642 frozen compiler inputs
+unchanged;all jobs terminal. Two-Fire/doors repeat2 still stop at exact SET/
+ReadInput boundaries with full undo. No new APK or live crate/loot/gravity claim.
+Next:real provider/input startup,then the LIVE VR bridge. See ORIGINAL-INPUT-ALIASES.md.
+
 Latest2026-10-28:original Core.StaticExec SET now implements actual Input fanout,
 CDO mutation,all295 Config exports,app-owned logical/physical flush and ancestor
 CDO reload with whole-root COW/reference undo. Owned9548/6 passes two instances,

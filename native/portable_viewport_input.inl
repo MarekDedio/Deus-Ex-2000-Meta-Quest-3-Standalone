@@ -73,6 +73,7 @@ std::size_t NativeInputSnapshotBytes(const PortableViewportInputSnapshot& value)
     return bytes;
 }
 struct NativeInputQueryOperations {
+    using AliasName=int;
     struct Name {
         int compareIndex{};const NameString* spelling{};std::size_t slot{};
         bool operator==(const Name& other) const {return compareIndex==other.compareIndex;}
@@ -80,6 +81,26 @@ struct NativeInputQueryOperations {
     RuntimeObject* object;
     const std::function<void()>& charge;
     PortableInputQueryResult result;
+    bool& AliasGuard() {
+        // The original guard is shared by all UInput instances in this engine
+        // process. All runtime entry points retain exclusive CPU ownership.
+        static bool recursing{};return recursing;
+    }
+    AliasName FindAliasName(std::u16string_view value) {
+        Validate();return NameString::FindCompareIndex(QuestVr::UnrealString::Encode(value)).value_or(0);
+    }
+    AliasName AliasAt(std::size_t index) {
+        Validate();if(index>=40u)throw std::runtime_error("Native Input Alias index exceeds actual fixed storage");
+        return object->nativeInputInstance->values.aliases[index].alias.GetCompareIndex();
+    }
+    void Admit(std::size_t bytes) {admit(QuestVr::DecalStateDetail::Add(scratchBytes,bytes));}
+    void ExecInputCommands(std::size_t index) {
+        Validate();if(index>=40u)throw std::runtime_error("Native Input Alias command index is invalid");
+        throw std::runtime_error("Original Input alias requires its ExecInputCommands/GIsRunning/Action dispatch service: "+
+            object->nativeInputInstance->values.aliases[index].alias.ToString());
+    }
+    const std::function<void(std::size_t)>& admit;
+    std::size_t scratchBytes{};
     void Validate() const {
         if(!ActualNativeInputInstanceValid(object))throw std::runtime_error("Native Input query ownership was revoked or replaced");
     }
@@ -139,9 +160,19 @@ PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject* input,const std:
     const auto units=QuestVr::UnrealString::Decode(command);
     if(units.size()>QuestVr::NativeInputKeyQueries::MaximumCommandUnits)
         throw std::runtime_error("Native Input command unit limit exceeded");
-    NativeInputQueryOperations operations{input,charge,{}};
+    NativeInputQueryOperations operations{input,charge,{},admit,scratch};
     for(std::size_t i=0u;i<units.size();++i)operations.Step();
     operations.result.handled=QuestVr::NativeInputKeyQueries::Exec(operations,units);
+    if(!operations.result.handled) {
+        // These original branches precede key queries/aliases. A recognized
+        // unimplemented action is a refusal, never an alias override/decline.
+        for(const auto* action:{u"BUTTON",u"PULSE",u"TOGGLE",u"AXIS"}) {
+            std::size_t cursor{};operations.Step();
+            if(QuestVr::NativeInputKeyQueries::ParseCommand(units,cursor,action))
+                throw std::runtime_error("Original native Input action command requires its initialized typed dispatch service");
+        }
+        operations.result.handled=QuestVr::NativeInputAliasTail::Exec(operations,units);
+    }
     operations.Validate();return std::move(operations.result);
 }
 } // namespace

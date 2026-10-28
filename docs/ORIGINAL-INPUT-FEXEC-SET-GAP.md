@@ -18,6 +18,13 @@ IAT10599EB0. Do not jump directly from an unknown Input query to Core SET while
 earlier providers are still unbound; retain an explicit refusal until each
 required provider's authority and decline behavior is implemented.
 
+Input and RenDev offers are conditional on their actual native viewport
+pointers, not unconditionally required calls. UViewport.Exec10373A60 receives
+the FExec subobject at Viewport+2C: interface+34 is full-object Input+60,
+checked at10373AAF; interface+38 is RenDev+64, checked at10373ACE. An absent
+portable field is not proof of either native pointer being null. Establish
+authentic constructor/platform lifecycle state before skipping a provider.
+
 The prior ORIGINAL-PLAYER-INPUT-CONSOLE.md +64 Console label was incorrect.
 Viewport+64 is RenDev (assert literal1047BFE0,"RenDev",at10373775/10373973).
 Canvas is+5C; actual Console is+34,constructed using UConsole105823E0 at
@@ -154,8 +161,11 @@ Further exact first-provider dependencies:
 - UInput.Exec does not end after the implemented key-query cases. After the
   BUTTON/PULSE/TOGGLE/AXIS/KEYNAME/KEYBINDING branches,10394132 checks the actual
   recursion guard, ParseToken256 UseEscape0/FNAME_Find, and all40 current aliases;
-  a matching alias dispatches its own +7C Exec and returns true. The owned seed
-  has no SET alias, but mutable current aliases must be consulted each time.
+  a matching alias dispatches full-UObject +7C ExecInputCommands and returns
+  true. It is NOT its FExec Exec virtual. The owned seed has no SET alias, but
+  mutable current aliases must be consulted each time. The alias tail is now
+  implemented; the actual ExecInputCommands callback still explicitly refuses
+  its missing GIsRunning/Action/line-dispatch service. See ORIGINAL-INPUT-ALIASES.md.
 - Base URenderDevice.Exec10371B60 only recognizes GetDetailTextures and
   ToggleDetailTextures before returning false10371BFD. That is valid only for
   an authenticated inherited native provider, not any invented RenDev identity.

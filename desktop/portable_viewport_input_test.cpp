@@ -151,6 +151,13 @@ void Queries(std::uint64_t viewport,const PortableViewportInputSnapshot& input,T
     Refused([&]{(void)ExecutePortableRuntimeInputQuery(viewport,"KEYNAME 2147483648");},"Signed-overflow KEYNAME silently fabricated an index");
     Refused([&]{(void)ExecutePortableRuntimeInputQuery(viewport,"KEYBINDING "+std::string(253u,'x'));},"FindKeyName native format buffer bound was ignored");
     Refused([&]{(void)ExecutePortableRuntimeInputQuery(viewport,std::string(16385u,'x'));},"Input command unit admission was ignored");
+    for(const auto* action:{"BUTTON bFire","PULSE bFire","TOGGLE bFire","AXIS aBaseX"})
+        Refused([&]{(void)ExecutePortableRuntimeInputQuery(viewport,action);},"Original action branch fell through to aliases/providers");
+    for(const auto& alias:input.aliases)if(alias.aliasCompareIndex) {
+        bool reached{};try{static_cast<void>(ExecutePortableRuntimeInputQuery(viewport,alias.alias));}
+        catch(const std::exception& error){reached=std::string(error.what()).find("Original Input alias requires its ExecInputCommands/")==0u;}
+        Require(reached,"Actual configured alias did not reach its honest ExecInputCommands service boundary");break;
+    }
     SameInput(input,ReadPortableRuntimeViewportInput(viewport));GC::Collect();SameGc(gc,"Input key queries leaked native objects");
     Require(SameLookup(lookup,ReadPortableRuntimeObjectLookup())&&GetPortableRuntimeWorldRevision()==revision&&
         temporary.Snapshot("QueriesAfter")==checkpoint&&!GetPortableRuntimeUnsavedScriptState(),"Input query mutated checkpoint/lookup/revision/script state");

@@ -95,6 +95,7 @@
 #include "quest_native_config_import.h"
 #include "quest_native_struct_import.h"
 #include "quest_input_key_queries.h"
+#include "quest_input_alias_tail.h"
 #include "quest_static_find_object.h"
 #include "quest_collision_hash_math.h"
 #include "quest_collision_hash.h"

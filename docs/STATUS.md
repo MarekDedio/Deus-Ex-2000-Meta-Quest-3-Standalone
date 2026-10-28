@@ -1,5 +1,25 @@
 # Port status
 
+## Latest: original Input alias tail (2026-10-28)
+
+Actual current Input aliases now participate after key queries, preserving
+ParseToken256 UseEscape0,FNAME_Find,all40 slots/first match and the shared
+recursion guard. Matched aliases reach the honest missing ExecInputCommands
+service boundary; earlier recognized action commands cannot fall through.
+Static import proof corrects the callback from Exec to ExecInputCommands and
+confirms conditional native Input/RenDev offers in the viewport provider chain.
+
+Pure259/52,owned viewport Input10315/24,Canvas150/14,Console5148/26,HUD11225,
+Core SET9548/6,GC155/16,metadata13896/125,schema34355/1357 and all eight first-
+Training regressions pass. Desktop/strict ARM64/Android-native pass;CTest231
+executed/278 registered/47 explicit skips/zero failures141.72s. All45 originals/
+642 frozen compiler inputs unchanged by length/UTCmtime/SHA256;all jobs terminal.
+Two-Fire/doors repeat2 retain exact FExec SET/ReadInput boundaries and full undo.
+
+No new APK or live VR crate/loot/gravity completion. Next is genuine command-
+provider/input initialization and the committing VR weapon/world/render bridge.
+No other-map/account/UI-layout/resource-cap changes. See ORIGINAL-INPUT-ALIASES.md.
+
 ## Latest: revocable Quest input observation handoff (2026-10-28)
 
 Real SyncActionSets observations now enter a fixed64-row thread-safe source
