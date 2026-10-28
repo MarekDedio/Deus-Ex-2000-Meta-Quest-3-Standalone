@@ -39,6 +39,7 @@
 #include "portable_engine_collision.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_native_client.h"
+#include "portable_quest_input_source.h"
 #include "persona_ui_canvas.h"
 #include "quest_dialogue_ui.h"
 #include "quest_hud_ui.h"
@@ -678,7 +679,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     static bool ValidateInitialRuntime(
         const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
-        std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport) {
+        std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport,
+        const std::shared_ptr<QuestVr::QuestInputSource>& inputSource) {
         try {
             std::vector<PortablePackageTables> scripts;
             scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -718,6 +720,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             // materializes only the genuine registered stereo session objects;
             // Actor remains None until original Login/SetPlayer/Possess works.
             const auto playerSession=PreparePortableRuntimePlayerObjects(viewport.identity);
+            BindPortableRuntimeQuestInputSource(viewport.identity,inputSource);
             ALOG("DeusExQuest: native player session objects ready client=%s viewport=%s class=%s bound=%s",
                 playerSession.clientPath.c_str(),playerSession.viewportPath.c_str(),
                 playerSession.viewportClassPath.c_str(),playerSession.bound?"true":"false");
@@ -920,9 +923,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const auto clientLifetime = std::make_shared<QuestVr::NativeClientLifetime>();
             nativeClientLifetime_ = clientLifetime;
             const std::uint64_t clientIdentity = viewport.identity;
+            const auto inputSource=std::make_shared<QuestVr::QuestInputSource>(clientLifetime,clientIdentity,viewport.identity);
+            nativeQuestInputSource_=inputSource;questInputPublishFailureReported_=false;
             initialPreparationFuture_ = std::async(std::launch::async,
-                [clientLifetime, clientIdentity, viewport] {
-                    return PrepareInitialRuntime(clientLifetime, clientIdentity, viewport);
+                [clientLifetime, clientIdentity, viewport,inputSource] {
+                    return PrepareInitialRuntime(clientLifetime, clientIdentity, viewport,inputSource);
                 });
         } catch (const std::exception& error) {
             RevokeNativeClientBinding();
@@ -984,6 +989,36 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 *gripPoses[hand] = FromXrPosef(grip.pose);
                 *aimPoses[hand] = FromXrPosef(aim.pose);
             }
+        }
+        PublishQuestInputObservation(frame);
+    }
+
+    void PublishQuestInputObservation(const OVRFW::ovrApplFrameIn& frame) {
+        if(!nativeQuestInputSource_||!nativeClientLifetime_||!nativeClientLifetime_->Alive())return;
+        try {
+            QuestVr::QuestInputObservation observation;
+            observation.displayTime=frame.PredictedDisplayTime;observation.deltaSeconds=frame.DeltaSeconds;
+            observation.focused=Focused;observation.headValid=headTrackingValid_;observation.headTracked=headTrackingActive_;
+            observation.mounted=frame.HeadsetIsMounted;
+            const auto pose=[](const OVR::Posef& value) {
+                return QuestVr::QuestInputPose{{value.Translation.x,value.Translation.y,value.Translation.z},
+                    {value.Rotation.x,value.Rotation.y,value.Rotation.z,value.Rotation.w}};
+            };
+            if(observation.headValid)observation.headPose=pose(frame.HeadPose);
+            const std::array<int,7u> buttons{frame.kButtonA,frame.kButtonB,frame.kButtonX,frame.kButtonY,
+                frame.kButtonMenu,frame.kButtonLeftThumbStick,frame.kButtonRightThumbStick};
+            for(std::size_t index=0u;index<buttons.size();++index)
+                if(frame.AllButtons&buttons[index])observation.buttons|=static_cast<std::uint8_t>(1u<<index);
+            observation.hands[0u]={frame.LeftRemoteTracked,frame.LeftRemoteJoystick.x,frame.LeftRemoteJoystick.y,
+                frame.LeftRemoteIndexTrigger,frame.LeftRemoteGripTrigger,{}, {}};
+            observation.hands[1u]={frame.RightRemoteTracked,frame.RightRemoteJoystick.x,frame.RightRemoteJoystick.y,
+                frame.RightRemoteIndexTrigger,frame.RightRemoteGripTrigger,{}, {}};
+            if(frame.LeftRemoteTracked){observation.hands[0u].gripPose=pose(frame.LeftRemotePose);observation.hands[0u].aimPose=pose(frame.LeftRemotePointPose);}
+            if(frame.RightRemoteTracked){observation.hands[1u].gripPose=pose(frame.RightRemotePose);observation.hands[1u].aimPose=pose(frame.RightRemotePointPose);}
+            nativeQuestInputSource_->Publish(observation);
+        }catch(const std::exception& error) {
+            if(!questInputPublishFailureReported_)ALOG("DeusExQuest: input observation refused: %s",error.what());
+            questInputPublishFailureReported_=true;
         }
     }
 
@@ -1763,6 +1798,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         interactiveActors_.clear();
         ClearPortableRuntimeClient();
         nativeClientLifetime_.reset();
+        nativeQuestInputSource_.reset();
         ShutdownPortableRuntime();
     }
 
@@ -2033,10 +2069,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     static InitialPreparation PrepareInitialRuntime(
         const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
-        std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport) {
+        std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport,
+        const std::shared_ptr<QuestVr::QuestInputSource>& inputSource) {
         InitialPreparation preparation;
         try {
-            if (!ValidateInitialRuntime(clientLifetime, clientIdentity, viewport))
+            if (!ValidateInitialRuntime(clientLifetime, clientIdentity, viewport,inputSource))
                 throw std::runtime_error("initial portable runtime validation failed; see quest_main log");
             preparation.mapNames = ReadMapCatalog();
             if (!BuildQuestMapCache(gameRoot_, "00_Training"))
@@ -8079,6 +8116,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool initialPreparationFailed_{};
     std::uint64_t nativeClientGeneration_{};
     std::shared_ptr<QuestVr::NativeClientLifetime> nativeClientLifetime_;
+    std::shared_ptr<QuestVr::QuestInputSource> nativeQuestInputSource_;
+    bool questInputPublishFailureReported_{};
     std::future<InitialPreparation> initialPreparationFuture_;
     std::future<MapPreparation> mapCacheFuture_;
     std::string transitionMapName_;

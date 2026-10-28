@@ -4,6 +4,7 @@
 #include "portable_viewport_canvas.h"
 #include "portable_viewport_input.h"
 #include "portable_object_lookup.h"
+#include "portable_quest_input_source.h"
 #include "quest_engine_config.h"
 #include "quest_save_bundle.h"
 #include <chrono>
@@ -70,6 +71,21 @@ int main(int argc,char** argv) {
         lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,991u);
         for(const auto viewport:{992u,993u,994u}) {RegisterPortableRuntimeViewport(991u,{viewport,1440u,1440u,3u,2u});static_cast<void>(PreparePortableRuntimePlayerObjects(viewport));}
         const auto ini=(root/"System"/"DeusEx.ini").string();
+        bool missingSource{};try{static_cast<void>(ReadPortableRuntimeQuestInputSource(992u));}catch(...){missingSource=true;}
+        Require(missingSource,"Viewport metadata fabricated a Quest input source");++refusals;
+        auto source=std::make_shared<QuestVr::QuestInputSource>(lifetime,991u,992u);
+        auto foreign=std::make_shared<QuestVr::QuestInputSource>(std::make_shared<QuestVr::NativeClientLifetime>(),991u,992u);
+        bool foreignRefused{};try{BindPortableRuntimeQuestInputSource(992u,foreign);}catch(...){foreignRefused=true;}
+        Require(foreignRefused,"Quest input source accepted matching IDs with a different lifetime");++refusals;
+        BindPortableRuntimeQuestInputSource(992u,source);BindPortableRuntimeQuestInputSource(992u,source);
+        QuestVr::QuestInputObservation observation;observation.displayTime=1;observation.focused=true;
+        source->Publish(observation);
+        QuestVr::QuestInputCursor inputCursor;
+        const auto stagedInput=StagePortableRuntimeQuestInputSource(992u,inputCursor,true);
+        Require(stagedInput.count==1u&&stagedInput.after.sequence==1u&&inputCursor.sequence==0u&&
+            ReadPortableRuntimeQuestInputSource(992u).latest==1u,"Runtime Quest source staging consumed input or lost the real binding");
+        bool wrongViewport{};try{BindPortableRuntimeQuestInputSource(993u,source);}catch(...){wrongViewport=true;}
+        Require(wrongViewport,"Quest source escaped its actual viewport");++refusals;
         temporary=std::filesystem::temp_directory_path()/("quest-canvas-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         Require(std::filesystem::create_directory(temporary),"Cannot create Canvas diagnostic directory");
         const auto checkpoint=temporary/"checkpoint.sav";const auto baseline=Save(checkpoint);
@@ -121,6 +137,8 @@ int main(int argc,char** argv) {
         Require(LoadPortableRuntimeMap(map).passed&&ReadPortableRuntimeViewportCanvas(992u).objectIndex==ready.canvas.objectIndex,
             "Map reload discarded viewport Canvas");
         lifetime->Revoke();ClearPortableRuntimeClient();lifetime.reset();GC::Collect();
+        bool inputRevoked{};try{static_cast<void>(StagePortableRuntimeQuestInputSource(992u,stagedInput.after));}catch(...){inputRevoked=true;}
+        Require(inputRevoked,"Revoked runtime source remained usable");++refusals;
         bool revoked{};try{static_cast<void>(ReadPortableRuntimeViewportCanvas(992u));}catch(...){revoked=true;}
         Require(revoked,"Revoked Canvas exposed live viewport service");++refusals;
         ShutdownPortableRuntime();GC::Collect();const auto final=GC::GetStats();

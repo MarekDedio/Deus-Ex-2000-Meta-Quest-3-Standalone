@@ -109,6 +109,9 @@ public:
     // Retain the distinction between absence and a revoked binding. Native
     // consumers must not turn revocation into a legitimate empty recipient set.
     bool IsBound() const noexcept { return static_cast<bool>(lifetime_); }
+    bool MatchesLifetime(const std::shared_ptr<NativeClientLifetime>& lifetime) const noexcept {
+        return lifetime_==lifetime&&HasClient();
+    }
     bool HasViewport() const noexcept { return count_ && HasClient(); }
     std::size_t Count() const noexcept { return HasClient() ? count_ : 0u; }
     std::uint64_t ClientIdentity() const noexcept { return HasClient() ? clientIdentity_ : 0u; }

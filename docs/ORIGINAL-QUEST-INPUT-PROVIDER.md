@@ -1,11 +1,17 @@
 # Pending Quest viewport input provider and original Input initialization
 
-Static audit2026-10-28. **This service is not implemented.** This document does
+Static audit2026-10-28. **Original input processing is not implemented.** This document does
 not claim successful Input.Init, ResetInput, ReadInput, OpenWindow, a bound
 render-device provider, original startup or live Training gameplay. The current
 Console batch is separate. No original commercial DLL/EXE was loaded or
 executed. This contract was written while compiler inputs were frozen; only
 this new documentation file was added.
+
+Follow-up: the real Quest SyncActionSets producer and exact-session CPU binding
+now have a bounded raw observation handoff; see QUEST-INPUT-OBSERVATION-SOURCE.md.
+This is not yet a concrete native UpdateInput dispatcher or initialized original
+Input service. The reset/reconciliation/command/Float-processing contracts below
+remain required, and physical Quest acceptance of the producer is still pending.
 
 Immediate integration is the first `00_Training` map. Other-map work, account
 interfaces and character-creation menus are not prerequisites for this batch.

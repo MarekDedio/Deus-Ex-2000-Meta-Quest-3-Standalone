@@ -91,6 +91,7 @@
 #include "portable_core_static_exec.h"
 #include "portable_viewport_canvas.h"
 #include "portable_viewport_console.h"
+#include "portable_quest_input_source.h"
 #include "quest_native_config_import.h"
 #include "quest_native_struct_import.h"
 #include "quest_input_key_queries.h"
@@ -941,6 +942,17 @@ std::unique_ptr<GCRoot<RuntimePlayerSession>> persistentPlayerSession;
 std::vector<RuntimeObject*> persistentNativeInputs;
 std::vector<RuntimeObject*> persistentNativeCanvases;
 std::vector<RuntimeObject*> persistentNativeConsoles;
+struct RuntimeQuestInputBinding {std::uint64_t viewport{};std::shared_ptr<QuestVr::QuestInputSource> source;};
+std::vector<RuntimeQuestInputBinding> persistentQuestInputSources;
+std::size_t QuestInputSourceStorageBytes() {
+    using QuestVr::DecalStateDetail::Add;
+    auto bytes=persistentQuestInputSources.capacity()*sizeof(RuntimeQuestInputBinding);
+    for(const auto& binding:persistentQuestInputSources) {
+        if(!binding.source)throw std::runtime_error("Quest input binding contains no source");
+        bytes=Add(bytes,QuestVr::QuestInputSource::RetainedBytes());
+    }
+    return bytes;
+}
 using RuntimeNativePropertyRoots=decltype(RuntimeObject::nativeWindowPropertyRoots);
 std::size_t NativeObjectPropertyRootBytes(const RuntimeNativePropertyRoots& graph) {
     using QuestVr::DecalStateDetail::Add;using QuestVr::DecalStateDetail::Multiply;
@@ -1553,6 +1565,7 @@ void ClearNativePlayerEdges() noexcept {
 }
 
 void ClearNativePlayerObjects() noexcept {
+    std::vector<RuntimeQuestInputBinding>{}.swap(persistentQuestInputSources);
     ClearNativePlayerEdges();
     if(persistentEngineCollision&&persistentEngineCollision->get()&&persistentEngineCollision->get()->engine&&
         persistentEngineCollision->get()->engine->nativeEngineInstance)
@@ -11263,6 +11276,7 @@ private:
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
         if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
         defaults.Retain(NativePlayerSessionBytes());
+        defaults.Retain(QuestInputSourceStorageBytes());
         defaults.Retain(NativeCanvasInventoryBytes());
         defaults.Retain(NativeConsoleInventoryBytes());
         if(beforeConsoleInventory_)defaults.Retain(beforeConsoleInventory_->capacity()*sizeof(RuntimeObject*));
@@ -14723,6 +14737,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
 #include "portable_viewport_input.inl"
 #include "portable_viewport_canvas_api.inl"
 #include "portable_viewport_console_api.inl"
+#include "portable_quest_input_source_api.inl"
 
 QuestVr::Vm::Result SetPortableRuntimePlayer(const std::uint64_t viewportIdentity,
     const std::string& actorPath,const QuestVr::Vm::Limits& limits) {

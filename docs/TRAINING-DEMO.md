@@ -6,6 +6,14 @@ The short recording route below is the earlier introductory checkpoint, not
 the full current acceptance target. Neither the full tutorial nor original
 campaign startup is claimed complete.
 
+Latest input checkpoint2026-10-28: the real OpenXR action-sync producer now
+publishes a bounded raw-observation source bound to the runtime's exact session.
+Owned binding/Canvas150/14, Console5148/26, HUD11225 and all prior first-Training
+regressions pass; broad desktop230 executed/47 explicit skips/zero failures.
+This source does not yet dispatch original input or change current presentation
+controls. Physical producer acceptance, original reset/processing/startup and
+the committing VR crate/loot/gravity bridge remain; no new APK is packaged.
+
 Latest2026-10-28: original configured Console constructor/Init and class-backed
 state frame are verified (5148 checks/26 refusals). Sparse default storage fixes
 an actual integrated32MiB budget failure without increasing the cap. Original

@@ -1,5 +1,33 @@
 # Port status
 
+## Latest: revocable Quest input observation handoff (2026-10-28)
+
+Real SyncActionSets observations now enter a fixed64-row thread-safe source
+shared with the runtime CPU worker through the exact client/viewport lifetime.
+It carries raw buttons, per-hand axes/triggers/grips and validated tracking-space
+poses/focus/tracking state, without XR/GL handles or runtime mutation on the render
+owner. Missing/foreign/stale sources refuse. Immutable staged reads do not consume
+history; caller-owned cursors support future world commit/rollback. Overflow and
+invalid-frame discontinuity require explicit fresh reset baselines. Current
+presentation controls remain unchanged, so this adds no duplicate gameplay.
+
+Standalone source tests cover15 refusals plus concurrent coherent rows; the
+owned binding/Canvas fixture passes150/14. Console5148/26, HUD11225, Core SET9548/6,
+GC155/16, metadata13896/125, schema34355/1357 and all eight first-Training regressions
+pass. Desktop/strict ARM64/Android-native pass; CTest230 executed/277 registered/
+47 explicit skips/zero failures117.23s. All45 originals/640 frozen compiler
+inputs match length/UTCmtime/SHA256; all jobs terminal. Initial Android signedness
+discovery is retained, not counted as passing.
+
+Original two-Fire repeat2 retains271677/32553 and exact FExec SET refusal/full
+undo; doors retain239536/19432/both56-unit moves/two ends/exact ReadInput refusal/
+full undo. No original UpdateInput/Input.Init/ResetInput/ReadInput dispatch,
+successful startup, live crate/loot/gravity or headset acceptance is claimed.
+Next: real reset/reconciliation and processing using this source, faithful
+viewport/provider startup and committing VR gameplay/publication. No new APK,
+other-map integration, account UI, budget increase or accepted layout change.
+See QUEST-INPUT-OBSERVATION-SOURCE.md and ORIGINAL-QUEST-INPUT-PROVIDER.md.
+
 ## Latest: original Console constructor/Init/state frame (2026-10-28)
 
 Configured actual Engine.Console now constructs after Canvas/Input with original
