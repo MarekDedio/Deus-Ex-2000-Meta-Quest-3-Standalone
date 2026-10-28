@@ -12,7 +12,7 @@ proof of successful startup. No new APK or live crate/loot/gravity is claimed.
 ## Preserve the real provider route
 
 The route is actual Input.Exec ->RenDev.Exec ->viewport commands ->
-Console.ProcessConsoleExec+48 ->UPlayer provider chain ->actual GameEngine.Exec
+Console.ScriptConsoleExec+48 ->UPlayer provider chain ->actual GameEngine.Exec
 ->UEngine.Exec ->Core.StaticExec. UEngine offers StaticExec at10380F44..4F via
 IAT10599EB0. Do not jump directly from an unknown Input query to Core SET while
 earlier providers are still unbound; retain an explicit refusal until each
@@ -24,6 +24,12 @@ the FExec subobject at Viewport+2C: interface+34 is full-object Input+60,
 checked at10373AAF; interface+38 is RenDev+64, checked at10373ACE. An absent
 portable field is not proof of either native pointer being null. Establish
 authentic constructor/platform lifecycle state before skipping a provider.
+
+2026-10-28: the actual Quest pre-open render slot, viewport native discriminator
+prefix and Console.ScriptConsoleExec selection/miss/non-Exec path are now bound.
+Real Core.Function registration prevents missing Class pointers from becoming
+false declines. The integrated SET probe now reaches the missing UPlayer route,
+not Core SET or completed startup. See ORIGINAL-VIEWPORT-COMMAND-PREFIX.md.
 
 The prior ORIGINAL-PLAYER-INPUT-CONSOLE.md +64 Console label was incorrect.
 Viewport+64 is RenDev (assert literal1047BFE0,"RenDev",at10373775/10373973).

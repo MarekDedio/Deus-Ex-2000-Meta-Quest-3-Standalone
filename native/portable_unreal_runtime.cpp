@@ -69,6 +69,8 @@
 #include "quest_quick_belt.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
+#include "quest_process_console_exec.h"
+#include "quest_viewport_exec_commands.h"
 #include "quest_decal_checkpoint.h"
 #include "quest_decal_projection.h"
 #include "quest_unreal_int_array.h"
@@ -925,14 +927,24 @@ std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& dom
 // Actual embedding-owned engine client/render-target registrations. No UObject
 // or map actor is synthesized; the render owner revokes only its atomic lease.
 QuestVr::NativeClientRegistry persistentNativeClient;
+struct RuntimeQuestViewportPayload {
+    RuntimeObject* viewport{};
+    // Actual base native viewport tail, established before platform OpenWindow.
+    // It is not Engine.Render, a missing property, or a claimed WinDrv instance.
+    RuntimeObject* renderDevice{};
+    std::uint64_t clientIdentity{},viewportIdentity{};
+    bool renderSlotBound{},windowOpened{};
+};
 struct RuntimePlayerSession final : GCObject {
     RuntimeObject* client{};
     std::vector<RuntimeObject*> classes, viewports;
+    std::array<RuntimeQuestViewportPayload,QuestVr::NativeClientRegistry::MaximumViewports> nativeViewports{};
 protected:
     GCAllocation* Mark(GCAllocation* marklist) override {
         marklist=GC::MarkObject(marklist,client);
         for(auto* object:classes) marklist=GC::MarkObject(marklist,object);
         for(auto* object:viewports) marklist=GC::MarkObject(marklist,object);
+        for(const auto& native:nativeViewports)marklist=GC::MarkObject(marklist,native.renderDevice);
         return marklist;
     }
 };
@@ -1550,6 +1562,17 @@ RuntimeObject* NativeSessionViewport(const std::uint64_t identity) {
         if(viewport && viewport->nativeViewportIdentity==identity &&
             viewport->nativeClientIdentity==persistentNativeClient.ClientIdentity()) return viewport;
     throw std::runtime_error("Registered viewport has no actual native player UObject");
+}
+const RuntimeQuestViewportPayload& RequireQuestViewportPayload(RuntimeObject* viewport) {
+    if(!viewport||NativeSessionViewport(viewport->nativeViewportIdentity)!=viewport)
+        throw std::runtime_error("Quest viewport payload lost its registered native owner");
+    const auto& payloads=persistentPlayerSession->get()->nativeViewports;
+    const auto found=std::find_if(payloads.begin(),payloads.end(),
+        [viewport](const auto& entry){return entry.viewport==viewport;});
+    if(found==payloads.end()||!found->renderSlotBound||found->clientIdentity!=viewport->nativeClientIdentity||
+        found->viewportIdentity!=viewport->nativeViewportIdentity)
+        throw std::runtime_error("Quest viewport has no authenticated base native payload");
+    return *found;
 }
 
 void ClearNativePlayerEdges() noexcept {
@@ -4468,13 +4491,13 @@ public:
         const auto command=arguments.front().Load().text;
         const auto queried=ExecuteNativeInputQuery(viewport->nativeViewportInput,command,
             [this]{LifecycleStep();},[this](std::size_t bytes){ValidateStateBudget(bytes);});
-        if(!queried.handled)
-            throw std::runtime_error("Original viewport FExec fallback is not implemented: "+command);
+        if(!queried.handled)return {Value::Text(Kind::String,ViewportExecAfterInput(viewport,command)),{}};
         return {Value::Text(Kind::String,queried.output),{}};
     }
 #include "portable_core_static_exec.inl"
 #include "portable_viewport_canvas_host.inl"
 #include "portable_viewport_console_host.inl"
+#include "portable_viewport_exec_host.inl"
     std::shared_ptr<const Function> WindowNativeDeclaration(const std::uint16_t index,const Function* declaration) {
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
         const char* path{};std::vector<Parameter> parameters;
@@ -14654,6 +14677,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
         return object;
     };
     auto classes=session->classes;auto viewports=session->viewports;
+    auto payloads=session->nativeViewports;
     const auto nativeClass=[&](const char* path,RuntimeObject* base) {
         if(IsContextExcludedPath(path))
             throw std::runtime_error("Native player registration cannot replace a context-excluded source UClass");
@@ -14682,6 +14706,13 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     const auto name="QuestViewport"+std::to_string(viewportIdentity);
     auto* viewport=allocate(client->reflection.objectPath+'.'+name,name,viewportClass,client);
     viewport->nativeClientIdentity=clientIdentity;viewport->nativeViewportIdentity=viewportIdentity;
+    const auto freePayload=std::find_if(payloads.begin(),payloads.end(),[](const auto& entry){return !entry.viewport;});
+    if(freePayload==payloads.end())throw std::runtime_error("Quest native viewport payload capacity exhausted");
+    // UViewport native sizeF8 extends UPlayer5C. Original default construction
+    // zeroes [5C,F8), its static constructor is UObject's no-op, and neither
+    // base/native platform constructor writes RenDev+64. Copy that typed
+    // pre-open baseline into the explicit Quest adapter; OpenWindow is separate.
+    *freePayload={viewport,nullptr,clientIdentity,viewportIdentity,true,false};
     // Concrete native UObject fields are independent of map Actors. Identity
     // fields use their actual loaded declarations, not package table indices.
     for(auto* object:{newClient ? client : nullptr,viewport}) {
@@ -14708,7 +14739,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     replacementVm.reserve(persistentVmObjects.size()+nextVm.size());
     using QuestVr::DecalStateDetail::Add;
     std::size_t extra=(classes.capacity()+viewports.capacity()+lookupObjects.capacity())*sizeof(RuntimeObject*)+
-        allocations.capacity()*sizeof(GCRoot<RuntimeObject>)+allocations.size()*sizeof(GCRootNode)+sizeof(GCRootNode);
+        allocations.capacity()*sizeof(GCRoot<RuntimeObject>)+allocations.size()*sizeof(GCRootNode)+sizeof(GCRootNode)+sizeof(payloads);
     if(!persistentPlayerSession)extra=Add(extra,sizeof(RuntimePlayerSession)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimePlayerSession>)+sizeof(GCRootNode));
     for(const auto& object:allocations)extra=Add(extra,NativeSessionObjectBytes(object.get()));
     if(lookup)extra=Add(extra,lookup->RetainedBytes());
@@ -14729,7 +14760,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     replacementVm.merge(persistentVmObjects);replacementVm.merge(nextVm);
     if(!persistentQualifiedObjects.empty()||!persistentVmObjects.empty()||!nextQualified.empty()||!nextVm.empty())std::terminate();
     persistentQualifiedObjects.swap(replacementQualified);persistentVmObjects.swap(replacementVm);
-    session->classes.swap(classes);session->viewports.swap(viewports);session->client=client;
+    session->classes.swap(classes);session->viewports.swap(viewports);session->nativeViewports=payloads;session->client=client;
     if(newOwner) persistentPlayerSession=std::move(newOwner);
     if(engineClientOwner)engineClientOwner->nativeEngineInstance->values.client=client;
     return ReadPortableRuntimePlayerSession(viewportIdentity);

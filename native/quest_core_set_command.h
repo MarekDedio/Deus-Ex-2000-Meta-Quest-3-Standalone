@@ -74,22 +74,23 @@ void CheckPhaseInput(std::u16string_view input,const Packet& packet,Operations& 
 // the token. Unquoted overflow consumes the entire token, whereas quoted
 // overflow stops at the first uncopied unit (but still consumes a closing
 // quote when that is the next unit). An absent closing quote is not an error.
-template<class Operations>
-Token ParseToken256(std::u16string_view supplied,std::size_t cursor,Operations& operations,
+template<std::size_t Capacity,class Operations>
+Token ParseToken(std::u16string_view supplied,std::size_t cursor,Operations& operations,
     std::size_t retainedBytes=0u,bool useEscape=true) {
+    static_assert(Capacity>1u&&Capacity<=TokenCapacity);
     const auto input=Detail::Input(supplied,operations);
     if(cursor>input.size())throw std::runtime_error("Native Core SET token cursor exceeds admitted CString");
     while(cursor<input.size()&&Detail::Space(input[cursor])) {operations.Step();++cursor;}
-    operations.Admit(Detail::Add(Detail::Add(retainedBytes,sizeof(Token)),Detail::UnitsBytes(Detail::Growth(TokenCapacity-1u))));
-    Token result;result.value.reserve(TokenCapacity-1u);
-    if(result.value.capacity()>Detail::Growth(TokenCapacity-1u))
+    operations.Admit(Detail::Add(Detail::Add(retainedBytes,sizeof(Token)),Detail::UnitsBytes(Detail::Growth(Capacity-1u))));
+    Token result;result.value.reserve(Capacity-1u);
+    if(result.value.capacity()>Detail::Growth(Capacity-1u))
         throw std::runtime_error("Native Core SET token capacity exceeds admitted library growth");
     if(cursor<input.size()&&input[cursor]==u'"') {
         operations.Step();++cursor;
         while(cursor<input.size()) {
             operations.Step();
             const auto unit=input[cursor];
-            if(unit==u'"'||result.value.size()==TokenCapacity-1u)break;
+            if(unit==u'"'||result.value.size()==Capacity-1u)break;
             ++cursor;
             if(unit==u'\\'&&useEscape) {
                 operations.Step();
@@ -105,11 +106,16 @@ Token ParseToken256(std::u16string_view supplied,std::size_t cursor,Operations& 
     } else {
         while(cursor<input.size()&&!Detail::Space(input[cursor])) {
             operations.Step();
-            if(result.value.size()<TokenCapacity-1u)result.value.push_back(input[cursor]);
+            if(result.value.size()<Capacity-1u)result.value.push_back(input[cursor]);
             ++cursor;
         }
     }
     result.nextUnit=cursor;result.present=!result.value.empty();return result;
+}
+template<class Operations>
+Token ParseToken256(std::u16string_view supplied,std::size_t cursor,Operations& operations,
+    std::size_t retainedBytes=0u,bool useEscape=true) {
+    return ParseToken<256u>(supplied,cursor,operations,retainedBytes,useEscape);
 }
 
 // Core101532da recognizes SET, then parses Class. The real caller must perform

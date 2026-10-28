@@ -28,6 +28,14 @@ baseline, not loaded serialized flags or proof of Register/default preparation.
 | BoolProperty | 102A6BF0 | 10166610 /1016665B | 60 | Property | Field | 0 ->12 |
 | StrProperty | 102A52F0 | 10167BD0 /10167C1B | 5C | Property | Field | 0 ->12 |
 | ArrayProperty | 102A48F0 | 10168C10 /10168C5B | 60 | Property | Field | 0 ->12 |
+| Function | 101F1718 | 10129510 /1012955E | 80 | Struct | State | 0 ->12 |
+
+2026-10-28 follow-up: actual Function registration is implemented as the14th
+closed metadata record; loaded function exports now bind its real indexed
+UClass. The owned oracle checks8196 original functions, Class headers and
+warm/map/session/GC lifetime. No Function default or instance constructor is
+invented. See ORIGINAL-VIEWPORT-COMMAND-PREFIX.md for the reached Console IsA
+dependency and full verification, including the updated last-name refusal case.
 
 The initializers supply package Core101A7EF4, config System101A82C8, exact
 unqualified UTF16 names, zero GUID and UObject flags04084004. The native

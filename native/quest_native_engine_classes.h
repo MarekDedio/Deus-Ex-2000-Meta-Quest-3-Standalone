@@ -30,7 +30,7 @@ inline constexpr std::array<NativeEngineClassRegistration,5u> NativeEngineClasse
 // native UClasses, not default blocks, fabricated serialized descriptors or
 // permission to replay Cpp-property constructors after package loading.
 // See ORIGINAL-NATIVE-METADATA-REGISTRATION.md for each audited native header.
-inline constexpr std::array<NativeEngineClassRegistration,13u> NativeMetadataClasses{{
+inline constexpr std::array<NativeEngineClassRegistration,14u> NativeMetadataClasses{{
     {"Core.Field","Core.Object","Core.Object",0x34u,0x13u,0x04084004u,"Core"},
     {"Core.Struct","Core.Field","Core.Object",0x6cu,0x12u,0x04084004u,"Core"},
     {"Core.State","Core.Struct","Core.Object",0x484u,0x12u,0x04084004u,"Core"},
@@ -48,7 +48,10 @@ inline constexpr std::array<NativeEngineClassRegistration,13u> NativeMetadataCla
     {"Core.StructProperty","Core.Property","Core.Field",0x64u,0x12u,0x04084004u,"Core"},
     // UInput's EInputKey is a real indexed UEnum with UStruct Within, not a
     // table selected by basename. Core10159AC0/10159B0B; static class1029D6D0.
-    {"Core.Enum","Core.Field","Core.Struct",0x40u,0x12u,0x04084004u,"Core"}
+    {"Core.Enum","Core.Field","Core.Struct",0x40u,0x12u,0x04084004u,"Core"},
+    // Core10129510..1012955E: real UFunction class used by ScriptConsoleExec's
+    // IsA check. Within is UState (101F2118), NOT UStruct or UObject.
+    {"Core.Function","Core.Struct","Core.State",0x80u,0x12u,0x04084004u,"Core"}
 }};
 
 // The actual native bases of Engine's five config ClassProperties. Console

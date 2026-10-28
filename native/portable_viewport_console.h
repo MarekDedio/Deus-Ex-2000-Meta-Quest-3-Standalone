@@ -33,3 +33,13 @@ struct PortableViewportConsoleResult {
 PortableViewportConsoleResult PreparePortableRuntimeViewportConsole(std::uint64_t viewportIdentity,
     const std::string& engineIni,bool commit=true,const QuestVr::Vm::Limits& limits={});
 PortableViewportConsoleSnapshot ReadPortableRuntimeViewportConsole(std::uint64_t viewportIdentity);
+
+struct PortableConsoleExecPrefixResult {
+    QuestVr::Vm::Result execution;
+    bool handled{};
+};
+// Actual Console ScriptConsoleExec selection prefix. Missing/non-Exec methods
+// decline; matching Exec methods refuse until their parameter/call service is
+// implemented. This is not UViewport/UPlayer fallback or successful startup.
+PortableConsoleExecPrefixResult ExecutePortableRuntimeConsoleExecPrefix(std::uint64_t viewportIdentity,
+    const std::string& command,const QuestVr::Vm::Limits& limits={});

@@ -109,9 +109,9 @@ void Run() {
     const auto engine=PreparePortableRuntimeNativeEngineClasses();
     Require(engine.prepared&&engine.classes.size()==5u,"Nested teardown lacks its real native Engine registration phase");
     const auto metadata=PreparePortableRuntimeNativeMetadataClasses();
-    Require(metadata.prepared&&metadata.classes.size()==13u&&metadata.classes[9u].classPath=="Core.StrProperty"&&
+    Require(metadata.prepared&&metadata.classes.size()==14u&&metadata.classes[9u].classPath=="Core.StrProperty"&&
         metadata.classes[11u].classPath=="Core.StructProperty"&&metadata.classes[11u].nativeSize==0x64u,
-        "Nested teardown lacks the actual thirteen-class native metadata registration");
+        "Nested teardown lacks the actual fourteen-class native metadata registration");
     const auto stringField=ReadPortableRuntimeObjectOwnership("StructArrayTeardownClasses.Probe.Leaf.Text");
     const auto structField=ReadPortableRuntimeObjectOwnership(RecordsProperty);
     Require(stringField.classPath=="Core.StrProperty"&&stringField.classIndex==metadata.classes[9u].objectIndex&&

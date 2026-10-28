@@ -218,6 +218,39 @@ int main(int argc,char** argv) {
         const auto again=PreparePortableRuntimeViewportConsole(992u,ini);
         Require(again.execution.passed()&&again.execution.committed&&again.execution.writes==0u,"Idempotent Console initialization ran additional stores");
         Same(ready.console,again.console);
+        const auto commandCheckpoint=Save(checkpoint);GC::Collect();const auto commandGc=GC::GetStats();
+        const auto commandLookup=ReadPortableRuntimeObjectLookup();
+        const auto unknownName=NameString::FindCompareIndex("QuestAbsentConsolePrefix20261028");
+        for(const auto* command:{"", " \t", "SET InputExt T Talk", "KeyEvent", "QuestAbsentConsolePrefix20261028"}) {
+            const auto queried=ExecutePortableRuntimeConsoleExecPrefix(992u,command);
+            Require(queried.execution.passed()&&queried.execution.committed&&!queried.handled&&!queried.execution.writes,
+                "Actual Console miss/non-Exec did not decline cleanly: "+queried.execution.error);
+        }
+        Require(NameString::FindCompareIndex("QuestAbsentConsolePrefix20261028")==unknownName,
+            "Actual Console command lookup interned a missing name");
+        for(const auto* command:{"TimeDemo", "Talk", "TeamTalk"}) {
+            const auto queried=ExecutePortableRuntimeConsoleExecPrefix(992u,command);
+            Require(!queried.execution.passed()&&!queried.execution.committed&&!queried.handled&&
+                queried.execution.error==std::string("Original ScriptConsoleExec command parameter/call service is not implemented: Engine.Console.")+command,
+                "Actual Console Exec match became a fabricated decline/success: "+queried.execution.error);++refusals;
+        }
+        for(const auto work:{0u,1u,4u}) {
+            QuestVr::Vm::Limits limits;limits.nativeWork=work;
+            const auto queried=ExecutePortableRuntimeConsoleExecPrefix(992u,"SET InputExt T Talk",limits);
+            Require(!queried.execution.passed()&&!queried.execution.committed,"Console prefix ignored the shared native work limit");++refusals;
+        }
+        for(const auto bytes:{0u,1u}) {
+            QuestVr::Vm::Limits limits;limits.retainedBytes=bytes;
+            const auto queried=ExecutePortableRuntimeConsoleExecPrefix(992u,"SET InputExt T Talk",limits);
+            Require(!queried.execution.passed()&&!queried.execution.committed,"Console prefix ignored retained admission");++refusals;
+        }
+        GC::Collect();const auto afterCommands=GC::GetStats();const auto afterCommandLookup=ReadPortableRuntimeObjectLookup();
+        Same(ready.console,ReadPortableRuntimeViewportConsole(992u));
+        Require(Save(checkpoint)==commandCheckpoint&&GetPortableRuntimeWorldRevision()==revision&&
+            commandGc.numObjects==afterCommands.numObjects&&commandGc.memoryUsage==afterCommands.memoryUsage&&
+            commandLookup.objects==afterCommandLookup.objects&&commandLookup.generation==afterCommandLookup.generation&&
+            commandLookup.retainedBytes==afterCommandLookup.retainedBytes,
+            "Console command prefixes changed whole save/frame/GC/lookup/revision state");
         for(const auto* raw:{"Engine.Console.vtblOut","Core.Object.ObjectInternal"}) {
             bool refused{};try{static_cast<void>(ReadPortableRuntimeDeclaredScriptProperty(ready.console.objectPath,raw));}
             catch(const std::exception&){refused=true;}
@@ -241,6 +274,8 @@ int main(int argc,char** argv) {
         lifetime->Revoke();ClearPortableRuntimeClient();lifetime.reset();GC::Collect();
         bool revoked{};try{static_cast<void>(ReadPortableRuntimeViewportConsole(992u));}catch(const std::exception&){revoked=true;}
         Require(revoked,"Revoked Console exposed a live viewport service");++refusals;
+        const auto revokedCommand=ExecutePortableRuntimeConsoleExecPrefix(992u,"SET InputExt T Talk");
+        Require(!revokedCommand.execution.passed()&&!revokedCommand.execution.committed,"Revoked Console command provider remained callable");++refusals;
         for(const auto& path:{ready.console.objectPath,other.console.objectPath}) {
             Require(!FindPortableRuntimeObject({path,0u,0u,true,false}),"Retired Console survived weak object lookup");
             bool retired{};try{static_cast<void>(ReadPortableRuntimeObjectOwnership(path));}catch(const std::exception&){retired=true;}
@@ -251,7 +286,8 @@ int main(int argc,char** argv) {
         std::filesystem::remove(checkpoint);std::filesystem::remove(temporary);temporary.clear();
         std::cout<<"PASS original Console constructor/InitExecution: "<<checks<<" checks / "<<refusals
             <<" refusals; 323 copied indexed fields, genuine header/Viewport/frame/probes, constructor order, rollback/name/index/save/GC/accounting, "
-            "distinct viewports, map retention and client teardown. Not command execution, Typing, OpenWindow, Input.Init, FExec or VR gameplay.\n";
+            "distinct viewports, actual ScriptConsoleExec lookup/miss/non-Exec/match-refusal, map retention and client teardown. "
+            "Not matched parameter execution, Typing, OpenWindow, Input.Init, full FExec or VR gameplay.\n";
         return 0;
     }catch(const std::exception& error) {
         if(lifetime)lifetime->Revoke();

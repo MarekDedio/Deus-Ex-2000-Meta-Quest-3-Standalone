@@ -1,5 +1,16 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-28:the actual viewport command prefix now passes the old Input/
+Console SET boundary and reaches missing UPlayer FExec routing. Actual pre-open
+render-slot authority,eleven native discriminators and ScriptConsoleExec lookup
+are bound;Core.Function registration fixes a discovered false decline. Console
+5492/35,metadata22230/133 (8196 real function bindings),all eight first-map
+regressions and final CTest232/279/47 skips/zero failures155.03s pass,alongside
+desktop/strict ARM64/Android-native. All45 originals/final646 inputs unchanged;
+all jobs terminal. Two-Fire and doors retain original observations/full undo.
+Next:real UPlayer/provider routing and input startup,then the LIVE VR bridge.
+No new APK or live crate/loot/gravity claim. See ORIGINAL-VIEWPORT-COMMAND-PREFIX.md.
+
 Latest2026-10-28:actual constructed Input now checks all40 current aliases with
 original token/name/first-match/shared-guard semantics. Actual +7C callback is
 ExecInputCommands,not another Exec; it still refuses missing running/action/

@@ -26,3 +26,18 @@ PortableViewportConsoleResult PreparePortableRuntimeViewportConsole(std::uint64_
     }
     return result;
 }
+PortableConsoleExecPrefixResult ExecutePortableRuntimeConsoleExecPrefix(std::uint64_t viewportIdentity,
+    const std::string& command,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableConsoleExecPrefixResult result;
+    try {
+        PortableActorVmHost host;auto* viewport=NativeSessionViewport(viewportIdentity);
+        static_cast<void>(RequireQuestViewportPayload(viewport));
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
+            result.handled=host.ConsoleCommandPrefix(viewport->nativeViewportConsole,command,viewport->nativeViewportActor);
+            return QuestVr::Vm::Value::Bool(result.handled);
+        },limits);
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}

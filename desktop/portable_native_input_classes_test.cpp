@@ -122,7 +122,7 @@ void SnapshotIs(const PortableNativeInputClassesSnapshot& value,bool prepared,
     if(!prepared) {
         Require(!value.configuredInputClass&&value.configName.empty(),"Unprepared Input phase exposed a partial config selection");return;
     }
-    Require(metadata&&metadata->prepared&&metadata->classes.size()==13u,"Input fixture lacks its actual thirteen-class dependency");
+    Require(metadata&&metadata->prepared&&metadata->classes.size()==14u,"Input fixture lacks its actual fourteen-class dependency");
     Require(value.configuredInputClass&&*value.configuredInputClass==configured&&value.configName=="User",
         "Input class phase changed the canonical selected class or original User config name");
     const auto object=metadata->classes[0u].baseClassIndex,meta=metadata->classes[3u].objectIndex;
@@ -163,7 +163,7 @@ void SamePrerequisites(const PortableNativeEngineClassesSnapshot& engine,const P
             "Input phase replaced an Engine native registration header");
     }
     Require(b.prepared==metadata.prepared&&b.classes.size()==metadata.classes.size()&&b.boundSerializedClasses==metadata.boundSerializedClasses,
-        "Input phase changed its existing thirteen-class Core metadata prerequisite");
+        "Input phase changed its existing fourteen-class Core metadata prerequisite");
     for(std::size_t i=0u;i<b.classes.size();++i)SameRow(b.classes[i],metadata.classes[i]);
 }
 void SameSnapshot(const PortableNativeInputClassesSnapshot& expected,const PortableNativeInputClassesSnapshot& actual,
@@ -236,7 +236,7 @@ void MissingPhases(const std::vector<PortablePackageTables>& packages,Temporary&
     Require(InitializePortableRuntime(packages).passed,"Cannot initialize actual owned Input fixture");
     for(unsigned phase=0u;phase<3u;++phase) {
         if(phase==1u)Require(PreparePortableRuntimeNativeEngineClasses().prepared,"Cannot prepare the five-class Engine phase");
-        if(phase==2u)Require(PreparePortableRuntimeNativeMetadataClasses().prepared,"Cannot prepare the thirteen-class metadata phase");
+        if(phase==2u)Require(PreparePortableRuntimeNativeMetadataClasses().prepared,"Cannot prepare the fourteen-class metadata phase");
         const auto engine=ReadPortableRuntimeNativeEngineClasses();const auto metadata=ReadPortableRuntimeNativeMetadataClasses();
         const auto checkpoint=temporary.Snapshot("MissingPhaseBefore"+std::to_string(phase));
         const auto gc=GC::GetStats();const auto revision=GetPortableRuntimeWorldRevision();
@@ -253,7 +253,7 @@ void MissingPhases(const std::vector<PortablePackageTables>& packages,Temporary&
 void Original(const fs::path& root,const std::vector<PortablePackageTables>& packages,const PortablePackageTables& map,Temporary& temporary) {
     MissingPhases(packages,temporary);
     const auto engine=ReadPortableRuntimeNativeEngineClasses();const auto metadata=ReadPortableRuntimeNativeMetadataClasses();
-    Require(engine.prepared&&engine.classes.size()==5u&&metadata.prepared&&metadata.classes.size()==13u,"Wrong explicit native prerequisite closure");
+    Require(engine.prepared&&engine.classes.size()==5u&&metadata.prepared&&metadata.classes.size()==14u,"Wrong explicit native prerequisite closure");
     Require(PreparePortableRuntimeNativePackages().prepared&&PreparePortableRuntimeObjectLookup().prepared,
         "Cannot prepare genuine Package roots and actual weak object lookup");
     const auto scriptGc=GC::GetStats();
@@ -397,7 +397,7 @@ int main(int argc,char** argv) {
         for(const auto& source:sources)source.Unchanged();
         std::cout<<"PASS owned native Input class integration: "<<checks<<" checks, "<<refusals
             <<" refusals; exact two native UClasses/+3 GC graph, actual Super/Within/metaclass/Package indices, canonical/folded lookup and casts, "
-              "unchanged five/thirteen prerequisites, atomic missing-phase/config refusal, copied-Core adjacent config selection, idempotent committed "
+              "unchanged five/fourteen prerequisites, atomic missing-phase/config refusal, copied-Core adjacent config selection, idempotent committed "
               "reads/preparation, first Training dormant save/warm restore/map/GC/shutdown lifetime. Not native properties/defaults, User.ini binding "
               "imports, Input instances, viewport Init/Reset, native ReadInput, startup, physics or VR rendering.\n";
         return 0;

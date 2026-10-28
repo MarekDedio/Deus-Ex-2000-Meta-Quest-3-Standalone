@@ -1,5 +1,30 @@
 # Port status
 
+## Latest: viewport/Console command prefix and real UFunction binding (2026-10-28)
+
+The real bound PlayerPawn command now continues after Input through the audited
+pre-open render-slot baseline, eleven native viewport command discriminators
+and actual Console.ScriptConsoleExec lookup. Unknown/non-Exec methods decline;
+matched Exec methods refuse their missing parameter/call service. Core.Function
+now has its actual native Class/Super/Within/index and loaded function bindings,
+fixing a discovered false-decline bug. No direct jump to Core SET is added.
+
+Two-Fire repeat2 now reaches the actual missing UPlayer FExec route at unchanged
+271677/32553,two notifies/four traces/two crate changes/nine births/full undo.
+Doors repeat2 retains239536/19432,both56-unit moves/two ends/exact ReadInput
+refusal/full undo. These remain rollback diagnostics,not successful startup.
+
+Pure116/49,Console5492/35,metadata22230/133 (8196 real Function exports),config
+9989/48,Input classes10446/38,schema34368/1357,teardown1164/33,viewport Input
+10315/24,Canvas150/14,HUD11225,Core SET9548/6,GC155/16 and all eight first-map
+regressions pass. Desktop/strict ARM64/Android-native pass;final CTest232/279,
+47 explicit skips,zero failures155.03s. All45 originals/final646 frozen inputs
+unchanged;all jobs terminal. Discovery failures/corrected fixtures are recorded.
+
+Next:faithful UPlayer/provider routing,input startup,and live VR weapon/world/
+render publication. No new APK,live crate/loot/gravity completion,other-map or
+account UI work,accepted layout/resource-cap changes. See ORIGINAL-VIEWPORT-COMMAND-PREFIX.md.
+
 ## Latest: original Input alias tail (2026-10-28)
 
 Actual current Input aliases now participate after key queries, preserving

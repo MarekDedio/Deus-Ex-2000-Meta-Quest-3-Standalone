@@ -424,7 +424,7 @@ void MissingPhases(const std::vector<PortablePackageTables>& packages,const std:
     Require(InitializePortableRuntime(packages).passed,"Cannot initialize original Input schema source packages");
     for(unsigned phase=0u;phase<7u;++phase) {
         if(phase==1u)Require(PreparePortableRuntimeNativeEngineClasses().prepared,"Cannot prepare five Engine classes");
-        if(phase==2u)Require(PreparePortableRuntimeNativeMetadataClasses().prepared,"Cannot prepare thirteen metadata classes");
+        if(phase==2u)Require(PreparePortableRuntimeNativeMetadataClasses().prepared,"Cannot prepare fourteen metadata classes");
         if(phase==3u)Require(PreparePortableRuntimeNativeConfigClasses().prepared,"Cannot prepare four config constraints");
         if(phase==4u)Require(PreparePortableRuntimeNativePackages().prepared,"Cannot prepare actual Packages");
         if(phase==5u)Require(PreparePortableRuntimeNativeInputClasses().prepared,"Cannot prepare two actual Input classes");
@@ -588,7 +588,7 @@ void Original(const fs::path& root,const std::vector<PortablePackageTables>& pac
     const auto engine=ReadPortableRuntimeNativeEngineClasses();const auto metadata=ReadPortableRuntimeNativeMetadataClasses();
     const auto config=ReadPortableRuntimeNativeConfigClasses();const auto inputClasses=ReadPortableRuntimeNativeInputClasses();
     const auto collision=ReadPortableRuntimeEngineCollision();const auto preMapPackages=ReadPortableRuntimeNativePackages();
-    Require(engine.prepared&&engine.classes.size()==5u&&metadata.prepared&&metadata.classes.size()==13u&&
+    Require(engine.prepared&&engine.classes.size()==5u&&metadata.prepared&&metadata.classes.size()==14u&&
         config.prepared&&config.classes.size()==4u&&inputClasses.prepared&&inputClasses.classes.size()==2u,
         "Wrong explicit native class dependency closure for Input schema");
     const auto scriptGc=GC::GetStats();Require(LoadPortableRuntimeMap(map).passed,"Cannot load dormant first Training map");Dormant();
