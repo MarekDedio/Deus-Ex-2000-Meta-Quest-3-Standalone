@@ -6,6 +6,7 @@ constexpr std::size_t InputConfigWorkLimit=16u<<20u;
 void InputConfigStep(RuntimeNativeInputConfig& config,const std::size_t amount=1u) {
     if(amount>InputConfigWorkLimit-config.work)
         throw std::runtime_error("Native Input config exceeds its shared import work budget");
+    if(config.charge)(*config.charge)(amount);
     config.work+=amount;
 }
 
@@ -30,6 +31,16 @@ struct InputAliasConfigImport {
     const RuntimeNativeInputDomain& domain;
     RuntimeNativeInputConfig& config;
     RuntimeNativeInputAlias& destination;
+    std::size_t arrayIndex{};
+    RuntimeObject* containingProperty{};
+    void Store(Field member,const QuestVr::Vm::Value& value) {
+        if(config.store) {
+            if(!containingProperty)throw std::runtime_error("Native Alias write has no containing property authority");
+            (*config.store)(containingProperty,arrayIndex,member,value);
+        }else if(member==domain.fields[0u])destination.alias=NameString(value.text);
+        else if(member==domain.fields[1u])destination.command=value.text;
+        else throw std::runtime_error("Native Alias write has no actual member authority");
+    }
     void Step() {InputConfigStep(config);}
     StructureType Structure() const {return domain.aliasStruct;}
     Field Child(StructureType structure) const {
@@ -68,19 +79,31 @@ struct InputAliasConfigImport {
     QuestVr::NativeConfigImport::Result Import(Field field,const std::size_t index,
         std::u16string_view value,const std::uint32_t flags) {
         static_cast<void>(IsProperty(field));InputConfigStep(config,value.size());
-        if(index||flags!=2u)throw std::runtime_error("Native Input Alias member import has an unaudited index/flags profile");
+        if(index||(flags!=2u&&flags!=3u))throw std::runtime_error("Native Input Alias member import has an unaudited index/flags profile");
         if(field==domain.fields[0u]) {
-            return QuestVr::NativeConfigImport::Name(value,destination.alias,[](std::u16string_view spelling) {
+            auto name=destination.alias;
+            const auto result=QuestVr::NativeConfigImport::Name(value,name,[](std::u16string_view spelling) {
                 return NameString(QuestVr::UnrealString::Encode(spelling));
             });
+            if(result.returned)Store(field,QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name,name.ToString()));
+            return result;
         }
         std::u16string command=QuestVr::UnrealString::Decode(destination.command);
         const auto result=QuestVr::NativeConfigImport::String(value,flags,command);
-        if(result.returned)destination.command=QuestVr::UnrealString::Encode(command);
+        if(result.returned)Store(field,QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::String,QuestVr::UnrealString::Encode(command)));
         return result;
     }
     void Warning(QuestVr::NativeConfigImport::StructImportWarning) {InputConfigStep(config);++config.warnings;}
 };
+
+QuestVr::NativeConfigImport::Result ImportNativeInputAlias(const RuntimeNativeInputDomain& domain,
+    RuntimeNativeInputConfig& config,RuntimeNativeInputAlias& destination,std::size_t index,
+    RuntimeObject* property,std::u16string_view value,std::uint32_t flags) {
+    if(property!=domain.fields[2u]||(flags!=0u&&flags!=1u))
+        throw std::runtime_error("Native Alias import lacks its actual Config/SET StructProperty authority");
+    InputAliasConfigImport operations{domain,config,destination,index,property};
+    return QuestVr::NativeConfigImport::Struct(value,flags,operations);
+}
 
 // Native LoadConfig(Propagate=1) recursively visits Super on the SAME receiver.
 // InputExt inherits Input's Config list; ordinary Config uses each supplied
@@ -122,14 +145,17 @@ void LoadInputDefaultConfig(const RuntimeNativeInputDomain& domain,RuntimeNative
             QuestVr::NativeConfigImport::Result imported;
             if(field==domain.fields[2u]&&property.dimension==40u&&property.elementSize==0x10u&&
                 property.offset==0x2cu&&property.referencedStruct==domain.aliasStruct&&field->cls==domain.defaultClasses[2u]) {
-                InputAliasConfigImport operations{domain,config,destination.aliases[index]};
-                imported=QuestVr::NativeConfigImport::Struct(units,0u,operations);
+                imported=ImportNativeInputAlias(domain,config,destination.aliases[index],index,field,units,0u);
             }else if(field->cls->reflection.objectPath=="Core.StrProperty"&&property.dimension==1u&&property.elementSize==12u&&
                 property.offset>=0x2acu&&(property.offset-0x2acu)%12u==0u&&
                 (property.offset-0x2acu)/12u<destination.bindings.size()&&!property.referencedStruct) {
                 const auto slot=(property.offset-0x2acu)/12u;std::u16string text;
                 imported=QuestVr::NativeConfigImport::String(units,0u,text);
-                if(imported.returned)destination.bindings[slot]=QuestVr::UnrealString::Encode(text);
+                if(imported.returned) {
+                    auto value=QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::String,QuestVr::UnrealString::Encode(text));
+                    if(config.store)(*config.store)(field,index,nullptr,value);
+                    else destination.bindings[slot]=std::move(value.text);
+                }
             }else throw std::runtime_error("Native Input Config property has no audited typed storage slot");
             // Retail ignores ImportText's pointer. Normal malformed structs
             // retain their member-prefix writes and do not abort later fields.
@@ -148,14 +174,34 @@ PortableInputSchemaSnapshot PreparePortableRuntimeInputConfig(const std::string&
         throw std::runtime_error("Native Input config requires the actual prepared native Input schema/default graph");
     auto& domain=*persistentInputSchema->get();
     if(domain.config) {
-        if(domain.config->sourcePath!=supplied)
+        const auto& bound=domain.config->seedPath.empty()?domain.config->sourcePath:domain.config->seedPath;
+        if(bound!=supplied)
             throw std::runtime_error("Native Input config is already bound to another explicit User.ini source");
         return ReadPortableRuntimeInputSchema();
     }
     static_cast<void>(ReadPortableRuntimeInputSchema());
-    auto document=QuestVr::NativeConfig::ReadOrderedIni(supplied);
+    std::optional<QuestVr::NativeConfig::OrderedIni> document;
+    std::string effective=supplied;
+    if(persistentUserConfigStorage) {
+        const auto& storage=*persistentUserConfigStorage;
+        if(storage.seedPath!=supplied)
+            throw std::runtime_error("Input config seed differs from its explicit app-owned backend binding");
+        // Backend read, raw snapshot, decoded file, parser vectors/strings and
+        // retained document can coexist. Admit the same fixed portable caps
+        // BEFORE reading/decoding, not after parser allocations have happened.
+        host.ValidateAdditionalPackageBudget(3u*QuestVr::ConfigFile::MaximumBytes+
+            QuestVr::NativeConfig::Limits{}.retainedBytes);
+        const auto snapshot=storage.backend.Read();
+        if(snapshot.Data()!=storage.baseline)
+            throw std::runtime_error("Input config backing changed before initial cache preparation");
+        const auto& bytes=snapshot.Data();
+        document=QuestVr::NativeConfig::OrderedIni::Parse(std::string_view(
+            bytes.empty()?"":reinterpret_cast<const char*>(bytes.data()),bytes.size()));
+        if(snapshot.Owned())effective=storage.targetPath;
+    }else document=QuestVr::NativeConfig::ReadOrderedIni(supplied);
     if(!document)throw std::runtime_error("Native Input supplied User.ini is missing");
-    auto config=std::make_unique<RuntimeNativeInputConfig>();config->sourcePath=supplied;config->document=std::move(*document);
+    auto config=std::make_unique<RuntimeNativeInputConfig>();config->sourcePath=effective;config->document=std::move(*document);
+    if(persistentUserConfigStorage)config->seedPath=supplied;
     auto input=CopyInputDefault(*domain.defaults[3u]->preparedNativeDefaults);
     auto extension=CopyInputDefault(*domain.defaults[4u]->preparedNativeDefaults);
     const auto stagedBytes=[&] {

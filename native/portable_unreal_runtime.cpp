@@ -86,6 +86,9 @@
 #include "quest_native_engine_classes.h"
 #include "quest_native_package.h"
 #include "quest_native_config.h"
+#include "quest_config_file_backend.h"
+#include "quest_core_set_command.h"
+#include "portable_core_static_exec.h"
 #include "quest_native_config_import.h"
 #include "quest_native_struct_import.h"
 #include "quest_input_key_queries.h"
@@ -765,10 +768,31 @@ protected:
 std::unique_ptr<GCRoot<RuntimeEngineCollisionDomain>> persistentEngineCollision;
 struct RuntimeNativeInputConfig {
     std::string sourcePath;
+    std::string seedPath; // Empty for legacy supplied-file read-only bindings.
     QuestVr::NativeConfig::OrderedIni document;
     std::size_t passes{},imports{},failures{},warnings{},work{};
+    // Borrowed only by local import invocations, never retained in the domain
+    // cache. Native runtime reloads share their caller's execution work budget.
+    const std::function<void(std::size_t)>* charge{};
+    const std::function<void(RuntimeObject*,std::size_t,RuntimeObject*,const QuestVr::Vm::Value&)>* store{};
 };
 struct RuntimeExtensionInputNames {std::array<NameString,52u> names;};
+struct RuntimeUserConfigStorage {
+    QuestVr::ConfigFile::Backend backend;
+    std::string seedPath,targetPath;
+    QuestVr::ConfigFile::Bytes baseline;
+    std::uint64_t generation{};
+    bool owned{};
+    PortableConfigPublication publication{PortableConfigPublication::None};
+};
+std::unique_ptr<RuntimeUserConfigStorage> persistentUserConfigStorage;
+std::size_t UserConfigStorageBytes() {
+    if(!persistentUserConfigStorage)return 0u;
+    const auto& storage=*persistentUserConfigStorage;
+    auto bytes=QuestVr::DecalStateDetail::Add(sizeof(storage),storage.backend.RetainedBytes());
+    bytes=QuestVr::DecalStateDetail::Add(bytes,storage.seedPath.capacity()+storage.targetPath.capacity()+2u);
+    return QuestVr::DecalStateDetail::Add(bytes,storage.baseline.capacity());
+}
 std::size_t NativeInputValuesBytes(const RuntimeNativeInputValues& input) {
     using QuestVr::DecalStateDetail::Add;
     auto bytes=sizeof(RuntimeNativeInputValues);
@@ -777,7 +801,7 @@ std::size_t NativeInputValuesBytes(const RuntimeNativeInputValues& input) {
     return bytes;
 }
 std::size_t NativeInputConfigBytes(const RuntimeNativeInputConfig& config) {
-    return QuestVr::DecalStateDetail::Add(sizeof(config)+config.sourcePath.capacity()+1u,
+    return QuestVr::DecalStateDetail::Add(sizeof(config)+config.sourcePath.capacity()+config.seedPath.capacity()+2u,
         config.document.RetainedBytes()-sizeof(QuestVr::NativeConfig::OrderedIni));
 }
 using InputConfigPayloads=std::array<const RuntimePreparedNativeDefaults*,2u>;
@@ -798,6 +822,11 @@ std::unique_ptr<GCRoot<RuntimeNativeInputDomain>> persistentInputSchema;
 bool InputSchemaDefaultValid(const RuntimeObject* cls);
 bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object);
 bool ActualNativeInputInstanceValid(const RuntimeObject* object);
+std::unique_ptr<RuntimePreparedNativeDefaults> CopyInputDefault(const RuntimePreparedNativeDefaults& source);
+void LoadInputDefaultConfig(const RuntimeNativeInputDomain&,RuntimeNativeInputConfig&,RuntimeObject*,
+    RuntimeNativeInputValues&,std::size_t,const QuestVr::NativeConfig::OrderedIni*);
+QuestVr::NativeConfigImport::Result ImportNativeInputAlias(const RuntimeNativeInputDomain&,RuntimeNativeInputConfig&,
+    RuntimeNativeInputAlias&,std::size_t,RuntimeObject*,std::u16string_view,std::uint32_t);
 PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject*,const std::string&,
     const std::function<void()>&,const std::function<void(std::size_t)>&);
 std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
@@ -2749,6 +2778,20 @@ PortableActorDispatchContext CurrentDispatchContext(RuntimeObject* actor, const 
 // startup/state ticks or silently emulate missing natives. A complete nested
 // invocation is one transaction, including native actor topology/deletion and
 // animation/tween history. Deleted actors keep their UObject identity.
+static RuntimeObject* ActualLookupObject(const RuntimeObjectLookupControl& control,const std::uintptr_t identity) {
+    const auto* record=control.index.RecordForIdentity(identity);
+    if(!record) throw std::runtime_error("Object lookup identity is not in the current actual index");
+    auto* object=reinterpret_cast<RuntimeObject*>(identity);
+    if(object->lookupControl.get()!=&control || object->objectIndex.Index()!=record->index)
+        throw std::runtime_error("Object lookup lease belongs to another engine generation");
+    return object;
+}
+static bool ActualLookupClass(const RuntimeObjectLookupControl& control,RuntimeObject* object) {
+    static_cast<void>(ActualLookupObject(control,reinterpret_cast<std::uintptr_t>(object)));
+    return object->cls==control.metaClass && !object->defaultOwner &&
+        ((object->inventoryTableMetadata && object->inventorySerializedClass && object->inventoryClassReferenceValid) ||
+            object->nativeEngineClass || object->nativeMetadataClass || object->nativeClientClass);
+}
 class PortableActorVmHost final : public QuestVr::Vm::Host {
     using Value = QuestVr::Vm::Value;
     using Kind = QuestVr::Vm::Kind;
@@ -3214,6 +3257,7 @@ public:
     std::optional<QuestVr::NativeWork::Usage> ReadNativeWork() const noexcept override { return nativeWork_.Read(); }
     void BeginRoot(const QuestVr::Vm::Limits& limits) override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        RequireEmptyNativeInputJournal();
         nativeWork_.Reset(limits.nativeWork);
         RequireEmptyMoveHits();ClearMoveHits();nativeDurableMoved_.clear();
         retailCollisionOutputBytes_=0u;
@@ -3308,6 +3352,8 @@ public:
             throw std::runtime_error("Native client lifetime revoked before script publication");
         ValidateSoundClientLease();
         if(retailCollisionRoot_) retailCollisionRoot_->PrepareCommit();
+        ValidateNativeInputMutationLeases();
+        PublishNativeUserConfig(); // Last fallible preparation, then no rollback after a rename.
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         if(retailCollisionRoot_) {
@@ -3316,6 +3362,7 @@ public:
         }
         beforeCollision_.reset();
         CommitConversationObjects();
+        ClearNativeInputJournal();
         provisionalDumps_.clear();
         provisionalLookupObjects_.clear();
         beforeLinkerSlots_.clear();
@@ -3332,6 +3379,9 @@ public:
     void Rollback() noexcept override {
         if (!transaction_) return;
         ClearMoveHits();nativeDurableMoved_.clear();
+        // The VM's value-reference undo has already run. Restore native owning
+        // payloads BEFORE any provisional object/index/window retirement.
+        RollbackNativeInputJournal();
         // Restore weak native hash identities BEFORE birth/lookup retirement.
         // VM reference undo has already run, but the same hash lease remains
         // owned until this host root unwinds; no independent native commit.
@@ -4305,6 +4355,7 @@ public:
             throw std::runtime_error("Original viewport FExec fallback is not implemented: "+command);
         return {Value::Text(Kind::String,queried.output),{}};
     }
+#include "portable_core_static_exec.inl"
     std::shared_ptr<const Function> WindowNativeDeclaration(const std::uint16_t index,const Function* declaration) {
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
         const char* path{};std::vector<Parameter> parameters;
@@ -9424,6 +9475,7 @@ private:
         std::optional<RuntimeNativeConversationState> conversation;
         std::uint32_t objectFlags{};
     };
+#include "portable_input_mutation.inl"
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
         return std::memcmp(&a,&b,sizeof(Number))==0;
     }
@@ -11075,6 +11127,8 @@ private:
         if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
         defaults.Retain(NativePlayerSessionBytes());
         defaults.Retain(NativeInputInventoryBytes());
+        defaults.Retain(NativeInputJournalBytes());
+        defaults.Retain(UserConfigStorageBytes());
         if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
         if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
             auto* model=persistentWorldActors.front()->nativeXLevel->nativeLevelModel;
@@ -13594,6 +13648,7 @@ void ShutdownPortableRuntime() {
     if(persistentNativePackages) persistentNativePackages->active=false;
     persistentNativePackages.reset();
     persistentInputSchema.reset();
+    persistentUserConfigStorage.reset();
     persistentEngineCollision.reset();
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
     persistentPrimitiveModelCache.Clear();
@@ -14270,20 +14325,6 @@ PortableObjectLookupState PreparePortableRuntimeObjectLookup() {
     return ReadPortableRuntimeObjectLookup();
 }
 
-static RuntimeObject* ActualLookupObject(const RuntimeObjectLookupControl& control,const std::uintptr_t identity) {
-    const auto* record=control.index.RecordForIdentity(identity);
-    if(!record) throw std::runtime_error("Object lookup identity is not in the current actual index");
-    auto* object=reinterpret_cast<RuntimeObject*>(identity);
-    if(object->lookupControl.get()!=&control || object->objectIndex.Index()!=record->index)
-        throw std::runtime_error("Object lookup lease belongs to another engine generation");
-    return object;
-}
-static bool ActualLookupClass(const RuntimeObjectLookupControl& control,RuntimeObject* object) {
-    static_cast<void>(ActualLookupObject(control,reinterpret_cast<std::uintptr_t>(object)));
-    return object->cls==control.metaClass && !object->defaultOwner &&
-        ((object->inventoryTableMetadata && object->inventorySerializedClass && object->inventoryClassReferenceValid) ||
-            object->nativeEngineClass || object->nativeMetadataClass || object->nativeClientClass);
-}
 static bool MatchActualLookupClass(const RuntimeObjectLookupControl& control,const std::uintptr_t identity,
     const std::uintptr_t requestedIdentity,const bool exact) {
     auto* object=ActualLookupObject(control,identity);
@@ -14341,6 +14382,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 #include "portable_engine_collision.inl"
 #include "portable_input_schema.inl"
 #include "portable_input_config.inl"
+#include "portable_user_config_api.inl"
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {

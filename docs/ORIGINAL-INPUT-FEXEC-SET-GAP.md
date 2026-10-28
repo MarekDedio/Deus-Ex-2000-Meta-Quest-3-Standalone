@@ -112,3 +112,58 @@ Bind a canonical port-owned writable directory separately from the immutable
 seed, rejecting unsafe links or equivalence to original files. Preserve genuine
 live-instance -> target CDO -> export all Config fields -> flush -> ancestor-CDO
 reload ordering; a one-binding mutation is not this service.
+
+## Next viewport provider audit (2026-10-28)
+
+The explicit Core SET service is under implementation/verification separately;
+it is not permission to skip the following actual earlier providers.
+
+Current native session objects retain viewport identity, Actor and Input, but
+no constructed viewport Console/RenDev/Canvas payload. Constructor-null native
+Engine.render/audio do NOT establish viewport.RenDev=None. Original GameEngine
+Init103896D5..1038970A constructs the configured Console, stores viewport+34 and
+calls its +54 Init(viewport), THEN opens the platform window at1038972F, THEN
+calls Input.Init at1038975F..65. The actual rendering/input adapter must bind
+these platform services, not infer their state from identity-only wrappers.
+
+Selected DeusExGameEngine.Exec1000ED70 first recognizes SAVEGAME/DELETEGAME and
+otherwise forwards the original command to UGameEngine.Exec1000EEB1..B8.
+GameEngineExt has no separate exported Exec override. UGameEngine.Exec1038A030
+handles OPEN/START and other commands. The verified tail first offers actual
+currentLevel.Exec+74 at1038A7A6..7B7, then currentLevel.Actors[0] (checked as
+actual LevelInfo) ->Game(+544).ProcessConsoleExec at1038A831..8B1, with None
+executor,before UEngine.Exec. This corrects the earlier provisional interpretation
+as a viewport Actor. These real Level/Game providers may repeat earlier offers
+in UPlayer routing; do not deduplicate them merely because they declined once.
+
+UEngine.Exec10380F03..25 offers the actual imported GExec first, then reaches
+Core.StaticExec10380F44..4F. Standalone embedding needs an explicit GExec provider
+authority/no-provider profile. Later cache/system/render/audio command branches
+are not reached after genuine Core SET handles the command, but all earlier
+providers must actually decline it. This is additional routing work, not a
+reason to turn unknown Input queries directly into Core SET.
+
+Further exact first-provider dependencies:
+
+- UInput.Exec does not end after the implemented key-query cases. After the
+  BUTTON/PULSE/TOGGLE/AXIS/KEYNAME/KEYBINDING branches,10394132 checks the actual
+  recursion guard, ParseToken256 UseEscape0/FNAME_Find, and all40 current aliases;
+  a matching alias dispatches its own +7C Exec and returns true. The owned seed
+  has no SET alias, but mutable current aliases must be consulted each time.
+- Base URenderDevice.Exec10371B60 only recognizes GetDetailTextures and
+  ToggleDetailTextures before returning false10371BFD. That is valid only for
+  an authenticated inherited native provider, not any invented RenDev identity.
+- Core ProcessConsoleExec10150860 gates actual GIsScriptable; then parses a
+ 64-unit token, FNAME_Find, current-state-first FindFunction(Global0), actual
+  UFunction and FUNC_Exec0x200. A miss/non-Exec declines before parameter setup.
+  This can prove SET decline without inventing every console command, but only
+  for a real Console/state/scriptability binding; matches must execute/refuse.
+- UViewport's actual constructor creates configured Canvas first at103731D9,
+  calls Canvas.Init(viewport)103731DC..E1, then constructs Input10373223. The
+  later GameEngine Console.Init10379650 stores actual Viewport+2C,+110=0x3F,
+  +720=1 and calls virtual+38 at103796C1; that final virtual still needs audit.
+
+Next implementation must establish actual viewport payload/Canvas/Console
+identity, ownership, GC and transactional lifecycle, then the authenticated
+port OpenWindow/RenDev and real Input.Init/Reset services. Existing identity-only
+wrappers or absent fields do not prove any of these constructor side effects.

@@ -1,5 +1,23 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-28:original Core.StaticExec SET now implements actual Input fanout,
+CDO mutation,all295 Config exports,app-owned logical/physical flush and ancestor
+CDO reload with whole-root COW/reference undo. Owned9548/6 passes two instances,
+822 writes,no probe disk stage/lock,real cold persistence,case-only semantics and
+malformed Alias prefixes. Pure mutation17303/209,backend223/21,parser2444/225,
+schema34355/1357,HUD11225,GC155/16,metadata13896/125 and all eight owned first-map
+regressions pass. Desktop/Android-native/strict ARM64 pass;CTest229 executed/
+274 registered/45 explicit skips/zero failures195.29s. All45 originals/628 frozen
+compiler inputs unchanged by length/UTCmtime/SHA256;all jobs terminal.
+
+The viewport provider chain is not bypassed:two-Fire repeat2 remains271677/
+32553 at its actual FExec SET guard,doors retain both56-unit moves and the exact
+ReadInput refusal/full undo. Next:real viewport Canvas/Console/RenDev lifecycle,
+authenticated provider routing and initialized Input/PreRender,then the LIVE VR
+bridge below. No new APK,live crate/loot/gravity completion,other-map integration,
+account UI,resource cap/save-format or accepted VR-layout change. See
+ORIGINAL-CORE-SET-IMPLEMENTATION.md and ORIGINAL-INPUT-FEXEC-SET-GAP.md.
+
 Latest2026-10-28:original unbound InitRootWindow completes script AND initial
 native activation/layout at16025 writes,within unchanged budgets. Owned HUD
 11225 verifies198 objects/65 Windows,17 visible-uninitialized nodes matching

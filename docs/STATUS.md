@@ -1,5 +1,34 @@
 # Port status
 
+## Latest: transactional Core SET and app-owned User config (2026-10-28)
+
+The original Core.StaticExec SET service now has phased token/Class/property
+lookup,actual indexed Input-instance fanout,slot-zero imports and PostEditChange
+gates,target-CDO import,all Config exports,logical Flush and ancestor-CDO reload.
+Input/default/config COW beforeimages and native references share root budgets
+and restore ownership before provisional retirement. Constructor counters remain
+bootstrap evidence. The explicit app-owned User.ini backend never writes Steam
+files;it uses checked private directories,exclusive staged/readback publication,
+stale-generation checks and irreversible post-rename durability outcomes.
+
+Owned SET9548/6 proves two real instances,one target CDO,295 exports,two CDO
+reloads,822 journaled writes,full rollback/no stage or lock in probes,real commit
+and cold reopen,case-only cache semantics and malformed Alias prefix stores.
+Pure mutation17303/209,backend223/21,parser2444/225,Input schema34355/1357,
+HUD11225,GC155/16,metadata13896/125 and all eight prior first-Training regressions
+pass. Desktop/Android-native/strict ARM64 pass;CTest229 executed/274 registered/
+45 explicit skips/zero failures195.29s. All45 originals/628 frozen compiler
+inputs match length/UTCmtime/SHA256;all jobs terminal.
+
+This is an explicit Core service,NOT an unknown-Input-query shortcut. Original
+two-Fire repeat2 still reaches271677/32553 and the genuine viewport FExec SET
+guard;doors retain both56-unit moves/exact ReadInput refusal/full undo. Next is
+actual viewport Canvas/Console/RenDev lifecycle and provider routing,then real
+Input.Init/Reset/ReadInput and PreRender,then the committing VR weapon/frame/
+publication bridge. No other-map integration,account UI,new APK,resource-cap,
+save-format or accepted VR-layout change. See ORIGINAL-CORE-SET-IMPLEMENTATION.md
+and the corrected provider audit in ORIGINAL-INPUT-FEXEC-SET-GAP.md.
+
 ## Latest: original first-Training root activation/layout (2026-10-28)
 
 Original InitRootWindow now completes both script initialization and native
