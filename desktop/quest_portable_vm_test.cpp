@@ -505,7 +505,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1413u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
+        if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==1024u || index==0u || index==1410u || index==1413u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
             index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
             index==1270u || index==1272u || index==1486u || index==1483u || index==1550u ||
@@ -1436,6 +1436,117 @@ void ParametersAndReturns() {
     r=Vm::Execute(host,native,"Self");Returned(r,"Native out alias");
     Require(host.Load("Self",actor).integer==9,"Native argument lost writable alias");
 }
+void StringToNameInputContracts() {
+    // This generated host observes native1024's original local-FString packet
+    // ONLY. Its integer sentinel is not an FName result or name-arena provider.
+    const auto declaration=[] {
+        auto native=Function("StringToName",{},"Extension");
+        native.path="Extension.ExtensionObject.StringToName";native.nativeIndex=1024u;native.flags=0x401u;
+        native.variables={{native.path+".str","str",Value::Text(Vm::Kind::String,"MetadataMustNotSeedThis"),0x400880u,1u},
+            {native.path+".ReturnValue","ReturnValue",Value::Text(Vm::Kind::Name,"None"),0x580u,1u}};
+        return native;
+    };
+    const auto expression=[](unsigned route,const Bytes& input) {
+        return route==0u?Native(1024u,{input}):Call(0x1cu,7,{input});
+    };
+    for(unsigned route=0u;route<3u;++route)for(const bool lateFailure:{false,true}) {
+        TestHost host;const auto native=declaration();
+        const auto caller=Function("StringToNameCopyCallerFrame",Return(Context(Ref(0x20u,9),
+            expression(route,Ref(0x01u,1)))));
+        const auto property=host.Property(caller,1,"OriginalString",Value::Text(Vm::Kind::String,{}));
+        host.Store("Self",property,{Value::Text(Vm::Kind::String,"SKTemp_SkillPointsAvail")});
+        host.Store("Other",property,{Value::Text(Vm::Kind::String,"WrongReceiverString")});
+        host.objects[{caller.source,9}]="Other";host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+        std::size_t calls{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution& execution) {
+            ++calls;
+            Require(receiver=="Other"&&arguments.size()==1u&&!arguments[0].reference&&
+                arguments[0].disposition==Vm::ResultDisposition::Written&&arguments[0].value.kind==Vm::Kind::String&&
+                arguments[0].value.text=="SKTemp_SkillPointsAvail"&&host.referenceReads==1u,
+                "StringToName did not detach its one caller-frame String read");
+            Require(route==0u?!actual:actual&&actual->path==native.path&&actual->nativeIndex==1024u,
+                "StringToName indexed/direct declaration route changed");
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,property.key},property),
+                Value::Text(Vm::Kind::String,"ChangedAfterStep"));
+            Require(arguments[0].Load().text=="SKTemp_SkillPointsAvail",
+                "StringToName copied FString changed with its old property alias");
+            return Vm::Evaluation{Value::Integer(71),{}};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("StringNamePrefixEffect",Join({Native(1000u),Return()})),"Self");
+            const auto value=route==2u?execution.CallFunction(native,"Other",{
+                {{},host.Reference({"Self",Vm::Scope::Instance,property.key},property)}}):
+                execution.CallFunction(caller,"Self");
+            if(lateFailure)execution.CallFunction(Function("StringNameLaterFailure",Return(Native(4095u))),"Self");
+            return value;
+        });
+        if(lateFailure) {
+            Failed(result,Vm::Status::Unsupported,host,"StringToName input copy preserves enclosing rollback");
+            Require(host.Load("Self",property).text=="SKTemp_SkillPointsAvail"&&host.effects==0u&&host.rng==12345u,
+                "StringToName late failure retained source mutation or prefix effects");
+        } else {
+            Returned(result,"StringToName original indexed/final/direct String input copy");
+            Require(result.value.integer==71&&host.Load("Self",property).text=="ChangedAfterStep"&&result.writes==1u,
+                "StringToName capture observation or source write changed");
+        }
+        Require(calls==1u&&host.Load("Other",property).text=="WrongReceiverString",
+            "StringToName evaluated its native twice or read/wrote the opcode receiver's input");
+    }
+    for(unsigned route=0u;route<3u;++route)for(const unsigned form:{0u,1u,2u,3u,4u}) {
+        TestHost host;const auto native=declaration();std::size_t calls{};
+        const bool literal=form==0u;
+        const auto input=literal?String("SKTemp_SkillPointsTotal"):form==1u?Bytes{0x0bu}:
+            Context({0x2au},Native(4095u),form==4u?12u:0u);
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function*,Vm::Execution&) {
+            ++calls;
+            Require(arguments.size()==1u&&!arguments[0].reference&&
+                arguments[0].disposition==Vm::ResultDisposition::Written&&arguments[0].value.kind==Vm::Kind::String&&
+                arguments[0].value.text==(literal?"SKTemp_SkillPointsTotal":""),
+                "StringToName local FString was not copied or initialized empty before Step");
+            return Vm::Evaluation{Value::Integer(71),{}};
+        };
+        Vm::Result result;
+        if(route==2u) {
+            Vm::Evaluation argument{Value::Text(Vm::Kind::String,literal?"SKTemp_SkillPointsTotal":"StalePayload"),{}};
+            if(form==1u)argument.value={};
+            else if(form!=0u) {
+                argument.disposition=form==2u?Vm::ResultDisposition::NoWrite:Vm::ResultDisposition::ZeroFill;
+                argument.zeroFillBytes=form==4u?12u:0u;
+                auto stale=std::make_shared<Vm::Reference>();stale->zero=Value::Text(Vm::Kind::String,{});
+                stale->read=[]()->Value {throw std::runtime_error("StringToName read stale unwritten FString alias");};
+                argument.reference=std::move(stale);
+            }
+            result=Vm::Execute(host,native,"Self",{argument});
+        } else {
+            const auto caller=Function("StringNameInitializedLocal",Return(expression(route,input)));
+            host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+            result=Vm::Execute(host,caller,"Self");
+        }
+        Returned(result,"StringToName literal/Nothing/null-context local FString capture");
+        Require(calls==1u&&result.value.integer==71,"StringToName empty local capture skipped or repeated native invocation");
+        Require(std::find(host.nativeIndices.begin(),host.nativeIndices.end(),4095u)==host.nativeIndices.end(),
+            "StringToName null Context evaluated its suppressed argument body");
+    }
+    for(unsigned route=0u;route<3u;++route)for(const unsigned bytes:{1u,4u,11u,13u}) {
+        TestHost host;const auto native=declaration();bool entered{};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,
+            const Vm::Function*,Vm::Execution&) {entered=true;return Vm::Evaluation{Value::Integer(71),{}};};
+        Vm::Result result;
+        if(route==2u)result=Vm::Execute(host,native,"Self",{
+            {Value::Text(Vm::Kind::String,"StalePayload"),{},Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)}});
+        else {
+            const auto caller=Function("StringNamePartialContextRefusal",Return(expression(route,
+                Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes)))));
+            host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+            result=Vm::Execute(host,caller,"Self");
+        }
+        Failed(result,Vm::Status::Unsupported,host,"StringToName refuses unestablished partial/overflow FString writes");
+        Require(!entered,"StringToName partial FString result reached the native provider");
+    }
+}
+
 void CoreGetEnumInputContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
     const auto configure=[](TestHost& host,const std::string& path="Core.Object.GetEnum") {
@@ -7368,6 +7479,7 @@ int main() {
         ProgramAndEligibilityContracts();
         NativeArgumentSeedContracts();
         CoreGetEnumInputContracts();
+        StringToNameInputContracts();
         CoreColorResultLayoutContracts();
         UninitializedNativeArgumentContracts();
         DirectNativeInitializedArgumentContracts();

@@ -81,6 +81,13 @@ uses it for SKTemp_SkillPointsAvail/Total, then accesses actual FlagBase service
 1120/1112/1121. Do not return a fabricated None name, skip skill restoration or
 treat constructor/default flag absence as a prepared native flag-storage service.
 
+Continuation: the subsequent bounded-name batch now implements native1024 and
+both actual Training runs reach the following PlayerPawnExt.FlagBase read
+at RestoreSkillPoints PC55/opcode1 (265660 instructions/37824 writes). Its
+constructor-owned graph remains missing and explicitly refuses instead of
+manufacturing None. See ORIGINAL-STRING-TO-NAME.md and ORIGINAL-PLAYER-FLAGBASE.md
+for the current repeated-run verification and exact next constructor contract.
+
 Full desktop, strict ARM64 and Android-native builds pass on the corrected handler.
 Core SET regression passes9548 checks/6 refusals. CTest executes241 of290 registered
 tests, with49 explicit owned-data skips and zero failures in199.98s. The final

@@ -12,6 +12,13 @@ return current viewport.Actor in place of that original pawn.
 
 ## Verified reached prefix
 
+Subsequent bounded-name continuation: native1024 now returns in both actual
+first-Training runs. The next boundary is the genuine missing constructor-owned
+PlayerPawnExt.FlagBase service, RestoreSkillPoints PC55/opcode1,265660 instructions/
+37824 writes. Repeated full rollback/42 unchanged sources pass, tracked in ORIGINAL-STRING-TO-NAME.md;
+see ORIGINAL-PLAYER-FLAGBASE.md for source/default-allocation/GC integration evidence.
+The native1024 and native544 observations below are retained historical checkpoints.
+
 The latest native544 batch now returns from original ResetKeyboard and advances
 through TravelPostAccept into DeusExPlayer.RestoreSkillPoints. Two normal
 first-Training expected-boundary runs reach PC23/opcode100/native1024 at265657
@@ -145,8 +152,9 @@ so this profile has zero overlay calls but still requires real reloads preservin
 the five prior SET bindings. Cache dirtiness must stay distinct from explicit
 pending Flush snapshots; do not accidentally publish later cache-only changes.
 These effects now pass owned integration and the actual startup return; see
-ORIGINAL-INPUT-RESET-CONFIG.md. The current missing service is native1024 in
-RestoreSkillPoints, followed by actual FlagBase restore operations.
+ORIGINAL-INPUT-RESET-CONFIG.md. Native1024 is also implemented in the subsequent
+bounded-name batch. The current missing service is constructor-owned FlagBase
+and its actual restore operations, not an optional None property.
 
 After SpawnPlayActor returns, LoadMap still requires moving-brush tracking,
 subsystem rebinding, per-viewport ResetInput/render services and DetailChange.

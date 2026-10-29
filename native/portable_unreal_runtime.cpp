@@ -76,6 +76,8 @@
 #include "portable_system_services.h"
 #include "quest_system_config.h"
 #include "quest_name_arena_stage.h"
+#include "quest_original_string_to_name.h"
+#include "portable_string_to_name.h"
 #include "quest_native_window_store.h"
 #include "quest_decal_checkpoint.h"
 #include "quest_decal_projection.h"
@@ -836,6 +838,9 @@ std::unique_ptr<GCRoot<RuntimeNativeSystemDomain>> persistentSystem;
 // NameString's arena is process-wide and outlives runtime shutdown. Keep its
 // committed System growth charged even after the owning System is retired.
 std::size_t systemNameArenaCredit{};
+// Successful native1024 additions belong to the existing process-lifetime
+// name arena, not a map/world rollback journal. Never refund on map retirement.
+std::size_t runtimeNameArenaCredit{};
 constexpr QuestVr::NativeEngineClassRegistration NativeSystemClass{
     "Core.System","Core.Subsystem","Core.Object",0x6cu,0x16u,0x04084004u,"Core"};
 bool NativeSystemDefaultValid(const RuntimeObject*);
@@ -4303,6 +4308,7 @@ public:
     Evaluation NativeWithContext(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
         const std::optional<Value>& context) override {
+        if(index==1024u)return OriginalStringToNameNative(Object(receiver),arguments,declaration,execution);
         if (index==229u) return CoreGetAxesNative(arguments,declaration);
         if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum")
             return CoreGetEnumNative(arguments,declaration);
@@ -4341,6 +4347,7 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if(index==1024u)return OriginalStringToNameNative(Object(receiver),arguments,declaration,execution);
         if(index==0u&&declaration&&LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
             return PlayerPawnConsoleCommand(Object(receiver),arguments,*declaration,execution);
         if(index==229u) return CoreGetAxesNative(arguments,declaration);
@@ -4594,6 +4601,7 @@ public:
     }
 #include "portable_core_static_exec.inl"
 #include "portable_input_reset_host.inl"
+#include "portable_string_to_name_host.inl"
 #include "portable_viewport_canvas_host.inl"
 #include "portable_viewport_console_host.inl"
 #include "portable_system_host.inl"
@@ -8329,6 +8337,21 @@ public:
         const bool nativeRegionStorage=false,const bool nativePhysicsVectorStorage=false,
         const bool nativeLandingZoneVelocityStorage=false,const bool nativeFallingOldLocationStorage=false,
         const bool nativeMovingBrushVectorStorage=false,const bool nativeScriptedPawnVectorStorage=false) {
+        if(!defaults&&!immutable&&!object->defaultOwner&&
+            LowerAscii(property.key)=="extension.playerpawnext.flagbase") {
+            auto* field=Object(property.key);
+            if(index||property.arrayDimension!=1u||property.zero.kind!=Kind::Object||property.flags!=0x10002u||
+                !OwnsProperty(object->cls,property)||!IsDerivedFromPath(object->cls,"Extension.PlayerPawnExt")||
+                !field->property||field->outer!=Object("Extension.PlayerPawnExt")||
+                field->property->type!="ObjectProperty"||!field->property->referencedType||
+                Qualified(Table(field->sourcePath),field->property->referencedType)!="Extension.FlagBase")
+                throw std::runtime_error("PlayerPawnExt.FlagBase lost its actual native property authority");
+            // Original PlayerPawnExt10037CC0..CFD constructs this actual
+            // UObject during pawn construction. An absent serialized tag is
+            // NOT a legitimate None field: null Context would silently skip
+            // CheckFlag/GetInt/DeleteFlag and misreport startup progress.
+            throw std::runtime_error("PlayerPawnExt.FlagBase requires its original constructor-owned native service");
+        }
         if(nativePhysicsVectorStorage) {
             if(defaults || immutable || index || ActorPhysicsVectorProperty(object,property.key.c_str()).key!=property.key)
                 throw std::runtime_error("Raw physics Vector read has no actual native field authority");
@@ -11424,6 +11447,7 @@ private:
         if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
         if(persistentSystem)defaults.Retain(NativeSystemRetainedBytes(*persistentSystem->get()));
         defaults.Retain(systemNameArenaCredit);
+        defaults.Retain(runtimeNameArenaCredit);
         defaults.Retain(NativePlayerSessionBytes());
         defaults.Retain(QuestInputSourceStorageBytes());
         defaults.Retain(NativeCanvasInventoryBytes());
@@ -14699,6 +14723,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 #include "portable_input_config.inl"
 #include "portable_user_config_api.inl"
 #include "portable_input_reset_api.inl"
+#include "portable_string_to_name_api.inl"
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {

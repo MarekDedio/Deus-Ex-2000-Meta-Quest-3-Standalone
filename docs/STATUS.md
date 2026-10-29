@@ -1,5 +1,40 @@
 # Port status
 
+## Latest: original StringToName and bounded real FName additions (2026-10-29)
+
+Original Extension native1024 StringToName now authenticates its declaration,
+copies its empty-initialized FString input in caller context, and returns a real
+first-spelling/case-insensitive FName identity. None, CString termination and
+variable-length names retain original behavior. Invalid character handling
+explicitly requires the missing concrete GError provider, not warning/sanitizing.
+The diagnostic API refuses hidden container tails/oversize Strings before copying.
+
+Both real Training runs now RETURN from native1024 and reach the actual
+PlayerPawnExt.FlagBase read in RestoreSkillPoints at PC55/opcode1, with265660
+instructions/37824 writes. Missing constructor-owned FlagBase explicitly refuses
+instead of returning None and silently skipping CheckFlag/GetInt/DeleteFlag.
+Both agree on that boundary and counts, with full save/state/revision/hash/RNG/
+client/lookup/Actor/GC rollback,42 unchanged owned sources and no old-generation
+Model proof reuse. This is not completed startup or live controller/crate/loot/
+gravity acceptance.
+
+Full desktop, strict ARM64 and Android-native builds pass. CTest242 executed/
+292 registered/50 explicit owned-data skips/zero failures144.59s. Owned name
+integration350 checks/19 refusals passes, including an8192 native-work fresh-name
+case that now uses712 units rather than2442643, without changing resource caps.
+Pure arena1096/29 and UTF16 lexical/provider262089/3 pass. The incremental mode
+uses actual free array/bucket capacity with detached strings/nodes and validated
+nonthrowing publication; real growth keeps the budgeted full-stage fallback.
+Successful names have the existing process lifetime, not fake world-journal undo.
+
+Owned Core SET9548/6 and Input reset9632/15 also pass on the final snapshot.
+The final audit finds1849 compiler inputs and45 originals unchanged, no live jobs.
+Earlier discovery failures, deliberately superseded jobs and the actual full-
+arena work-ceiling failure remain recorded as NOT passing gates. No APK, headset
+crate completion, accepted VR-layout changes or other-map integration is claimed.
+Next is the genuine PlayerPawnExt constructor/FlagBase graph described in
+ORIGINAL-PLAYER-FLAGBASE.md; see ORIGINAL-STRING-TO-NAME.md for this batch.
+
 ## Latest: original ResetKeyboard and journaled Input ResetConfig (2026-10-29)
 
 The actual native544 ResetKeyboard now authenticates the original declaration,

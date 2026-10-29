@@ -116,6 +116,12 @@ reach RestoreSkillPoints PC23/native1024 with full rollback. The contract below
 is retained as source evidence; it no longer describes a missing ResetConfig
 service. See ORIGINAL-INPUT-RESET-CONFIG.md and STATUS.md for current results.
 
+The later bounded-name batch also returns from native1024 in both actual Training
+runs; the new boundary is RestoreSkillPoints PC55/opcode1, the explicit missing
+constructor-owned FlagBase service (265660 instructions/37824 writes/full rollback).
+See ORIGINAL-STRING-TO-NAME.md and ORIGINAL-PLAYER-FLAGBASE.md. Input.Init/ResetInput/
+ReadInput and successful startup still remain separate missing work.
+
 Core exportEAT1156/ordinal1157,10101A14 ->10151AC0..10151D85 selects Default.ini
 for System ConfigName and DefUser.ini for User; other names return. It reads
 ONLY the supplied Class section as packed key=value CStrings (cap32767), splits
