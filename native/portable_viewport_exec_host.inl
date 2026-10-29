@@ -100,7 +100,6 @@
         return QuestVr::EngineExecCommands::Exec(operations,command,cursor,QuestVr::EngineExecCommands::Level);
     }
     bool GameEngineCommandExec(RuntimeObject* engine,std::u16string_view command,QuestVr::Vm::Execution& execution) {
-        static_cast<void>(execution);
         if(!engine||!persistentEngineCollision||engine!=persistentEngineCollision->get()->engine||
             !ActualNativeCollisionObjectValid(engine)||!engine->nativeEngineInstance||!engine->nativeEngineInstance->execInstalled)
             throw std::runtime_error("Command has no actual configured native Engine FExec provider");
@@ -129,7 +128,19 @@
         }
         // Fresh import resolution corrects the old GExec label: the provider
         // BEFORE Core.StaticExec is GSys (USystem.FExec), not later GExec.
-        throw std::runtime_error("Original UEngine GSys command provider is not prepared: "+QuestVr::UnrealString::Encode(forwarded));
+        bool systemHandled{};
+        if(SystemCommandExec(QuestVr::UnrealString::Encode(forwarded),systemHandled))return true;
+        // Original Core.StaticExec10153110 offers MEM,DUMPNATIVES,GET before
+        // SET. Refuse matched missing bodies; only authentic declines reach
+        // the existing typed SET implementation in this SAME Execution.
+        static constexpr std::array<std::u16string_view,3u> corePrefix{{u"MEM",u"DUMPNATIVES",u"GET"}};
+        NativeCommandOperations core{*this,"Core.StaticExec"};std::size_t coreCursor{};
+        if(QuestVr::EngineExecCommands::Exec(core,forwarded,coreCursor,corePrefix))return true;
+        nativeViewportCoreResult_.emplace();
+        if(CoreStaticExec(QuestVr::UnrealString::Encode(forwarded),*nativeViewportCoreResult_,execution))return true;
+        // No claim that the remaining StaticExec commands/cache/GExec tail
+        // exists. Unknown SET is handled by Core, not invented success here.
+        throw std::runtime_error("Original UEngine post-SET Core.StaticExec route is not prepared: "+QuestVr::UnrealString::Encode(forwarded));
     }
     struct PlayerCommandOperations {
         using Handle=RuntimeObject*;
@@ -172,6 +183,10 @@
     };
     std::string ViewportExecAfterInput(RuntimeObject* viewport,const std::string& command,QuestVr::Vm::Execution& execution) {
         clientDependent_=true;
+        if(nativeViewportCoreResult_) {
+            nativeCoreExecResult_=nullptr;
+            nativeViewportCoreResult_.reset();
+        }
         const auto& native=RequireQuestViewportPayload(viewport);
         if(native.renderDevice)
             throw std::runtime_error("Viewport has no implemented authenticated render-device Exec service");
@@ -191,5 +206,5 @@
             forwarded,viewport->nativeViewportActor))return {};
         PlayerCommandOperations player{*this,viewport,execution};
         static_cast<void>(QuestVr::PlayerExecRoute::Exec(player,text.substr(cursor)));
-        return {};
+        return nativeViewportCoreResult_?nativeViewportCoreResult_->output:std::string{};
     }

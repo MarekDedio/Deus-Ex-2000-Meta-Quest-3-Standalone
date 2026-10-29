@@ -915,6 +915,9 @@ struct PortableToggleProbeStage {
 };
 struct PortableToggleProbeResult {
     QuestVr::Vm::Result execution;
+    // Captured before the deliberate rollback sentinel. execution.nativeWork
+    // also includes reference undo and is not a forward-prefix threshold.
+    std::size_t forwardNativeWork{};
     std::string rootPath,radioPath,firstPath,secondPath;
     std::vector<std::string> registeredToggles;
     std::vector<PortableToggleProbeStage> stages;

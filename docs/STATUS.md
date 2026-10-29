@@ -1,5 +1,43 @@
 # Port status
 
+## Latest: rooted System and same-root Input SET (2026-10-29)
+
+Actual Core.System Class/two CDOs/eight fields/rooted GSys now precedes viewport
+startup. Typed original config, detached atomic FName publication, Class links,
+GC and read-only source authority are implemented. Genuine System and Core
+MEM/DUMPNATIVES/GET discriminators precede same-Execution SET; matched missing
+bodies refuse. Host-owned command results survive eventual config publication.
+
+Data-sized Input/import/file scratch, root-local physical cell-reference reuse
+and bit-exact redundant native Window/Console store avoidance preserve all VM
+writes/undo values without increasing resource limits. The additive dependency
+friend patch is reproducible and independently tested.
+
+Latest strict ARM64 and Android-native builds pass. System37226/66, CoreSET9548/6,
+HUD12211, Input10315/24, schema34368/1357, Console5503/36, Canvas150/14,
+metadata22230/133, config9989/48, Input classes10446/38, GC155/16,
+crate415/5, deferred429/21, animation588/24, FastTrace252/0, route1232 and first-map
+materials1308 actors/227 selected/0null pass. Pure name1024/13, System config46/4,
+backend363/31, Window-store predicate35 and dependency-patch7 also pass.
+
+The integrated two-Fire diagnostic repeats the exact next post-Possess/travel
+refusal at272525 instructions/37192 writes, after all five real Input SET calls.
+Both runs retain two notifies/four traces/two crate changes/nine births and
+full undo. Doors repeat2 retain239536/19432, both56-unit moves/two ends/exact
+ReadInput refusal/full undo. These are rollback diagnostics, NOT startup passes.
+
+Full desktop rebuild passes. CTest236 executed/284 registered/48 explicit
+owned-data skips/zero failures156.62s; separate owned axis409/15 and tile603/19
+also pass. No new APK or live headset crate/loot/gravity completion is claimed.
+Original accepted VR layout, resource caps, account UI and other-map integration
+are unchanged. Discovery failures, corrected CLI invocations and explicitly
+superseded compiler jobs remain recorded; they are not counted as passes.
+
+Next actual startup services: post-Possess role/display/admin stores, explicit
+command-line/FURL/travel-map authority and callbacks, including real native544
+ResetConfig, then Input.Init/Reset/ReadInput and committing VR gameplay/render
+publication. See ORIGINAL-SYSTEM-SERVICES.md and ORIGINAL-TRAINING-POST-POSSESS.md.
+
 ## Latest: genuine UPlayer/Level/GameEngine command route (2026-10-28)
 
 Bound PlayerPawn.ConsoleCommand now keeps its actual shared Execution through

@@ -48,6 +48,7 @@ $dependencies = @(
     @{ Key = 'metaOpenXrSdk'; Directory = 'Meta-OpenXR-SDK'; Patches = @() },
     @{ Key = 'surrealEngineEvaluationFork'; Directory = 'SurrealEngine';
         Patches = @('surreal-engine/NameStringFindCompareIndex.patch',
+            'surreal-engine/NameStringArenaStageFriend.patch',
             'surreal-engine/GCConstructorRollback.patch') }
 )
 

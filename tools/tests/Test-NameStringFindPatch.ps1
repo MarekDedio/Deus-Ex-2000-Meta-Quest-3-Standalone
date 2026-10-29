@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param()
 
-# Exercise the real initializer against archived pristine source, never the
-# developer's dependency worktrees. Fixture-only commits stand in for pins.
+# Exercise the real initializer's ordered Find/friend/GC patch chain against
+# archived pristine source, never developer dependency worktrees. Fixture-only
+# commits stand in for pins; no original game files or device are involved.
 $ErrorActionPreference = 'Stop'
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
@@ -12,15 +13,21 @@ $gitExecutable = (Get-Command git -CommandType Application -ErrorAction Stop | S
 $tarExecutable = (Get-Command tar -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $sourceRoot = Join-Path $projectRoot 'third_party\SurrealEngine'
 $relativeHeader = 'SurrealEngine/Package/NameString.h'
+$relativeGcSource = 'SurrealEngine/GC/GC.cpp'
 $sourceHeader = Join-Path $sourceRoot $relativeHeader
+$sourceGc = Join-Path $sourceRoot $relativeGcSource
 $sourceHash = (Get-FileHash -LiteralPath $sourceHeader -Algorithm SHA256).Hash
+$sourceGcHash = (Get-FileHash -LiteralPath $sourceGc -Algorithm SHA256).Hash
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('QuestNameFindPatchTests-' + [guid]::NewGuid())
 $fixtureDeps = Join-Path $fixtureRoot 'third_party'
 $fixtureEngine = Join-Path $fixtureDeps 'SurrealEngine'
 $fixtureMeta = Join-Path $fixtureDeps 'Meta-OpenXR-SDK'
 $fixtureHeader = Join-Path $fixtureEngine $relativeHeader
+$fixtureGc = Join-Path $fixtureEngine $relativeGcSource
 $fixtureHelper = Join-Path $fixtureRoot 'tools\Initialize-ThirdParty.ps1'
 $fixturePatch = Join-Path $fixtureRoot 'patches\surreal-engine\NameStringFindCompareIndex.patch'
+$fixtureFriendPatch = Join-Path $fixtureRoot 'patches\surreal-engine\NameStringArenaStageFriend.patch'
+$fixtureGcPatch = Join-Path $fixtureRoot 'patches\surreal-engine\GCConstructorRollback.patch'
 $archivePath = Join-Path $fixtureRoot 'pristine-name-header.tar'
 $pristineHeader = Join-Path $fixtureRoot 'pristine-name-header.h'
 $passed = 0
@@ -40,6 +47,18 @@ function Complete-Test([string]$Name) {
     Write-Output "PASS: $Name"
 }
 function Header-Hash { return (Get-FileHash -LiteralPath $fixtureHeader -Algorithm SHA256).Hash }
+function Fixture-Hashes {
+    return ((Get-FileHash -LiteralPath $fixtureHeader, $fixtureGc -Algorithm SHA256 | ForEach-Object { $_.Hash }) -join ',')
+}
+function Assert-PatchChain {
+    foreach ($patch in @($fixturePatch, $fixtureFriendPatch, $fixtureGcPatch)) {
+        Invoke-FixtureGit -Checkout $fixtureEngine -Arguments @('apply', '--reverse', '--check', $patch) | Out-Null
+    }
+    $header = [IO.File]::ReadAllText($fixtureHeader)
+    Assert-True ([regex]::Matches($header, 'friend class NameStringArenaStage;').Count -eq 1) 'only the one requested arena friend is installed'
+    Assert-True ($header.IndexOf('friend class NameStringArenaStage;', [StringComparison]::Ordinal) -gt
+        $header.IndexOf('int SpelledIndex = 0;', [StringComparison]::Ordinal)) 'friend follows SpelledIndex without disrupting the older Find patch context'
+}
 function Add-FixtureComment {
     # This mechanical mutation belongs only to the generated conflict fixture.
     $text = [IO.File]::ReadAllText($fixtureHeader)
@@ -50,11 +69,14 @@ try {
     New-Item -ItemType Directory -Path $fixtureEngine, $fixtureMeta,
         (Join-Path $fixtureRoot 'tools'), (Split-Path -Parent $fixturePatch) | Out-Null
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tools\Initialize-ThirdParty.ps1') -Destination $fixtureHelper
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'patches\surreal-engine\NameStringFindCompareIndex.patch') -Destination $fixturePatch
+    foreach ($patchName in @('NameStringFindCompareIndex.patch', 'NameStringArenaStageFriend.patch', 'GCConstructorRollback.patch')) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot ('patches\surreal-engine\' + $patchName)) -Destination (Split-Path -Parent $fixturePatch)
+    }
     $lock = Get-Content -LiteralPath (Join-Path $projectRoot 'third-party-lock.json') -Raw | ConvertFrom-Json
-    Invoke-FixtureGit -Checkout $sourceRoot -Arguments @('archive', ('--output=' + $archivePath), $lock.surrealEngineEvaluationFork.commit, '--', $relativeHeader) | Out-Null
+    Invoke-FixtureGit -Checkout $sourceRoot -Arguments @('archive', ('--output=' + $archivePath), $lock.surrealEngineEvaluationFork.commit,
+        '--', $relativeHeader, $relativeGcSource) | Out-Null
     & $tarExecutable -xf $archivePath -C $fixtureEngine
-    Assert-True ($LASTEXITCODE -eq 0) 'pristine pinned header extracted into isolated fixture'
+    Assert-True ($LASTEXITCODE -eq 0) 'pristine pinned NameString and GC sources extracted into isolated fixture'
     Copy-Item -LiteralPath $fixtureHeader -Destination $pristineHeader
     foreach ($dependency in @(
         @{ Directory = $fixtureMeta; Key = 'metaOpenXrSdk' },
@@ -69,13 +91,14 @@ try {
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'third-party-lock.json'), ($lock | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 
     & $fixtureHelper
-    Invoke-FixtureGit -Checkout $fixtureEngine -Arguments @('apply', '--reverse', '--check', $fixturePatch) | Out-Null
-    Complete-Test 'fresh pinned source receives the complete tracked API patch'
+    Assert-PatchChain
+    Complete-Test 'fresh pinned source receives ordered Find, sole arena friend and GC patches'
 
-    $appliedHash = Header-Hash
+    $appliedHashes = Fixture-Hashes
     & $fixtureHelper
-    Assert-True ((Header-Hash) -ceq $appliedHash) 'already-applied header bytes are unchanged'
-    Complete-Test 'second initializer run is idempotent'
+    Assert-True ((Fixture-Hashes) -ceq $appliedHashes) 'already-applied NameString and GC bytes are unchanged'
+    Assert-PatchChain
+    Complete-Test 'second initializer run is idempotent for the complete patch chain'
 
     Add-FixtureComment
     $dirtyAppliedHash = Header-Hash
@@ -86,9 +109,34 @@ try {
     Copy-Item -LiteralPath $pristineHeader -Destination $fixtureHeader
     Add-FixtureComment
     & $fixtureHelper
-    Invoke-FixtureGit -Checkout $fixtureEngine -Arguments @('apply', '--reverse', '--check', $fixturePatch) | Out-Null
+    Assert-PatchChain
     Assert-True ([IO.File]::ReadAllText($fixtureHeader).Contains('// unrelated local fixture edit')) 'unrelated edit survives fresh patch application'
     Complete-Test 'fresh patch applies while preserving unrelated dirty edits'
+
+    Copy-Item -LiteralPath $pristineHeader -Destination $fixtureHeader
+    Invoke-FixtureGit -Checkout $fixtureEngine -Arguments @('apply', $fixturePatch) | Out-Null
+    Assert-True (-not [IO.File]::ReadAllText($fixtureHeader).Contains('friend class NameStringArenaStage;')) 'upgrade fixture starts with the older Find API only'
+    & $fixtureHelper
+    Assert-PatchChain
+    $upgradedHashes = Fixture-Hashes
+    & $fixtureHelper
+    Assert-True ((Fixture-Hashes) -ceq $upgradedHashes) 'upgraded older checkout remains byte-identical on repeated initialization'
+    Complete-Test 'older Find-patched checkout upgrades additively and remains idempotent'
+
+    Copy-Item -LiteralPath $pristineHeader -Destination $fixtureHeader
+    Invoke-FixtureGit -Checkout $fixtureEngine -Arguments @('apply', $fixturePatch) | Out-Null
+    $friendConflict = [IO.File]::ReadAllText($fixtureHeader).Replace('int SpelledIndex = 0;',
+        "int SpelledIndex = 0;`n`tfriend class ConflictingArenaStage;")
+    [IO.File]::WriteAllText($fixtureHeader, $friendConflict, [Text.UTF8Encoding]::new($false))
+    # The old Find patch must still be recognized; the refusal belongs to the
+    # separate new friend patch rather than an accidental earlier conflict.
+    Invoke-FixtureGit -Checkout $fixtureEngine -Arguments @('apply', '--reverse', '--check', $fixturePatch) | Out-Null
+    $friendConflictHashes = Fixture-Hashes
+    $friendCaught = $null
+    try { & $fixtureHelper } catch { $friendCaught = $_ }
+    Assert-True ($null -ne $friendCaught -and $friendCaught.Exception.Message -match 'Conflicting edits.*NameStringArenaStageFriend') 'friend conflict produces an explicit patch-specific refusal'
+    Assert-True ((Fixture-Hashes) -ceq $friendConflictHashes) 'friend conflict preserves every local NameString and GC byte'
+    Complete-Test 'conflicting friend edits refuse without replacing local declarations'
 
     Copy-Item -LiteralPath $pristineHeader -Destination $fixtureHeader
     $conflict = [IO.File]::ReadAllText($fixtureHeader).Replace('int GetCompareIndex() const', 'int GetCompareIndex() /* local conflict */ const')
@@ -101,6 +149,7 @@ try {
     Complete-Test 'conflicting dirty edits refuse without partial patching'
 
     Assert-True ((Get-FileHash -LiteralPath $sourceHeader -Algorithm SHA256).Hash -ceq $sourceHash) 'actual dependency header remains unchanged'
+    Assert-True ((Get-FileHash -LiteralPath $sourceGc -Algorithm SHA256).Hash -ceq $sourceGcHash) 'actual dependency GC source remains unchanged'
     [pscustomobject]@{ Passed = $passed; Failed = 0; ActualDependencyModified = $false; HardwareUsed = $false }
 } finally {
     # Validate the exact private fixture before deleting any material. Remove

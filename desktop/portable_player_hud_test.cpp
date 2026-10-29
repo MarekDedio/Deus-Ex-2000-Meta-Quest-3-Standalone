@@ -142,6 +142,109 @@ void VerifyToggleAppearance(const std::array<Value,3u>& appearance,bool pressed)
 bool SameToggleAppearance(const std::array<Value,3u>& left,const std::array<Value,3u>& right) {
     return std::equal(left.begin(),left.end(),right.begin(),QuestVr::Vm::Equal);
 }
+void VerifyNativeWindowCoalescing(const std::vector<std::uint8_t>& baseline,const std::string& player,
+    const std::filesystem::path& directory,std::size_t expectedWrites,std::size_t expectedObjects) {
+    // This is an authenticated, temporary CDO checkpoint fixture followed by
+    // the SAME original nonpublishing constructor probe. It neither replaces
+    // InitWindow bytecode nor establishes Login, possession or a live HUD.
+    const std::string rootClass="DeusEx.DeusExRootWindow";
+    Require(ReadPortableClassDefault(rootClass,"keyDownMap",7u).kind==Kind::Byte &&
+        ReadPortableClassDefault(rootClass,"clientObject").kind==Kind::Object &&
+        ReadPortableClassDefault(rootClass,"MouseX").kind==Kind::Float &&
+        ReadPortableClassDefault(rootClass,"MouseY").kind==Kind::Float,
+        "Native coalescing fixture does not match the actual owned root field kinds");
+    auto icon=ReadPortableClassDefault("DeusEx.DamageHUDDisplay","iconInfo",0u);
+    Require(icon.kind==Kind::Struct && icon.fields.count("damagetype") &&
+        icon.fields.at("damagetype").kind==Kind::Struct &&
+        icon.fields.at("damagetype").fields.count("0") &&
+        icon.fields.at("damagetype").fields.at("0").kind==Kind::Name,
+        "Native coalescing fixture lacks its real nested damage-type Name schema");
+    icon.fields.at("damagetype").fields.at("0")=Value::Text(Kind::Name,"sHoCkEd");
+    const auto offset=ScriptOffset(baseline);
+    auto graph=QuestVr::DecodeScriptSavedState({baseline.begin()+static_cast<std::ptrdiff_t>(offset+4u),baseline.end()});
+    Require(graph.classDefaults.empty(),"Native coalescing fixture would replace existing CDO changes");
+    graph.classDefaults.push_back({rootClass,{
+        {"Extension.RootWindow.keyDownMap","keyDownMap",7u,Value::Byte(37u)},
+        {"Extension.Window.clientObject","clientObject",0u,Value::Text(Kind::Object,player)},
+        {"Extension.RootWindow.MouseX","MouseX",0u,Value::Float(-0.0f)},
+        {"Extension.RootWindow.MouseY","MouseY",0u,Value::Float(0.0f)}}});
+    graph.classDefaults.push_back({"DeusEx.DamageHUDDisplay",{
+        {"DeusEx.DamageHUDDisplay.iconInfo","iconInfo",0u,std::move(icon)}}});
+    const auto blob=QuestVr::EncodeScriptSavedState(graph);
+    Require(blob.size()<=16u*1024u*1024u,"Native coalescing fixture exceeds its script bound");
+    std::vector<std::uint8_t> fixture(baseline.begin(),baseline.begin()+static_cast<std::ptrdiff_t>(offset+4u));
+    for(unsigned i=0u;i<4u;++i)fixture[offset+i]=static_cast<std::uint8_t>(blob.size()>>(i*8u));
+    fixture.insert(fixture.end(),blob.begin(),blob.end());
+    const auto fixturePath=directory/"test-only-window-default-clearing.sav";
+    const auto inspectPath=directory/"window-default-clearing-inspect.sav";
+    const auto restorePath=directory/"window-default-clearing-restore.sav";
+    const auto initialStats=GC::GetStats();
+    Require(QuestVr::WriteDurableSaveFile(fixturePath.string(),fixture) &&
+        LoadPortableRuntimeState(fixturePath.string()) && SavePortableRuntimeState(inspectPath.string()),
+        "Cannot load authenticated temporary native-window CDO controls");
+    const auto before=Bytes(inspectPath);
+    const auto stats=GC::GetStats();const auto revision=GetPortableRuntimeWorldRevision();
+    const auto summary=ReadPortableRuntimeNativeWindowSummary();
+    const auto probe=ProbePortableRootWindowInitialization(player);
+    Require(probe.execution.status==QuestVr::Vm::Status::Unsupported && !probe.execution.committed &&
+        probe.execution.error=="Non-publishing native root initialization probe completed; rollback required" &&
+        probe.inspectionError.empty() && probe.execution.writes==expectedWrites && probe.objects.size()==expectedObjects,
+        "Prepatched native-window constructor changed the logical write sequence or failed: "+
+        probe.execution.error+"; "+probe.inspectionError);
+    const auto rootView=std::find_if(probe.objects.begin(),probe.objects.end(),[&](const auto& view){return view.path==probe.pawnRootPath;});
+    Require(rootView!=probe.objects.end(),"Prepatched constructor did not capture its actual native root");
+    const auto field=[&](const PortableNativeWindowObjectSnapshot& view,const char* key,std::uint32_t index=0u)
+        ->const PortableNativeWindowFieldSnapshot& {
+        const auto found=std::find_if(view.fields.begin(),view.fields.end(),[&](const auto& entry){
+            return entry.declaration==key && entry.arrayIndex==index;
+        });
+        Require(found!=view.fields.end(),std::string("Prepatched root omitted declared logical slot: ")+key);return *found;
+    };
+    for(const auto* key:{"Extension.ModalWindow.acceleratorTable","Extension.RootWindow.keyDownMap"})
+        Require(std::count_if(rootView->fields.begin(),rootView->fields.end(),[&](const auto& entry){return entry.declaration==key;})==255,
+            "Coalescing removed logical root slots instead of redundant physical overrides");
+    for(std::uint32_t index=0u;index<255u;++index) {
+        const auto& key=field(*rootView,"Extension.RootWindow.keyDownMap",index);
+        const auto& accelerator=field(*rootView,"Extension.ModalWindow.acceleratorTable",index);
+        Require(key.value.kind==Kind::Byte && key.value.integer==0 && accelerator.value.kind==Kind::Object &&
+            accelerator.value.text.empty() && accelerator.propertyRoots.empty(),
+            "Constructor did not clear all510 logical key/accelerator slots, including nonzero frozen defaults");
+    }
+    const auto& client=field(*rootView,"Extension.Window.clientObject");
+    Require(client.value.kind==Kind::Object && client.value.text.empty() && client.propertyRoots.empty(),
+        "Object-None coalescing retained a nonnull frozen value or stale owning GC edge");
+    for(const auto* key:{"Extension.RootWindow.MouseX","Extension.RootWindow.MouseY"}) {
+        const auto& value=field(*rootView,key).value;
+        Require(value.kind==Kind::Float && value.floating==0.0f && !std::signbit(value.floating),
+            "Native constructor coalesced negative zero with its required positive-zero store");
+    }
+    const auto damage=std::find_if(probe.objects.begin(),probe.objects.end(),[](const auto& view){
+        return view.classPath=="DeusEx.DamageHUDDisplay";
+    });
+    Require(damage!=probe.objects.end(),"Prepatched constructor lost its actual damage display");
+    // Structs are deliberately OUTSIDE the scalar fast path. This guards the
+    // original nested Name assignment and spelling, not scalar Name eligibility.
+    Require(field(*damage,"DeusEx.DamageHUDDisplay.iconInfo",0u).value.fields.at("damagetype").fields.at("0").text=="Shocked" &&
+        ReadPortableClassDefault("DeusEx.DamageHUDDisplay","iconInfo",0u).fields.at("damagetype").fields.at("0").text=="sHoCkEd" &&
+        ReadPortableClassDefault(rootClass,"keyDownMap",7u).integer==37 &&
+        ReadPortableClassDefault(rootClass,"clientObject").text==player &&
+        std::signbit(ReadPortableClassDefault(rootClass,"MouseX").floating),
+        "Constructor clearing or nested Name writes changed their frozen CDO source");
+    GC::Collect();const auto after=ReadPortableRuntimeNativeWindowSummary();
+    Require(after.objects==summary.objects && after.roots==summary.roots &&
+        after.configuredRootNameCounter==summary.configuredRootNameCounter &&
+        after.graphicsContextNameCounter==summary.graphicsContextNameCounter &&
+        Declared(player,"Extension.PlayerPawnExt.RootWindow",Kind::Object).text.empty() &&
+        GetPortableRuntimeWorldRevision()==revision && GC::GetStats().numObjects==stats.numObjects &&
+        GC::GetStats().memoryUsage==stats.memoryUsage && SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==before,
+        "Coalesced constructor probe retained native identity, GC authority, CDO or checkpoint changes");
+    Require(QuestVr::WriteDurableSaveFile(restorePath.string(),baseline) && LoadPortableRuntimeState(restorePath.string()) &&
+        SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
+        "Temporary native-window CDO fixture did not restore the exact owned baseline");
+    GC::Collect();
+    Require(GC::GetStats().numObjects==initialStats.numObjects && GC::GetStats().memoryUsage==initialStats.memoryUsage,
+        "Temporary native-window CDO fixture retained GC objects after baseline restore");
+}
 }
 
 int main(int argc,char** argv) {
@@ -1496,6 +1599,8 @@ int main(int argc,char** argv) {
                 "Original Toggle control lacks actual distinct windows and native Radio creation-order registration");
             Require(result.execution.nativeWork && result.execution.nativeWork->used>0u &&
                 !result.execution.nativeWork->exhausted,"Original Toggle calls lost the caller's native-work ledger");
+            Require(result.forwardNativeWork>0u && result.forwardNativeWork<=result.execution.nativeWork->used,
+                "Original Toggle diagnostic lost its pre-rollback forward-work observation");
             toggleRollback();return result;
         };
         const auto toggleNames=[&](const PortableToggleProbeResult& result,
@@ -1540,6 +1645,15 @@ int main(int argc,char** argv) {
         toggleRoundTrip(toggleCold,false);
         const auto toggleWarm=toggleRun(PortableToggleProbeMode::RoundTrip);
         toggleRoundTrip(toggleWarm,false);
+        const auto printToggleWork=[&](const char* label,const PortableToggleProbeResult& result) {
+            std::cout<<"ORIGINAL Toggle native work "<<label<<": forward="<<result.forwardNativeWork<<
+                " total="<<(result.execution.nativeWork?std::to_string(result.execution.nativeWork->used):"absent")<<
+                " limit="<<(result.execution.nativeWork?std::to_string(result.execution.nativeWork->limit):"absent")<<
+                " exhausted="<<(result.execution.nativeWork?(result.execution.nativeWork->exhausted?"true":"false"):"absent")<<
+                " status="<<static_cast<unsigned>(result.execution.status)<<" writes="<<result.execution.writes<<
+                " stages="<<result.stages.size()<<" error="<<result.execution.error<<std::endl;
+        };
+        printToggleWork("cold",toggleCold);printToggleWork("warm",toggleWarm);
         Require(toggleCold.rootPath==toggleWarm.rootPath && toggleCold.radioPath==toggleWarm.radioPath &&
             toggleCold.firstPath==toggleWarm.firstPath && toggleCold.secondPath==toggleWarm.secondPath &&
             toggleCold.registeredToggles==toggleWarm.registeredToggles,
@@ -1584,13 +1698,26 @@ int main(int argc,char** argv) {
                 "Native Toggle/Radio reset the caller write budget: "+std::to_string(prefix)+" "+partial.execution.error);
             toggleRollback();
         }
-        for(const auto prefix:{std::size_t{0u},toggleWarm.execution.nativeWork->used/2u,
-            toggleWarm.execution.nativeWork->used-1u}) {
+        const auto toggleFresh=toggleRun(PortableToggleProbeMode::RoundTrip);
+        toggleRoundTrip(toggleFresh,false);
+        printToggleWork("fresh",toggleFresh);
+        // Result.nativeWork also includes undo Reference::write calls. Cut
+        // genuine forward execution, not the diagnostic's cleanup high water.
+        for(const auto prefix:{std::size_t{0u},toggleFresh.forwardNativeWork/2u,
+            toggleFresh.forwardNativeWork-1u}) {
             QuestVr::Vm::Limits bounded;bounded.nativeWork=prefix;
             const auto partial=ProbePortableNativeWindowToggle(player,PortableToggleProbeMode::RoundTrip,bounded);
+            printToggleWork(("prefix-"+std::to_string(prefix)).c_str(),partial);
             Require(!partial.execution.passed() && !partial.execution.committed && partial.execution.nativeWork &&
                 partial.execution.nativeWork->exhausted,
-                "Native Toggle notifications reset/ignored shared constructor/callback work: "+std::to_string(prefix));
+                "Native Toggle notifications reset/ignored shared constructor/callback work: prefix="+std::to_string(prefix)+
+                " status="+std::to_string(static_cast<unsigned>(partial.execution.status))+
+                " used="+(partial.execution.nativeWork?std::to_string(partial.execution.nativeWork->used):"absent")+
+                " limit="+(partial.execution.nativeWork?std::to_string(partial.execution.nativeWork->limit):"absent")+
+                " exhausted="+(partial.execution.nativeWork?(partial.execution.nativeWork->exhausted?"true":"false"):"absent")+
+                " forward="+std::to_string(partial.forwardNativeWork)+" fullForward="+std::to_string(toggleFresh.forwardNativeWork)+
+                " writes="+std::to_string(partial.execution.writes)+" stages="+std::to_string(partial.stages.size())+
+                " at "+partial.execution.function+':'+std::to_string(partial.execution.offset)+" "+partial.execution.error);
             toggleRollback();
         }
         std::cout<<"ORIGINAL native1611 controls: equality no-op, typed appearance, registered Radio replacement/one-check, "
@@ -1681,6 +1808,7 @@ int main(int argc,char** argv) {
                 GetPortableRuntimeWorldRevision()==windowRevision && SavePortableRuntimeState(inspectPath.string()) &&
                 Bytes(inspectPath)==baseline,"Budgeted root construction retained reflected/window/GC state");
         }
+        VerifyNativeWindowCoalescing(baseline,player,directory,pending.execution.writes,pending.objects.size());
         auto clientLifetime=std::make_shared<QuestVr::NativeClientLifetime>();
         BindPortableRuntimeClient(clientLifetime,17u);
         RegisterPortableRuntimeViewport(17u,{91u,1440u,1440u,3u,2u});

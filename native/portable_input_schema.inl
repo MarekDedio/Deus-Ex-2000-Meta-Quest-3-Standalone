@@ -49,7 +49,8 @@ PortableInputSchemaSnapshot InputSchemaSnapshot(const RuntimeNativeInputDomain& 
     const auto* config=stagedConfig?stagedConfig:domain.config.get();
     result.prepared=true;result.defaultsPrepared=true;result.configApplied=config!=nullptr;
     if(config) {
-        if(config->sourcePath.empty()||config->passes!=3u||!config->work||config->failures>config->imports||config->charge||config->store)
+        if(config->sourcePath.empty()||config->passes!=3u||!config->work||config->failures>config->imports||config->charge||config->store||
+            config->scratchLedger||config->scratchValidate)
             throw std::runtime_error("Native Input config lost its explicit document/import authority");
         result.configSourcePath=config->sourcePath;result.configPasses=config->passes;result.configImports=config->imports;
         result.configFailures=config->failures;result.configWarnings=config->warnings;result.configWork=config->work;

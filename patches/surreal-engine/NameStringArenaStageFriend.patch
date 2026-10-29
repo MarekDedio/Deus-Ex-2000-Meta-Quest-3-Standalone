@@ -1,0 +1,11 @@
+diff --git a/SurrealEngine/Package/NameString.h b/SurrealEngine/Package/NameString.h
+--- a/SurrealEngine/Package/NameString.h
++++ b/SurrealEngine/Package/NameString.h
+@@ -60,6 +60,7 @@ public:
+ private:
+ 	int CompareIndex = 0;
+ 	int SpelledIndex = 0;
++	friend class NameStringArenaStage;
+ 
+ 	void GetIndex(const std::string& value)
+ 	{

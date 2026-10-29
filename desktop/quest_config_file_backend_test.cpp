@@ -1,5 +1,6 @@
 #include "quest_config_file_backend.h"
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -73,6 +74,7 @@ struct Fixture {
         std::error_code ignored;
         for(const auto* name:{"User.ini.stage","User.ini.lock","User.ini","foreign.ini"})std::filesystem::remove(app/"Config"/name,ignored);
         for(const auto* name:{"source-link","application-link"})std::filesystem::remove(root/name,ignored);
+        std::filesystem::remove(app/"changing.ini",ignored);
         std::filesystem::remove(seed,ignored);std::filesystem::remove(app/"Config",ignored);
         std::filesystem::remove(seedDirectory,ignored);std::filesystem::remove(app,ignored);std::filesystem::remove(root,ignored);
     }
@@ -189,6 +191,134 @@ void MoveAndRecoveryOwnership() {
         firstFixture.UnchangedSeed();secondFixture.UnchangedSeed();
     }
 }
+void AdmittedReads() {
+    Fixture fixture;
+    {
+        auto backend=Backend::Bind(fixture.app,fixture.seed);
+        constexpr auto scratchControl=sizeof(Snapshot)+sizeof(Bytes);
+        constexpr auto snapshotControl=scratchControl+4u*sizeof(void*);
+        const auto seedPeak=scratchControl+fixture.initial.size();
+        std::array<std::size_t,4u> calls{};std::size_t count{};
+        const auto reset=[&]{calls={};count=0u;};
+        const auto observe=[&](std::size_t bytes) {
+            Require(count<calls.size(),"Admitted read made an unbounded number of admissions");calls[count++]=bytes;
+        };
+        // With allocations denied until the FIRST callback, no seed vector or
+        // returned Snapshot control block may be allocated before admission.
+        Snapshot initial;bool reachedAdmission{};denyAllocations=true;
+        try {
+            initial=backend.ReadAdmitted([&](std::size_t bytes){denyAllocations=false;reachedAdmission=true;observe(bytes);});
+        }catch(...){denyAllocations=false;throw;}
+        denyAllocations=false;
+        Require(reachedAdmission&&!initial.Owned()&&initial.Generation()==0u&&initial.Data()==fixture.initial&&count==2u&&
+            calls[0u]==seedPeak&&calls[1u]==snapshotControl+fixture.initial.size()&&calls[1u]==initial.RetainedBytes(),
+            "Admitted seed fallback did not validate then admit its exact independent Snapshot storage");
+        Require(!std::filesystem::exists(fixture.Target())&&!std::filesystem::exists(fixture.Stage())&&std::filesystem::is_empty(backend.Directory()),
+            "Admitted read created a target/stage/lock");
+        const auto backendBytes=backend.RetainedBytes();
+        for(const auto size:{std::size_t{0u},std::size_t{7u},MaximumBytes}) {
+            const Bytes target(size,0x5au);WriteFixture(fixture.Target(),target);reset();
+            const auto expectedPeak=std::max(seedPeak,snapshotControl+sizeof(Bytes)+size);
+            const auto actual=backend.ReadAdmitted([&](std::size_t bytes){
+                observe(bytes);if(bytes>expectedPeak)throw std::runtime_error("Exact config read peak exceeded");
+            });
+            Require(actual.Owned()&&actual.Generation()==0u&&actual.Data()==target&&count==2u&&calls[0u]==seedPeak&&
+                calls[1u]==snapshotControl+sizeof(Bytes)+size&&actual.RetainedBytes()+sizeof(Bytes)==calls[1u]&&backend.RetainedBytes()==backendBytes,
+                "Admitted read used a cached/maximum target length, duplicated buffers or lost Snapshot control accounting");
+            Require(expectedPeak<std::max(std::size_t{4096u},2u*MaximumBytes),"Actual config read retained a blind two-maximum reservation");
+            const auto modified=std::filesystem::last_write_time(fixture.Target());
+            reset();
+            Refuse([&]{static_cast<void>(backend.ReadAdmitted([&](std::size_t bytes){
+                observe(bytes);if(bytes>=expectedPeak)throw std::runtime_error("One byte short of exact config read peak");
+            }));},"One-byte-short config read admission was ignored");
+            Require(RawRead(fixture.Target())==target&&std::filesystem::last_write_time(fixture.Target())==modified&&
+                !std::filesystem::exists(fixture.Stage())&&backend.Read().Generation()==actual.Generation()&&backend.RetainedBytes()==backendBytes,
+                "Admitted read refusal changed target bytes/time/generation/ownership or retained a stage");
+        }
+        // A previous snapshot's small baseline cannot authorize the larger
+        // current target. Actual held-descriptor length must drive admission.
+        WriteFixture(fixture.Target(),Text("x"));const auto small=backend.Read();
+        const Bytes grown(16384u,0x63u);WriteFixture(fixture.Target(),grown);reset();
+        const auto larger=backend.ReadAdmitted(observe);
+        Require(small.Data().size()==1u&&larger.Data()==grown&&calls[1u]==snapshotControl+sizeof(Bytes)+grown.size(),
+            "Admitted read trusted an earlier baseline length instead of the actual target stamp");
+        reset();bool nestedRead{},nestedPrepare{};
+        const auto locked=backend.ReadAdmitted([&](std::size_t bytes){
+            observe(bytes);
+            if(count==1u) {
+                try{static_cast<void>(backend.Read());}catch(const std::exception&){nestedRead=true;}
+                try{static_cast<void>(backend.Prepare(Text("must not stage"),larger,PublicationMode::CommitAllowed));}
+                catch(const std::exception&){nestedPrepare=true;}
+            }
+        });
+        Require(nestedRead&&nestedPrepare&&locked.Data()==grown&&!std::filesystem::exists(fixture.Stage()),
+            "Admitted callback escaped the shared backend mutex or permitted reentrant publication");
+        reset();Refuse([&]{static_cast<void>(backend.ReadAdmitted([&](std::size_t bytes){
+            observe(bytes);throw std::runtime_error("Explicit config read admission refusal");
+        }));},"Throwing config read admission was ignored");
+        Require(count==1u&&calls[0u]==seedPeak&&backend.Read().Data()==grown&&!std::filesystem::exists(fixture.Stage()),
+            "First config admission refusal proceeded to target work or retained a backend lock");
+        WriteFixture(fixture.Target(),Bytes(MaximumBytes+1u,0x64u));reset();
+        Refuse([&]{static_cast<void>(backend.ReadAdmitted(observe));},"Admitted read accepted an oversized actual target");
+        Require(count==1u&&calls[0u]==seedPeak,"Oversized target reached payload admission/allocation before size validation");
+        WriteFixture(fixture.Target(),grown);fixture.UnchangedSeed();
+    }
+    fixture.UnchangedSeed();
+}
+void AdmittedSeedAndIdentityRefusals() {
+    {
+        Fixture fixture;auto backend=Backend::Bind(fixture.app,fixture.seed);
+        auto pending=backend.Prepare(Text("held"),backend.Read(),PublicationMode::CommitAllowed);std::size_t callbacks{};
+        Refuse([&]{static_cast<void>(backend.ReadAdmitted([&](std::size_t){++callbacks;}));},"Admitted read ignored a prepared publication's mutex");
+        Require(callbacks==0u,"Locked backend admitted file memory before refusing its mutex");pending.Cancel();fixture.UnchangedSeed();
+    }
+#ifndef _WIN32
+    // Windows deliberately pins the immutable seed without write/delete
+    // sharing. POSIX validates its descriptor and named identity on every read.
+    {
+        Fixture fixture;auto backend=Backend::Bind(fixture.app,fixture.seed);WriteFixture(fixture.seed,Text("externally changed seed"));
+        std::size_t callbacks{};
+        Refuse([&]{static_cast<void>(backend.ReadAdmitted([&](std::size_t){++callbacks;}));},"Admitted read skipped immutable-seed stamp validation");
+        Require(callbacks==0u&&!std::filesystem::exists(fixture.Target()),"Changed seed allocated a read payload or created a target");
+    }
+#endif
+    for(const auto kind:{0u,1u}) {
+        Fixture fixture;auto backend=Backend::Bind(fixture.app,fixture.seed);
+        if(kind==0u) {
+            WriteFixture(fixture.app/"changing.ini",Text("foreign generated linked leaf"));
+            std::filesystem::create_hard_link(fixture.app/"changing.ini",fixture.Target());
+        }
+        else Require(std::filesystem::create_directory(fixture.Target()),"Cannot create admitted-read unsafe target directory");
+        std::size_t callbacks{};
+        Refuse([&]{static_cast<void>(backend.ReadAdmitted([&](std::size_t){++callbacks;}));},"Admitted read weakened target single-link/regular-file checks");
+        Require(callbacks==1u&&!std::filesystem::exists(fixture.Stage()),"Unsafe admitted-read target reached target allocation or created a stage");
+        std::filesystem::remove(fixture.Target());fixture.UnchangedSeed();
+    }
+}
+void AdmittedHeldReadChanges() {
+    // These generated leaf handles intentionally allow the callback to write.
+    // Production OpenTarget still denies write sharing on Windows and retains
+    // its original pinned-directory/single-link/private-owner policy.
+    for(const auto grown:{false,true}) {
+        Fixture fixture;WriteFixture(fixture.app/"changing.ini",Text("held-file-baseline"));
+        const auto path=fixture.app/"changing.ini";
+        {
+#ifdef _WIN32
+            Detail::File file(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+#else
+            Detail::File file(open(path.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW));
+#endif
+            Require(bool(file),"Cannot open generated held-read mutation fixture");std::size_t callbacks{},admitted{};
+            Refuse([&]{static_cast<void>(Detail::Read(file,MaximumBytes,[&](std::size_t bytes){
+                ++callbacks;admitted=bytes;WriteFixture(path,grown?Text("held-file-baseline-plus-growth"):Text("short"));
+            }));},"Admitted descriptor read ignored growth/truncation after its initial stamp");
+            Require(callbacks==1u&&admitted==std::string_view("held-file-baseline").size(),
+                "Held read did not admit the initial actual size before its mutation callback");
+        }
+        Require(std::filesystem::remove(path),"Cannot remove exact generated held-read mutation fixture");fixture.UnchangedSeed();
+    }
+}
 void UnsafePathsAndBounds() {
     {
         Fixture fixture;Refuse([&]{static_cast<void>(Backend::Bind({},fixture.seed));},"Empty application root accepted");
@@ -243,8 +373,10 @@ int main() {
     static_assert(std::is_nothrow_move_constructible_v<Prepared> && std::is_nothrow_move_assignable_v<Prepared>);
     static_assert(noexcept(std::declval<Prepared&>().Publish())&&noexcept(std::declval<Prepared&>().Cancel()));
     try {
-        RoundTripAndRollback();FailureBoundaries();ConcurrentBindingsAndStaleDisk();MoveAndRecoveryOwnership();UnsafePathsAndBounds();
+        RoundTripAndRollback();FailureBoundaries();ConcurrentBindingsAndStaleDisk();MoveAndRecoveryOwnership();
+        AdmittedReads();AdmittedSeedAndIdentityRefusals();AdmittedHeldReadChanges();UnsafePathsAndBounds();
         std::cout<<"Owned config backend passed: "<<checks<<" checks / "<<refusals<<" refusals; real temporary files, immutable seed, "
-            "exclusive staging, raw-byte/cold reopen, version conflicts and explicit post-rename durability disposition. NOT native SET/FExec integration.\n";return 0;
+            "exclusive staging, raw-byte/cold reopen, actual-size preallocation read admission, sequential seed/target peaks, "
+            "growth/truncation and identity refusals, version conflicts and explicit post-rename durability disposition. NOT native SET/FExec integration.\n";return 0;
     }catch(const std::exception& error){denyAllocations=false;std::cerr<<error.what()<<'\n';return 1;}
 }

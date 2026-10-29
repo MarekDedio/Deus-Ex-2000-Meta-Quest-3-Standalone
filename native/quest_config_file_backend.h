@@ -119,8 +119,14 @@ inline Stamp FileStamp(const File& file,std::size_t maximum) {
     if(stamp.size>maximum)Fail("file byte bound exceeded");
     return stamp;
 }
-inline Bytes Read(const File& file,std::size_t maximum) {
-    const auto before=FileStamp(file,maximum);Bytes result(static_cast<std::size_t>(before.size));
+// Admission receives the actual held-descriptor payload size before its
+// vector allocation. It must throw to refuse; no caller-supplied cached length
+// or pathname size can authorize this allocation. The same before/after stamp
+// and explicit truncation/growth checks apply when the callback changes a file.
+template<class Admission>
+Bytes Read(const File& file,std::size_t maximum,Admission&& admit) {
+    const auto before=FileStamp(file,maximum);admit(static_cast<std::size_t>(before.size));
+    Bytes result(static_cast<std::size_t>(before.size));
     std::size_t offset{};
 #ifdef _WIN32
     LARGE_INTEGER zero{};if(!SetFilePointerEx(file.Get(),zero,nullptr,FILE_BEGIN))Fail("cannot seek file");
@@ -143,6 +149,9 @@ inline Bytes Read(const File& file,std::size_t maximum) {
 #endif
     if(FileStamp(file,maximum)!=before)Fail("file changed while reading");
     return result;
+}
+inline Bytes Read(const File& file,std::size_t maximum) {
+    return Read(file,maximum,[](std::size_t){});
 }
 inline bool Write(const File& file,const Bytes& bytes) noexcept {
     std::size_t offset{};
@@ -227,12 +236,16 @@ inline File OpenTarget(const State& state){return OpenLeaf(state,"User.ini");}
 inline File OpenStage(const State& state,bool create=false){return OpenLeaf(state,"User.ini.stage",create,create);}
 inline File AcquireLock(const State& state){return OpenLeaf(state,"User.ini.lock",true,true,true);}
 #endif
-inline void ValidateSeed(const State& state) {
+template<class Admission>
+void ValidateSeed(const State& state,Admission&& admit) {
 #ifndef _WIN32
     File named(openat(state.seedDirectory.Get(),state.seedName.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW));
     if(!named||FileStamp(named,state.maximum)!=state.seedStamp)Fail("immutable seed name/identity changed");
 #endif
-    if(FileStamp(state.seed,state.maximum)!=state.seedStamp||Read(state.seed,state.maximum)!=state.seedBytes)Fail("immutable seed changed");
+    if(FileStamp(state.seed,state.maximum)!=state.seedStamp||Read(state.seed,state.maximum,admit)!=state.seedBytes)Fail("immutable seed changed");
+}
+inline void ValidateSeed(const State& state) {
+    ValidateSeed(state,[](std::size_t){});
 }
 inline bool RemoveStage(const State& state,const Stamp& stamp) noexcept {
     try {
@@ -375,17 +388,44 @@ public:
         }
         Backend result;result.state_=std::move(state);return result;
     }
-    Snapshot Read() const {
+    // Explicit additional-peak admission, excluding this Backend's retained
+    // state and the caller's already owned baseline/Snapshots. The callback
+    // runs under the same nonblocking backend mutex as validation and reading;
+    // it must not recursively acquire this binding. Seed-validation scratch
+    // is destroyed before the target or fallback Snapshot bytes are allocated,
+    // so successive callbacks are absolute peaks, not additive reservations.
+    // Returned Snapshot/control accounting matches Snapshot::RetainedBytes;
+    // a target read also covers the temporary Bytes header that coexists with
+    // the shared Bytes object while its buffer is moved (never duplicated).
+    // Read remains the same unbudgeted API by supplying a no-op callback.
+    template<class Admission>
+    Snapshot ReadAdmitted(Admission&& admitAbsolutePeakBytes) const {
         if(!state_)Detail::Fail("backend is not bound");
         std::unique_lock lock(state_->mutex,std::try_to_lock);
         if(!lock.owns_lock())Detail::Fail("a config publication owns the backend");
-        Detail::ValidateSeed(*state_);
+        Detail::ValidateSeed(*state_,[&](std::size_t bytes){
+            admitAbsolutePeakBytes(sizeof(Snapshot)+sizeof(Bytes)+bytes);
+        });
         Snapshot result;result.authority_=state_;result.generation_=state_->generation;
         auto target=Detail::OpenTarget(*state_);result.owned_=bool(target);
-        if(target){result.stamp_=Detail::FileStamp(target,state_->maximum);result.bytes_=std::make_shared<const Bytes>(Detail::Read(target,state_->maximum));}
-        else {result.stamp_=state_->seedStamp;result.bytes_=std::make_shared<const Bytes>(state_->seedBytes);}
+        constexpr auto snapshotControl=sizeof(Snapshot)+sizeof(Bytes)+4u*sizeof(void*);
+        if(target) {
+            result.stamp_=Detail::FileStamp(target,state_->maximum);
+            auto bytes=Detail::Read(target,state_->maximum,[&](std::size_t count){
+                admitAbsolutePeakBytes(snapshotControl+sizeof(Bytes)+count);
+            });
+            // The Snapshot stamp and its bytes must describe the same held
+            // file, including a mutation between this stamp and Read's stamp.
+            if(Detail::FileStamp(target,state_->maximum)!=result.stamp_)Detail::Fail("target changed before snapshot completion");
+            result.bytes_=std::make_shared<const Bytes>(std::move(bytes));
+        }else {
+            result.stamp_=state_->seedStamp;
+            admitAbsolutePeakBytes(snapshotControl+state_->seedBytes.size());
+            result.bytes_=std::make_shared<const Bytes>(state_->seedBytes);
+        }
         return result;
     }
+    Snapshot Read() const {return ReadAdmitted([](std::size_t){});}
     // Explicit startup recovery, never implicit Bind/destructor cleanup. Under
     // both writer locks an abandoned fixed stage is known to be uncommitted;
     // removing it leaves the prior target/seed unchanged. true means currently

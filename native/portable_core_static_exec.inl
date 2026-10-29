@@ -37,8 +37,33 @@
         }
         if(value.kind!=(name?Kind::Name:Kind::String))
             throw std::runtime_error("Native Input cell write has the wrong typed value");
+        // Reuse only the stable physical cell capability, NOT its VM writes
+        // or beforeimages. Repeated config reloads still call WriteReference
+        // below with every distinct old Value in original import order.
+        for(const auto& cached:nativeInputCellReferences_) {
+            LifecycleStep();
+            if(cached.owner==object&&cached.field==field&&cached.member==member&&cached.index==index) {
+                if(!cached.reference)throw std::runtime_error("Native Input cached cell has no actual reference");
+                execution.WriteReference(cached.reference,value);return;
+            }
+        }
+        if(nativeInputCellReferences_.size()==NativeInputCellReferenceLimit)
+            throw std::runtime_error("Native Input physical-cell reference inventory exceeds its actual owner/field bounds");
         constexpr std::size_t referenceBytes=2u*sizeof(Reference)+8u*sizeof(void*)+256u;
-        ValidateStateBudget(referenceBytes);nativeInputReferenceBytes_+=referenceBytes;
+        auto growthBytes=std::size_t{};
+        auto capacity=nativeInputCellReferences_.capacity();
+        if(nativeInputCellReferences_.size()==capacity) {
+            capacity=std::min(NativeInputCellReferenceLimit,capacity?capacity*2u:32u);
+            growthBytes=QuestVr::DecalStateDetail::Multiply(capacity,sizeof(NativeInputCellReference));
+        }
+        // Existing cache capacity is already retained. New allocation may
+        // overlap that old vector while reserve relocates its shared_ptrs.
+        ValidateStateBudget(QuestVr::DecalStateDetail::Add(referenceBytes,growthBytes));
+        if(growthBytes) {
+            nativeInputCellReferences_.reserve(capacity);
+            if(nativeInputCellReferences_.capacity()>capacity)
+                throw std::runtime_error("Native Input reference-vector growth exceeds its admitted bundled-library profile");
+        }
         auto reference=std::make_shared<Reference>();
         reference->zero=Value::Text(name?Kind::Name:Kind::String,{});
         // Capture the actual stable working storage. Undo may run after lease
@@ -50,6 +75,8 @@
                 throw std::runtime_error("Native Input reference undo/write has the wrong typed storage");
             if(name)*name=NameString(incoming.text);else *text=incoming.text;
         };
+        nativeInputCellReferences_.push_back({object,field,member,index,reference});
+        nativeInputReferenceBytes_=QuestVr::DecalStateDetail::Add(nativeInputReferenceBytes_,referenceBytes);
         execution.WriteReference(reference,value);
     }
     void ImportCoreInputProperty(RuntimeObject* object,RuntimeObject* field,std::u16string_view value,
@@ -64,6 +91,11 @@
             decltype(RuntimeNativeInputConfig::store) previous;
             ~StoreScope() {profile.store=previous;}
         } store{profile,profile.store};profile.store=&writer;
+        // Parsed command storage is retained by CoreStaticExec's scope. The
+        // ImportText UTF16/encoded temporary is separate and must stay visible
+        // while the nested COW/reference/undo admissions run.
+        InputConfigScratch importScratch(profile,QuestVr::DecalStateDetail::Add(8192u,
+            QuestVr::DecalStateDetail::Multiply(QuestVr::DecalStateDetail::Add(value.size(),1u),16u)));
         QuestVr::NativeConfigImport::Result imported;
         if(field==domain.fields[2u])
             imported=ImportNativeInputAlias(domain,profile,values.aliases[0u],0u,field,value,1u);
@@ -96,13 +128,18 @@
     void RequireCoreUserConfigSnapshot() {
         if(nativeConfigExpected_)return;
         if(!persistentUserConfigStorage)throw std::runtime_error("Core SET requires an explicit app-owned User config backend");
-        // Read validates pinned source/target identity and bounded content. Its
-        // maximum transient buffers are admitted before the file read.
-        QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,
-            2u*QuestVr::ConfigFile::MaximumBytes+4096u,[this](std::size_t extra){ValidateStateBudget(extra);});
-        auto snapshot=persistentUserConfigStorage->backend.Read();
+        // Backend admission is a data-sized absolute peak, including the
+        // returned snapshot/control and sequential seed/target read buffers.
+        const auto previous=nativeQueryScratchBytes_;
+        struct RestoreScratch {std::size_t& ledger;std::size_t previous;~RestoreScratch(){ledger=previous;}}
+            restore{nativeQueryScratchBytes_,previous};
+        auto snapshot=persistentUserConfigStorage->backend.ReadAdmitted([this,previous](std::size_t peak) {
+            nativeQueryScratchBytes_=previous;ValidateStateBudget(peak);
+            nativeQueryScratchBytes_=QuestVr::DecalStateDetail::Add(previous,peak);
+        });
         if(snapshot.Data()!=persistentUserConfigStorage->baseline)
             throw std::runtime_error("App-owned config changed outside the current native cache generation");
+        nativeQueryScratchBytes_=previous;
         ValidateStateBudget(snapshot.RetainedBytes());nativeConfigExpected_.emplace(std::move(snapshot));
     }
     void SaveCoreInputConfig(RuntimeObject* cls,PortableCoreExecResult& result) {
@@ -183,7 +220,11 @@
         nativeCoreExecResult_=&result;
         if(command.size()>QuestVr::NativeInputKeyQueries::MaximumCommandUnits*3u)
             throw std::runtime_error("Core SET command transport exceeds its bounded FString profile");
-        QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,command.size()*8u+256u*1024u,
+        // UTF16 command, persistent packet tokens/value, encoded lookup keys
+        // and small descriptors. Input imports/default copies/config/file
+        // staging have their own data-sized scoped or retained accounting.
+        QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,QuestVr::DecalStateDetail::Add(8192u,
+            QuestVr::DecalStateDetail::Multiply(QuestVr::DecalStateDetail::Add(command.size(),1u),16u)),
             [this](std::size_t extra){ValidateStateBudget(extra);});
         const auto text=QuestVr::UnrealString::Decode(command);CoreSetOperations operations{*this};
         auto parsed=QuestVr::CoreSetCommand::Begin(text,operations);
@@ -219,7 +260,8 @@
         RequireCoreUserConfigSnapshot();
         RuntimeNativeInputConfig profile;
         const std::function<void(std::size_t)> charge=[this](std::size_t units){nativeWork_.Step(units);};
-        profile.charge=&charge;
+        const std::function<void(std::size_t)> scratchValidate=[this](std::size_t bytes){ValidateStateBudget(bytes);};
+        profile.charge=&charge;profile.scratchLedger=&nativeQueryScratchBytes_;profile.scratchValidate=&scratchValidate;
         // Original indexed-object traversal refreshes its upper bound after
         // each import/PostEditChange, not a weak viewport-vector snapshot.
         for(std::uint32_t index=1u;index<=RuntimeObjectIndices().AllocatedSlots();++index) {

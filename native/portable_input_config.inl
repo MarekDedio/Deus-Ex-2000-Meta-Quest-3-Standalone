@@ -80,6 +80,13 @@ struct InputAliasConfigImport {
         std::u16string_view value,const std::uint32_t flags) {
         static_cast<void>(IsProperty(field));InputConfigStep(config,value.size());
         if(index||(flags!=2u&&flags!=3u))throw std::runtime_error("Native Input Alias member import has an unaudited index/flags profile");
+        // Command ImportText first decodes the PREVIOUS destination, before
+        // tokenizing/replacing it. That storage is independent of a short SET
+        // command or the1023-unit scalar source and cannot hide in its budget.
+        const auto oldCommand=field==domain.fields[1u]?destination.command.size():0u;
+        InputConfigScratch importScratch(config,QuestVr::DecalStateDetail::Add(8192u,
+            QuestVr::DecalStateDetail::Multiply(QuestVr::DecalStateDetail::Add(
+                QuestVr::DecalStateDetail::Add(value.size(),oldCommand),1u),16u)));
         if(field==domain.fields[0u]) {
             auto name=destination.alias;
             const auto result=QuestVr::NativeConfigImport::Name(value,name,[](std::u16string_view spelling) {
@@ -137,10 +144,22 @@ void LoadInputDefaultConfig(const RuntimeNativeInputDomain& domain,RuntimeNative
         const auto* section=(property.flags&0x40000u)?field->outer:suppliedClass;
         for(std::size_t index=0u;index<property.dimension;++index) {
             InputConfigStep(config,document.EntryCount()+document.SectionCount()+1u);
+            // Literal native section/key names and dimension suffixes are
+            // small, but Scalar's name normalization allocates before it
+            // returns its BORROWED value view. Meter that query first.
+            InputConfigScratch queryScratch(config,1024u);
             auto key=field->lookupName->ToString();
             if(property.dimension>1u)key+='['+std::to_string(index)+']';
+            const auto raw=document.Scalar(section->reflection.objectPath,key);
+            if(!raw)continue;
+            // PropertyScalar decodes the complete original value BEFORE its
+            // GetString1024 truncation. Raw transport can be much larger than
+            // both the resulting scalar and the current SET command.
+            InputConfigScratch valueScratch(config,QuestVr::DecalStateDetail::Add(8192u,
+                QuestVr::DecalStateDetail::Multiply(QuestVr::DecalStateDetail::Add(raw->size(),1u),16u)));
+            InputConfigStep(config,document.EntryCount()+document.SectionCount()+1u);
             const auto value=document.PropertyScalar(section->reflection.objectPath,key);
-            if(!value)continue;
+            if(!value)throw std::runtime_error("Native Input config immutable scalar changed between view/import");
             const auto units=QuestVr::UnrealString::Decode(*value);InputConfigStep(config,units.size());++config.imports;
             QuestVr::NativeConfigImport::Result imported;
             if(field==domain.fields[2u]&&property.dimension==40u&&property.elementSize==0x10u&&
@@ -210,11 +229,27 @@ PortableInputSchemaSnapshot PreparePortableRuntimeInputConfig(const std::string&
         return QuestVr::DecalStateDetail::Add(bytes,NativeInputValuesBytes(*extension->input));
     };
     host.ValidateAdditionalPackageBudget(stagedBytes());
-    LoadInputDefaultConfig(domain,*config,domain.inputClass,*input->input);
-    // StaticInitInput's config load precedes subclass default copying. Rebuild
-    // the descendant payload from the CONFIGURED parent before its own load.
-    extension->input=std::make_unique<RuntimeNativeInputValues>(*input->input);
-    LoadInputDefaultConfig(domain,*config,domain.inputExtClass,*extension->input);
+    {
+        std::size_t scratchLedger{};
+        const std::function<void(std::size_t)> scratchValidate=[&](std::size_t extra) {
+            host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(stagedBytes(),
+                QuestVr::DecalStateDetail::Add(scratchLedger,extra)));
+        };
+        struct RestoreContext {
+            RuntimeNativeInputConfig& config;
+            std::size_t* ledger;
+            const std::function<void(std::size_t)>* validate;
+            ~RestoreContext(){config.scratchLedger=ledger;config.scratchValidate=validate;}
+        } restore{*config,config->scratchLedger,config->scratchValidate};
+        config->scratchLedger=&scratchLedger;config->scratchValidate=&scratchValidate;
+        LoadInputDefaultConfig(domain,*config,domain.inputClass,*input->input);
+        // StaticInitInput config precedes subclass default copying. Admit the
+        // new copy while the old descendant payload still coexists with it.
+        host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(stagedBytes(),
+            QuestVr::DecalStateDetail::Add(NativeInputValuesBytes(*input->input),scratchLedger)));
+        extension->input=std::make_unique<RuntimeNativeInputValues>(*input->input);
+        LoadInputDefaultConfig(domain,*config,domain.inputExtClass,*extension->input);
+    } // Borrowed scratch context is cleared before snapshot/publication.
     const InputConfigPayloads payloads{input.get(),extension.get()};
     auto result=InputSchemaSnapshot(domain,nullptr,nullptr,&payloads,config.get());
     // Live+staged payloads coexist. The result and bounded import scratch are

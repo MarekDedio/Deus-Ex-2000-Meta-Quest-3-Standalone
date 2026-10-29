@@ -73,6 +73,10 @@
 #include "quest_viewport_exec_commands.h"
 #include "quest_player_exec_route.h"
 #include "quest_engine_exec_commands.h"
+#include "portable_system_services.h"
+#include "quest_system_config.h"
+#include "quest_name_arena_stage.h"
+#include "quest_native_window_store.h"
 #include "quest_decal_checkpoint.h"
 #include "quest_decal_projection.h"
 #include "quest_unreal_int_array.h"
@@ -167,7 +171,7 @@ struct RuntimeNativeDumpState {
     // open yet. Unsupported file operations never interpret these raw bytes.
     std::unique_ptr<std::byte[]> helper;
 };
-enum class RuntimeNativeDefaultKind {Object,Subsystem,Field,Property,StrProperty,ArrayProperty,
+enum class RuntimeNativeDefaultKind {Object,Subsystem,Field,Property,IntProperty,StrProperty,ArrayProperty,System,
     Struct,NameProperty,StructProperty,Input,InputExt,
     Primitive,Engine,GameEngine,GameEngineExt,DeusExGameEngine};
 struct RuntimeNativeInputAlias {NameString alias{"None"};std::string command;};
@@ -785,6 +789,32 @@ protected:
         return GC::MarkObject(marklist,transient);
     }
 };
+using RuntimeNativeSystemValues=QuestVr::SystemConfig::Values<NameString>;
+struct RuntimeNativeSystemDomain final : GCObject {
+    RuntimeObject *cls{},*defaults{},*integerDefaults{},*instance{};
+    std::array<RuntimeObject*,8u> fields{};
+    RuntimeNativeSystemValues defaultValues,instanceValues;
+    std::string iniPath;
+    bool rooted{},execInstalled{};
+    std::size_t nameBytes{};
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        marklist=GC::MarkObject(marklist,cls);marklist=GC::MarkObject(marklist,instance);
+        marklist=GC::MarkObject(marklist,defaults);marklist=GC::MarkObject(marklist,integerDefaults);
+        for(auto* field:fields)marklist=GC::MarkObject(marklist,field);
+        return marklist;
+    }
+};
+std::unique_ptr<GCRoot<RuntimeNativeSystemDomain>> persistentSystem;
+// NameString's arena is process-wide and outlives runtime shutdown. Keep its
+// committed System growth charged even after the owning System is retired.
+std::size_t systemNameArenaCredit{};
+constexpr QuestVr::NativeEngineClassRegistration NativeSystemClass{
+    "Core.System","Core.Subsystem","Core.Object",0x6cu,0x16u,0x04084004u,"Core"};
+bool NativeSystemDefaultValid(const RuntimeObject*);
+bool ActualNativeSystemObjectValid(const RuntimeObject*);
+bool ActualNativeSystemFieldValid(const RuntimeObject*);
+std::size_t NativeSystemRetainedBytes(const RuntimeNativeSystemDomain&);
 std::unique_ptr<GCRoot<RuntimeEngineCollisionDomain>> persistentEngineCollision;
 struct RuntimeNativeInputConfig {
     std::string sourcePath;
@@ -794,7 +824,17 @@ struct RuntimeNativeInputConfig {
     // Borrowed only by local import invocations, never retained in the domain
     // cache. Native runtime reloads share their caller's execution work budget.
     const std::function<void(std::size_t)>* charge{};
+    std::size_t* scratchLedger{};
+    const std::function<void(std::size_t)>* scratchValidate{};
     const std::function<void(RuntimeObject*,std::size_t,RuntimeObject*,const QuestVr::Vm::Value&)>* store{};
+};
+struct InputConfigScratch {
+    std::optional<QuestVr::NativeScratchScope> scope;
+    InputConfigScratch(RuntimeNativeInputConfig& config,std::size_t bytes) {
+        if(!config.scratchLedger||!config.scratchValidate)
+            throw std::runtime_error("Native Input import has no explicit scratch owner");
+        scope.emplace(*config.scratchLedger,bytes,*config.scratchValidate);
+    }
 };
 struct RuntimeExtensionInputNames {std::array<NameString,52u> names;};
 struct RuntimeUserConfigStorage {
@@ -2367,6 +2407,7 @@ bool NativePackageClassDefaultValid(const RuntimeObject* cls) {
         cls->defaultObject->nativePackageDefaults->ClassIndex()==cls->objectIndex.Index();
 }
 bool PreparedNativeClassDefaultValid(const RuntimeObject* cls) {
+    if(NativeSystemDefaultValid(cls))return true;
     if(InputSchemaDefaultValid(cls))return true;
     if(!persistentEngineCollision || !cls || !cls->defaultObject) return false;
     const auto* defaults=cls->defaultObject;
@@ -2433,6 +2474,7 @@ bool ActualNativeInputInstanceValid(const RuntimeObject* object) {
         domain.keyEnum->enumDescriptor->names.size()==255u&&persistentNativeClient.HasClient();
 }
 bool ActualNativeCollisionObjectValid(const RuntimeObject* object) {
+    if(ActualNativeSystemObjectValid(object))return true;
     if(!persistentEngineCollision || !object || object->defaultOwner || object->runtimeBirth ||
         !object->sourcePath.empty() || !object->cls || !object->lookupControl ||
         object->lookupControl!=persistentObjectLookup) return false;
@@ -4501,6 +4543,7 @@ public:
 #include "portable_core_static_exec.inl"
 #include "portable_viewport_canvas_host.inl"
 #include "portable_viewport_console_host.inl"
+#include "portable_system_host.inl"
 #include "portable_viewport_exec_host.inl"
     std::shared_ptr<const Function> WindowNativeDeclaration(const std::uint16_t index,const Function* declaration) {
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
@@ -8258,6 +8301,7 @@ public:
         if(origin) *origin={};
         if(object->nativeDump && !defaults && !immutable)return ReadDumpLocationValue(object,property,index);
         if(const auto native=ReadNativeConversationValue(object,property,index,defaults,immutable)) return *native;
+        if(const auto native=ReadNativeSystemValue(object,property,index,defaults,immutable))return *native;
         if(object->nativePackageInstance || object->nativePackageDefaults)
             throw std::runtime_error("Native Package reflected/default storage requires its typed native service");
         if(object->nativeEngineClass || object->nativeMetadataClass) {
@@ -8598,7 +8642,8 @@ public:
                 throw std::runtime_error("Runtime class Children/Next metadata is invalid: " + cls->reflection.objectPath);
             const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
             if (found != persistentVmObjects.end() && found->second->linkedClassOwner == cls &&
-                (found->second->property || (found->second->nativeProperty&&ActualNativeInputSchemaObjectValid(found->second))))
+                (found->second->property || (found->second->nativeProperty&&
+                    (ActualNativeInputSchemaObjectValid(found->second)||ActualNativeSystemFieldValid(found->second)))))
                 selected = found->second;
         }
         if (selected) return Describe(selected);
@@ -8616,7 +8661,7 @@ public:
         // when the concrete class redeclares a field with the same name.
         auto* metadata = Object(property.key);
         if(metadata->nativeProperty) {
-            if(!ActualNativeInputSchemaObjectValid(metadata)||metadata->linkedClassOwner!=metadata->outer)return false;
+            if((!ActualNativeInputSchemaObjectValid(metadata)&&!ActualNativeSystemFieldValid(metadata))||metadata->linkedClassOwner!=metadata->outer)return false;
             const auto actual=Describe(metadata);
             if(actual.key!=property.key||actual.name!=property.name||actual.flags!=property.flags||
                 actual.arrayDimension!=property.arrayDimension||!QuestVr::Vm::Equal(actual.zero,property.zero))return false;
@@ -10175,10 +10220,11 @@ private:
     }
     Property Describe(RuntimeObject* property) {
         if(property->nativeProperty) {
-            if(!ActualNativeInputSchemaObjectValid(property))
+            if(!ActualNativeInputSchemaObjectValid(property)&&!ActualNativeSystemFieldValid(property))
                 throw std::runtime_error("Native Input property description lacks actual domain authority");
             const auto& schema=*property->nativeProperty;Value zero;
-            if(property->cls->reflection.objectPath=="Core.NameProperty")zero=Value::Text(Kind::Name,"None");
+            if(property->cls->reflection.objectPath=="Core.IntProperty")zero=Value::Integer(0);
+            else if(property->cls->reflection.objectPath=="Core.NameProperty")zero=Value::Text(Kind::Name,"None");
             else if(property->cls->reflection.objectPath=="Core.StrProperty")zero=Value::Text(Kind::String,{});
             else if(property->cls->reflection.objectPath=="Core.StructProperty"&&schema.referencedStruct==persistentInputSchema->get()->aliasStruct) {
                 zero.kind=Kind::Struct;zero.fields.emplace("alias",Value::Text(Kind::Name,"None"));
@@ -10357,6 +10403,8 @@ private:
     // metadata and Engine asset registrations supply an absent class identity.
     // Serialized UClasses always take precedence and use their actual ObjBase.
     std::optional<QuestVr::ObjectCastClass> NativeCastClass(const std::string& path) {
+        if(LowerAscii(path)=="core.system"&&persistentSystem&&persistentSystem->get())
+            return QuestVr::ObjectCastClass{"Core.System","System","Core.Subsystem"};
         if(IsContextExcludedPath(path))throw std::runtime_error("Native class fallback is context-excluded: "+path);
         // Static linked type identity exists before a RuntimeObject wrapper is
         // materialized; as with native asset classes below this is not an
@@ -10502,6 +10550,7 @@ private:
             if(!object->cls) throw std::runtime_error("Native player UObject lacks actual class");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
+        if(ActualNativeSystemObjectValid(object))return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct) {
             if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object))
                 throw std::runtime_error("Constructed native UObject cast identity is invalid");
@@ -10603,6 +10652,10 @@ private:
         result->resultLayout = property.resultLayout;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
+            if(ActualNativeSystemObjectValid(object)||
+                (defaults&&NativeSystemDefaultValid(object))||
+                (object->defaultOwner&&NativeSystemDefaultValid(object->defaultOwner)))
+                throw std::runtime_error("Native System writes require a typed journaled config service");
             if(object->nativeCanvasObject&&(property.flags&2u)&&LowerAscii(property.key).rfind("engine.canvas.",0u)==0u)
                 throw std::runtime_error("Native Canvas const pointer/dimensions require its actual Init/Update service");
             if(object->nativeConsoleObject&&(LowerAscii(property.key)=="engine.console.vtblout"||LowerAscii(property.key)=="core.object.objectinternal"))
@@ -10677,6 +10730,14 @@ private:
                 for(const auto& [key,field]:member.fields){static_cast<void>(key);self(self,field);}
             };
             rejectDumpEscape(rejectDumpEscape,normalized);
+            // Ordinary Let has no change callback for these native UI slots.
+            // Keep every VM WriteReference/count/undo operation and all type,
+            // ownership/escape checks, but do not allocate an overlay for a
+            // bit-identical existing value. Existing overrides are retained:
+            // nonzero/nonnull copied defaults still require real clearing.
+            if(!target->classDescriptor&&(target->nativeWindowObject||target->nativeConsoleObject)&&
+                QuestVr::NativeWindowStore::IsPlainStoreCandidate(nativeKey,normalized)&&
+                SameStoredValue(normalized,Read(target,property,index)))return;
             std::vector<RuntimeObject*> windowRoots;
             if(target->nativeWindowObject||target->nativeCanvasObject||target->nativeConsoleObject) {
                 const auto collect=[&](const auto& self,const Value& member,const std::size_t depth)->void {
@@ -11303,6 +11364,8 @@ private:
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
         if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
+        if(persistentSystem)defaults.Retain(NativeSystemRetainedBytes(*persistentSystem->get()));
+        defaults.Retain(systemNameArenaCredit);
         defaults.Retain(NativePlayerSessionBytes());
         defaults.Retain(QuestInputSourceStorageBytes());
         defaults.Retain(NativeCanvasInventoryBytes());
@@ -11501,7 +11564,10 @@ private:
                     persistentWindowDomain->get()->objects.size():0u)+
                 ", retail="+std::to_string(persistentRetailCollision?persistentRetailCollision->RetainedBytes():0u)+
                 ", output="+std::to_string(retailCollisionOutputBytes_)+", lookup="+
-                std::to_string(persistentObjectLookup?persistentObjectLookup->index.RetainedBytes():0u)+"]");
+                std::to_string(persistentObjectLookup?persistentObjectLookup->index.RetainedBytes():0u)+
+                ", system="+std::to_string(persistentSystem?NativeSystemRetainedBytes(*persistentSystem->get()):0u)+
+                ", systemNames="+std::to_string(systemNameArenaCredit)+", queryScratch="+std::to_string(nativeQueryScratchBytes_)+
+                ", inputJournal="+std::to_string(NativeInputJournalBytes())+"]");
         }
     }
     bool HasStateFrame(RuntimeObject* object) const {
@@ -13829,6 +13895,7 @@ void ShutdownPortableRuntime() {
     if(persistentNativePackages) persistentNativePackages->active=false;
     persistentNativePackages.reset();
     persistentInputSchema.reset();
+    persistentSystem.reset();
     persistentUserConfigStorage.reset();
     persistentEngineCollision.reset();
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
@@ -14562,6 +14629,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 
 #include "portable_engine_collision.inl"
 #include "portable_input_schema.inl"
+#include "portable_system_services.inl"
 #include "portable_input_config.inl"
 #include "portable_user_config_api.inl"
 

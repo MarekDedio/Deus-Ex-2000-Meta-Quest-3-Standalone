@@ -1,6 +1,8 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_engine_collision.h"
+#include "portable_system_services.h"
+#include "portable_core_static_exec.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "portable_startup_weapon_fire_probe.h"
@@ -100,6 +102,16 @@ struct Temporary {
     ~Temporary(){
         ShutdownPortableRuntime();std::error_code ignored;
         for(const auto& path:files)if(path.parent_path()==directory)fs::remove(path,ignored);
+        const auto config=directory/"Config";
+        const auto status=fs::symlink_status(config,ignored);
+        if(!directory.empty()&&directory.parent_path()==parent&&config.parent_path()==directory&&
+            !ignored&&fs::is_directory(status)&&!fs::is_symlink(status)) {
+            for(const auto* leaf:{"User.ini","User.ini.stage","User.ini.lock"}) {
+                const auto file=config/leaf;const auto entry=fs::symlink_status(file,ignored);
+                if(!ignored&&fs::is_regular_file(entry)&&!fs::is_symlink(entry))fs::remove(file,ignored);
+            }
+            fs::remove(config,ignored);
+        }
         if(!directory.empty()&&directory.parent_path()==parent)fs::remove(directory,ignored);
     }
     Bytes Save(const std::string& leaf) {
@@ -593,6 +605,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared&&
         PreparePortableRuntimeInputSchema().prepared,
         "Cannot prepare genuine Engine/metadata/config/Package/Input/lookup/Cylinder/Input-schema prerequisites");
+    std::cout<<"BOOTSTRAP preparing actual System Class/default/config/root service\n";
+    Require(PreparePortableRuntimeSystemServices(ini).prepared,"Cannot prepare genuine native System service");
+    std::cout<<"BOOTSTRAP binding isolated app-owned User config backend\n";
+    Require(BindPortableRuntimeUserConfigStorage(temporary.directory.string(),userIni.string()).prepared,
+        "Cannot bind isolated app-owned config backend for actual nested SET");
+    std::cout<<"BOOTSTRAP preparing actual Input config cache\n";
     const auto inputConfig=PreparePortableRuntimeInputConfig(userIni.string());
     Require(inputConfig.configApplied&&inputConfig.configPasses==3u,
         "Cannot configure actual Input/InputExt defaults from the explicit owned User.ini");

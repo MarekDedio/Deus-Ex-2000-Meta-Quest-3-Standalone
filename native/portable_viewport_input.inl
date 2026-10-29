@@ -231,6 +231,22 @@ PortableViewportInputSnapshot PreparePortableRuntimeViewportInput(const std::uin
     std::unique_ptr<RuntimeExtensionInputNames> names;
     if(cls==domain.inputExtClass) {
         RuntimeNativeInputConfig invocation;
+        std::size_t scratchLedger{};
+        const auto stagedBytes=[&] {
+            auto bytes=QuestVr::DecalStateDetail::Add(NativeSessionObjectBytes(input),sizeof(GCRootNode));
+            if(reloadedDefault)bytes=QuestVr::DecalStateDetail::Add(bytes,
+                QuestVr::DecalStateDetail::Add(sizeof(RuntimePreparedNativeDefaults),NativeInputValuesBytes(*reloadedDefault->input)));
+            if(names)bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(RuntimeExtensionInputNames));
+            return bytes;
+        };
+        const std::function<void(std::size_t)> scratchValidate=[&](std::size_t extra) {
+            host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(stagedBytes(),
+                QuestVr::DecalStateDetail::Add(scratchLedger,extra)));
+        };
+        invocation.scratchLedger=&scratchLedger;invocation.scratchValidate=&scratchValidate;
+        host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(stagedBytes(),
+            QuestVr::DecalStateDetail::Add(sizeof(RuntimePreparedNativeDefaults),
+                NativeInputValuesBytes(*cls->defaultObject->preparedNativeDefaults->input))));
         reloadedDefault=CopyInputDefault(*cls->defaultObject->preparedNativeDefaults);
         LoadInputDefaultConfig(domain,invocation,cls,*reloadedDefault->input,0u,&domain.config->document);
         LoadInputDefaultConfig(domain,invocation,cls,state.values,0u,&domain.config->document);

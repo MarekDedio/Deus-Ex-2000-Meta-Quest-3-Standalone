@@ -222,5 +222,6 @@
                 set(second,true);snapshot("second-on");set(second,false);snapshot("second-off");
             }
         }
+        result.forwardNativeWork=nativeWork_.Read().used;
         throw std::runtime_error("Native toggle diagnostic complete; rollback required");
     }

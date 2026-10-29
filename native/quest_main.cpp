@@ -37,6 +37,8 @@
 #include "portable_unreal_runtime.h"
 #include "portable_object_lookup.h"
 #include "portable_engine_collision.h"
+#include "portable_input_schema.h"
+#include "portable_system_services.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_native_client.h"
 #include "portable_quest_input_source.h"
@@ -707,9 +709,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             PreparePortableRuntimeNativeMetadataClasses();
             PreparePortableRuntimeNativeConfigClasses();
             PreparePortableRuntimeNativePackages();
+            PreparePortableRuntimeNativeInputClasses();
             PreparePortableRuntimeObjectLookup();
             const auto collisionEngine=PreparePortableRuntimeEngineCollision(
                 "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini");
+            PreparePortableRuntimeInputSchema();
+            const auto system=PreparePortableRuntimeSystemServices(
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini");
+            ALOG("DeusExQuest: rooted native System ready: %s; later input/world startup remains separate",system.objectPath.c_str());
             ALOG("DeusExQuest: collision Engine ready class=%s engine=%s primitive=%s; world startup remains separate",
                 collisionEngine.engineClassPath.c_str(),collisionEngine.enginePath.c_str(),collisionEngine.cylinderPath.c_str());
             // This CPU worker receives only an immutable description of the
