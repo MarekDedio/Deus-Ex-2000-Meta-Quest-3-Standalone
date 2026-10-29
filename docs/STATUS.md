@@ -1,5 +1,39 @@
 # Port status
 
+## Latest: original Window child queries and actual Training travel return (2026-10-30)
+
+Original Window GetTopChild1455/GetBottomChild1456/GetHigherSibling1457/
+GetLowerSibling1458 and SetClientObject1487 now authenticate declarations,
+NativeParm/source identity and typed fields. Queries read live physical links
+and LOCAL visibility with original BoolTRUE defaults; the client pointer uses
+the existing typed GC-edge/journal path. Caller-frame copies, NoWrite/zero-fill
+and declared optional omissions retain original input behavior. Accepted VR
+layouts and controls are unchanged.
+
+Actual first Training now returns from TravelPostAccept, then reaches the next
+missing dependency in Engine.PlayerPawn.ClientSetMusic PC0/opcode15: the actual
+Training_Music.Training_Music asset object is not admitted into the gameplay VM.
+Two expected-boundary repeats agree at266846 instructions/37929 writes and
+verify complete save/state/revision/hash/RNG/client/lookup/Actor/GC rollback,
+42 unchanged sources and independent cold Model ownership. This is NOT successful
+PostLogin/tail startup or live Quest crate/loot/gravity acceptance.
+
+Full desktop, strict ARM64 and Android-native builds pass. CTest244 executed/
+296 registered/52 explicit owned-data skips/zero failures108.14s. Owned base
+Window navigation112 checks/11 refusals, pure traversal285/78 and generated
+VM702510/1096 pass. The actual Window fixture covers hidden-parent/nonempty
+chains, original Hide callbacks/live lower walk, client GC clear, topology,
+shared budgets and whole-root undo; it is not a configured HUD substitute.
+Final audit:1861 frozen compiler inputs and45 originals unchanged, no live jobs.
+The corrected generated-test expectation and GCC temporary warning failures
+remain recorded as NOT passing gates. No new APK is packaged.
+
+Next: authenticated asset-package source admission from authored imports,
+separate from the existing audible presentation decoder. See
+ORIGINAL-WINDOW-CHILD-QUERIES.md and ORIGINAL-TRAINING-MUSIC-ASSET.md. The full
+campaign/native Flag/FlagInt save/travel/Input/render requirements remain open;
+first Training is still the immediate integration target, with other maps skipped.
+
 ## Latest: actual PlayerPawnExt FlagBase construction (2026-10-30)
 
 PlayerPawnExt now constructs its real non-Actor FlagBase before actor callbacks,

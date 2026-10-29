@@ -506,7 +506,8 @@ struct TestHost final:Vm::Host {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
         if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==1024u || index==1120u || index==0u || index==1410u || index==1413u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
-            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
+            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u ||
+            (index>=1455u && index<=1458u) || index==1487u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
             index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
             index==1270u || index==1272u || index==1486u || index==1483u || index==1550u ||
             index==1242u || index==1280u || index==1281u || index==1469u ||
@@ -5570,6 +5571,217 @@ void WindowVisibilityInputContracts() {
     std::cout<<"Window visibility native input defaults: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void WindowRelativeInputContracts() {
+    // Generated packet/capture controls only. The Object-shaped sentinels below
+    // observe the wrapper inputs; they are NOT a native Window tree provider.
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto configure=[](TestHost& host,std::uint16_t index) {
+        const bool query=index!=1487u;
+        const std::array<const char*,4u> names{"GetTopChild","GetBottomChild","GetHigherSibling","GetLowerSibling"};
+        auto native=Function(query?names.at(index-1455u):"SetClientObject",{},"Extension.Window");
+        native.nativeIndex=index;native.flags=0x401u;
+        const auto input=query?"bVisibleOnly":"newClientObject";
+        native.variables={{native.path+'.'+input,input,query?Value::Bool(false):Value::Text(Vm::Kind::Object,{}),
+            query?0x90u:0x80u,1u}};
+        if(query)native.variables.push_back({native.path+".ReturnValue","ReturnValue",Value::Text(Vm::Kind::Object,{}),0x580u,1u});
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.argumentSeed=[index,query,path=native.path](std::uint16_t requested,const std::string& receiver,
+            std::size_t slot,const Vm::Function* declaration)->std::optional<Value> {
+            if(requested!=index)return std::nullopt;
+            Require(slot==0u&&(receiver=="Self"||receiver=="Other")&&(!declaration||declaration->path==path),
+                "Window relative seed lost its original input slot/receiver/declaration");
+            return query?Value::Bool(true):Value::Text(Vm::Kind::Object,{});
+        };
+        host.materializeOmission=[index](std::uint16_t requested,const std::string&,std::size_t slot,const Vm::Function*) {
+            return requested==index&&slot==0u;
+        };
+        host.executionNative=[query](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(query?arguments.size()<=1u:arguments.size()==1u,"Window relative wrapper changed input arity");
+            if(!arguments.empty())Require(!arguments[0u].reference,"Window relative input retained an OUT/source alias");
+            auto value=arguments.empty()?Value::Bool(true):arguments[0u].Load();
+            if(value.kind==Vm::Kind::Nothing)value=query?Value::Bool(true):Value::Text(Vm::Kind::Object,{});
+            Require(value.kind==(query?Vm::Kind::Bool:Vm::Kind::Object),"Window relative wrapper received an untyped input");
+            return query?Vm::Evaluation{Value::Text(Vm::Kind::Object,value.boolean?"FilteredWindow":"UnfilteredWindow"),{}}:
+                Vm::Evaluation{};
+        };
+        return native;
+    };
+    const auto indices={std::uint16_t{1455u},std::uint16_t{1456u},std::uint16_t{1457u},std::uint16_t{1458u},std::uint16_t{1487u}};
+    for(const auto index:indices)for(const bool declared:{false,true})for(const unsigned mode:{0u,1u,2u,3u,4u,5u}) {
+        if(index==1487u&&mode==0u)continue; // Missing required input is tested separately.
+        TestHost host;configure(host,index);
+        Bytes input;
+        if(mode==1u)input={0x0bu};
+        else if(mode==2u)input=index==1487u?Bytes{0x2au}:Bytes{0x28u};
+        else if(mode==3u)input=index==1487u?Ref(0x20u,8):Bytes{0x27u};
+        else if(mode>=4u)input=Context({0x2au},Native(4095u),mode==4u?0u:4u);
+        const auto expression=mode==0u?(declared?Call(0x1cu,7):Native(index)):
+            (declared?Call(0x1cu,7,{input}):Native(index,{input}));
+        const auto caller=Function("WindowRelativeOriginalSeeds",Return(expression));
+        host.objects[{caller.source,8}]="ClientObject";
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Window relative omission/None-context initialized inputs");
+        Require(host.nativeIndices==std::vector<std::uint16_t>{index}&&result.writes==0u,
+            "Window relative None-context argument executed its skipped child or duplicated native work");
+        if(index==1487u)Require(result.value.kind==Vm::Kind::Nothing&&host.nativeArguments.back()[0u].kind==Vm::Kind::Object&&
+            host.nativeArguments.back()[0u].text==(mode==3u?"ClientObject":""),"SetClientObject lost copied identity/None seed or fabricated a result");
+        else Require(result.value.kind==Vm::Kind::Object&&result.value.text==((mode==2u||mode==5u)?"UnfilteredWindow":"FilteredWindow"),
+            "Window relative query replaced initialized TRUE with metadata false or lost complete Bool clearing");
+    }
+    for(const auto index:indices)for(const unsigned route:{0u,1u,2u}) {
+        TestHost host;const auto native=configure(host,index);const bool query=index!=1487u;
+        const auto caller=Function("WindowRelativeSourceFrameCopy",Return(Context(Ref(0x20u,9),
+            route==0u?Native(index,{Ref(0x01u,1)}):Call(0x1cu,7,{Ref(0x01u,1)}))));
+        const auto source=host.Property(caller,1,"RelativeInput",query?Value::Bool(false):Value::Text(Vm::Kind::Object,{}));
+        const auto original=query?Value::Bool(true):Value::Text(Vm::Kind::Object,"ActualClient");
+        const auto changed=query?Value::Bool(false):Value::Text(Vm::Kind::Object,"ChangedClient");
+        host.Store("Self",source,{original});host.Store("Other",source,{changed});host.objects[{caller.source,9}]="Other";
+        std::size_t calls{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution& execution) {
+            ++calls;Require(receiver=="Other"&&static_cast<bool>(actual)==(route!=0u)&&arguments.size()==1u&&
+                !arguments[0u].reference&&Vm::Equal(arguments[0u].Load(),original)&&host.referenceReads==1u,
+                "Window relative input did not detach its one caller-frame read before the native body");
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,source.key},source),changed);
+            Require(Vm::Equal(arguments[0u].Load(),original),"Window relative copied input changed with its old source alias");
+            return query?Vm::Evaluation{Value::Text(Vm::Kind::Object,"ObservedWindow"),{}}:Vm::Evaluation{};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            if(route!=2u)return execution.CallFunction(caller,"Self");
+            Vm::Evaluation input{};input.value=Value{};
+            input.reference=host.Reference({"Self",Vm::Scope::Instance,source.key},source);
+            input.disposition=Vm::ResultDisposition::Written;input.zeroFillBytes=0u;
+            std::vector<Vm::Evaluation> inputs;inputs.push_back(std::move(input));
+            return execution.CallFunction(native,"Other",inputs);
+        });
+        Returned(result,"Window relative indexed/final/coordinated direct caller-frame input copy");
+        // One copied input read precedes the native body; the real later store
+        // separately reads its old value once for Execution's undo journal.
+        Require(calls==1u&&host.referenceReads==2u&&result.writes==1u&&Vm::Equal(host.Load("Self",source),changed)&&
+            Vm::Equal(host.Load("Other",source),changed),"Window relative input repeated a read or changed the callee's source-frame slot");
+    }
+    for(const auto index:indices)for(const bool coordinated:{false,true})for(const bool nonzero:{false,true}) {
+        TestHost host;const auto native=configure(host,index);std::size_t reads{};
+        const auto value=index==1487u?Value::Text(Vm::Kind::Object,nonzero?"ActualClient":""):Value::Bool(nonzero);
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=index==1487u?Value::Text(Vm::Kind::Object,{}):Value::Bool(false);
+        alias->read=[&] {++reads;return value;};
+        const Vm::Evaluation input{alias->zero,alias};
+        const auto result=coordinated?Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return execution.CallFunction(native,"Self",{input});
+        }):Vm::Execute(host,native,"Self",{input});
+        Returned(result,"Window relative written direct alias is copied once, including false/None");
+        Require(reads==1u&&host.nativeArguments.back().size()==1u&&Vm::Equal(host.nativeArguments.back()[0u],value),
+            "Window relative written false/None alias was replaced by a default or reread");
+    }
+    for(const auto index:indices)for(const bool declared:{false,true}) {
+        TestHost host;configure(host,index);const bool query=index!=1487u;std::size_t reads{},calls{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=query?Value::Bool(false):Value::Text(Vm::Kind::Object,{});
+        const auto original=query?Value::Bool(true):Value::Text(Vm::Kind::Object,"ActualClient");
+        alias->read=[&] {++reads;return reads==1u?original:(query?Value::Bool(false):Value::Text(Vm::Kind::Object,"RereadClient"));};
+        host.contextualNative=[&](std::uint16_t requested,const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* declaration,Vm::Execution& execution,const std::optional<Value>&) {
+            if(requested==1008u)return Vm::Evaluation{alias->zero,alias};
+            return host.NativeWithExecution(requested,receiver,arguments,declaration,execution);
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            ++calls;Require(reads==1u&&arguments.size()==1u&&!arguments[0u].reference&&Vm::Equal(arguments[0u].Load(),original),
+                "Window relative native-result alias was validated then reread instead of copied once");
+            return query?Vm::Evaluation{Value::Text(Vm::Kind::Object,"ObservedWindow"),{}}:Vm::Evaluation{};
+        };
+        const auto result=Vm::Execute(host,Function("WindowRelativeNativeResultCopy",Return(declared?
+            Call(0x1cu,7,{Native(1008u)}):Native(index,{Native(1008u)}))),"Self");
+        Returned(result,"Window relative one-read live native-result alias");Require(reads==1u&&calls==1u,"Window relative native input duplicated result evaluation");
+    }
+    for(const auto index:indices)for(const bool coordinated:{false,true})
+    for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill})for(const auto bytes:{0u,4u}) {
+        TestHost host;const auto native=configure(host,index);bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=index==1487u?Value::Text(Vm::Kind::Object,{}):Value::Bool(false);
+        alias->read=[&]() ->Value {read=true;throw std::runtime_error("Window relative unwritten input read stale alias");};
+        const auto stale=index==1487u?Value::Text(Vm::Kind::Object,"StaleClient"):Value::Bool(false);
+        const Vm::Evaluation input{stale,alias,disposition,static_cast<std::uint8_t>(bytes)};
+        const auto result=coordinated?Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return execution.CallFunction(native,"Self",{input});
+        }):Vm::Execute(host,native,"Self",{input});
+        Returned(result,"Window relative direct initialized NoWrite/zero-fill input");Require(!read,"Window relative initialized input read stale storage");
+        if(index==1487u)Require(host.nativeArguments.back()[0u].kind==Vm::Kind::Object&&host.nativeArguments.back()[0u].text.empty(),
+            "SetClientObject replaced initialized None with unwritten payload");
+        else Require(result.value.kind==Vm::Kind::Object&&result.value.text==
+            (disposition==Vm::ResultDisposition::ZeroFill&&bytes==4u?"UnfilteredWindow":"FilteredWindow"),
+            "Window relative NoWrite/full-clear lost native TRUE initialization");
+    }
+    for(const auto index:indices)for(const bool direct:{false,true})for(const auto bytes:{1u,2u,3u,5u,255u}) {
+        TestHost host;const auto native=configure(host,index);bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=index==1487u?Value::Text(Vm::Kind::Object,{}):Value::Bool(false);
+        alias->read=[&] {read=true;return alias->zero;};
+        const auto caller=Function("WindowRelativePartialClear",Return(Native(index,
+            {Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes))})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierRelativeEffect",Join({Native(1000u),Return()})),"Self");
+            try {if(direct)execution.CallFunction(native,"Self",{{alias->zero,alias,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)}});
+                else execution.CallFunction(caller,"Self");}catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Window relative packed Bool/Object partial-clear refusal poisons caught root");
+        Require(!read&&host.effects==0u&&host.rng==12345u&&host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "Window relative partial-clear refusal read stale input, executed setter/query or committed prefix effects");
+    }
+    for(const auto index:indices)for(const bool declared:{false,true})for(const auto bytes:{0u,4u}) {
+        TestHost host;configure(host,index);
+        host.argumentSeed=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            throw std::runtime_error("None Window receiver evaluated a query/client-object seed");
+        };
+        const auto expression=declared?Call(0x1cu,7,{{0x0bu}}):Native(index,{{0x0bu}});
+        const auto caller=Function("NoneWindowReceiverSkipsNative",Join({Let(Ref(0x01u,1),Context({0x2au},expression,
+            static_cast<std::uint8_t>(bytes))),Return(Ref(0x01u,1))}));
+        const auto target=host.Property(caller,1,"RetainedObject",Value::Text(Vm::Kind::Object,{}));
+        host.Store("Self",target,{Value::Text(Vm::Kind::Object,"RetainedWindow")});
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"None Window Context receiver skips query/seed/native with exact Object destination effect");
+        Require(host.nativeIndices.empty()&&result.value.kind==Vm::Kind::Object&&result.value.text==(bytes?"":"RetainedWindow")&&
+            result.writes==(bytes?1u:0u),"None Window receiver evaluated its native or widened absent result to a write");
+    }
+    for(const bool direct:{false,true}) {
+        TestHost host;const auto native=configure(host,1487u);
+        const auto caller=Function("ClientObjectMissingRequired",Return(Call(0x1cu,7)));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierMissingClientEffect",Join({Native(1000u),Return()})),"Self");
+            try {if(direct)execution.CallFunction(native,"Self");else execution.CallFunction(caller,"Self");}
+            catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Invalid,host,"SetClientObject required argument cannot be omitted");
+        Require(host.effects==0u&&host.rng==12345u&&host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "Missing SetClientObject argument entered its native or committed prefix effects");
+    }
+    for(const auto index:indices) {
+        TestHost host;const auto native=configure(host,index);bool read{},seed{},body{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=index==1487u?Value::Text(Vm::Kind::Object,{}):Value::Bool(false);
+        alias->read=[&]() ->Value {read=true;throw std::runtime_error("Empty direct Window receiver read an incoming alias");};
+        host.argumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            seed=true;throw std::runtime_error("Empty direct Window receiver entered its native seed");
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&)->Vm::Evaluation {
+            body=true;throw std::runtime_error("Empty direct Window receiver entered its native body");
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierNullRelativeEffect",Join({Native(1000u),Return()})),"Self");
+            return execution.CallFunction(native,"",{{alias->zero,alias}});
+        });
+        Returned(result,"Existing direct empty-receiver gate returns absence before native seeds/body/input reads");
+        Require(result.committed&&result.value.kind==Vm::Kind::Nothing&&!read&&!seed&&!body&&host.effects==1u&&
+            host.rng==12345u*1664525u+1013904223u&&host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "Direct empty Window receiver evaluated pending native work or poisoned its valid earlier prefix");
+    }
+    for(const auto index:indices) {
+        TestHost host;const auto native=configure(host,index);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierForgedRelativeEffect",Join({Native(1000u),Return()})),"Self");
+            try {execution.CallFunction(native,"NotAWindow",{{index==1487u?Value::Text(Vm::Kind::Object,{}):Value::Bool(true),{}}});}
+            catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Nonempty forged Window receiver fails authenticated native seed admission");
+        Require(host.effects==0u&&host.rng==12345u&&host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "Forged nonempty Window receiver reached its body or committed prefix effects");
+    }
+    std::cout<<"Window relative queries/client-object copied packet inputs: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void OptionalAndReferenceTables() {
     TestHost host;
     auto script=Function("OptionalScript",Return(Ref(0x00,1)),"ScriptSource");
@@ -7527,6 +7739,7 @@ int main() {
         WindowWidthInputContracts();
         WindowSelectabilityInputContracts();
         WindowVisibilityInputContracts();
+        WindowRelativeInputContracts();
         VectorNativeContracts();
         StartupPrimitiveContracts();
         IteratorContracts();

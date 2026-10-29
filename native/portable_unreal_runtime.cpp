@@ -58,6 +58,8 @@
 #include "quest_native_window_configure.h"
 #include "quest_native_window_activation.h"
 #include "quest_native_window_toggle.h"
+#include "quest_native_window_navigation.h"
+#include "portable_window_navigation.h"
 #include "quest_native_text_window_setters.h"
 #include "quest_native_text_content.h"
 #include "quest_native_text_log_storage.h"
@@ -4409,6 +4411,9 @@ public:
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
+        if(index>=1455u && index<=1458u)
+            return WindowRelativeQueryNative(index,Object(receiver),arguments,declaration);
+        if(index==1487u) return WindowSetClientObjectNative(Object(receiver),arguments,declaration,execution);
         if(index==1460u) return WindowAskParentForReconfigureNative(Object(receiver),arguments,declaration,execution);
         if(index==1462u) {
             auto* window=Object(receiver);RequireNativeWindow(window);
@@ -4641,6 +4646,13 @@ public:
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
         const char* path{};std::vector<Parameter> parameters;
         switch(index) {
+        case 1455u:case 1456u:case 1457u:case 1458u:
+            path=index==1455u?"Extension.Window.GetTopChild":index==1456u?"Extension.Window.GetBottomChild":
+                index==1457u?"Extension.Window.GetHigherSibling":"Extension.Window.GetLowerSibling";
+            parameters={{"bVisibleOnly",Kind::Bool,0x90u,"BoolProperty",""},
+                {"ReturnValue",Kind::Object,0x580u,"ObjectProperty","Extension.Window"}};break;
+        case 1487u:path="Extension.Window.SetClientObject";
+            parameters={{"newClientObject",Kind::Object,0x80u,"ObjectProperty","Core.Object"}};break;
         case 1412u:path="Extension.Window.Lower";break;
         case 1460u:path="Extension.Window.AskParentForReconfigure";break;
         case 1414u:path="Extension.Window.Hide";break;
@@ -4739,6 +4751,17 @@ public:
             if(LowerAscii(function.path)!=LowerAscii(path) || function.nativeIndex!=index || function.flags!=0x401u ||
                 function.variables.size()!=parameters.size())
                 throw std::runtime_error("Native window function does not match its original declaration");
+            if((index>=1455u&&index<=1458u)||index==1487u) {
+                auto* method=Object(path);
+                if(!method->script||method->outer!=Object("Extension.Window")||method->script->baseField||
+                    method->script->logicalSize!=5u||method->script->bytecode.size()!=5u||
+                    function.source!=method->sourcePath||function.bytecode!=method->script->bytecode)
+                    throw std::runtime_error("Window navigation lacks its original native UFunction program");
+                RuntimeBytecodeReader code(function.bytecode);
+                if(code.Byte()!=0x29u||Qualified(Table(method->sourcePath),static_cast<std::int32_t>(code.Dword()))!=
+                    function.variables.front().key)
+                    throw std::runtime_error("Window navigation NativeParm differs from its actual input field");
+            }
             for(std::size_t slot=0u;slot<parameters.size();++slot) {
                 const auto& field=function.variables[slot];const auto& expected=parameters[slot];
                 const auto key=LowerAscii(std::string(path)+'.'+expected.name);
@@ -6076,6 +6099,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if((index>=1455u&&index<=1458u)||index==1487u) {
+            RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
+            if(slot)throw std::runtime_error("Window navigation input exceeds its original single slot");
+            return index==1487u?Value::Text(Kind::Object,{}):Value::Bool(true);
+        }
         if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum") {
             static_cast<void>(CoreGetEnumDeclaration(declaration));static_cast<void>(Object(receiver));
             if(slot>=2u)throw std::runtime_error("GetEnum seed exceeds its original two input slots");
@@ -6291,6 +6319,11 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if((index>=1455u&&index<=1458u)||index==1487u) {
+            RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
+            if(slot)throw std::runtime_error("Window navigation omission exceeds its original input slot");
+            return true;
+        }
         if(index==1483u || index==1413u) {
             RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
             if(slot)throw std::runtime_error("Window optional Bool omission exceeds its original input slot");
@@ -8132,6 +8165,7 @@ public:
 #include "portable_text_preferred_size.inl"
 #include "portable_gc_text_natives.inl"
 #include "portable_window_axis_probe.inl"
+#include "portable_window_navigation.inl"
 #include "portable_window_tile_layout.inl"
 #include "portable_window_tile_probe.inl"
     void InitializeChildRadioBox(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
@@ -15325,6 +15359,20 @@ PortableWindowAxisProbeResult ProbePortableNativeWindowAxisQuery(const std::stri
         PortableActorVmHost host;
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
             return host.ProbeNativeWindowAxisQuery(playerActorPath,mode,result,execution);
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableWindowNavigationProbeResult ProbePortableNativeWindowNavigation(const std::string& actualOuterPath,
+    PortableWindowNavigationProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableWindowNavigationProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeWindowNavigation(actualOuterPath,mode,result,execution);
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();

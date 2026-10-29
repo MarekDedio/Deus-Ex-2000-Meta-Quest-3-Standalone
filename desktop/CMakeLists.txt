@@ -86,6 +86,22 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME quest_flag_base COMMAND quest_flag_base_test)
 
+add_executable(quest_native_window_navigation_test quest_native_window_navigation_test.cpp)
+target_compile_features(quest_native_window_navigation_test PRIVATE cxx_std_20)
+target_include_directories(quest_native_window_navigation_test PRIVATE "${PORT_NATIVE}")
+add_executable(portable_window_navigation_test portable_window_navigation_test.cpp)
+target_compile_features(portable_window_navigation_test PRIVATE cxx_std_20)
+target_link_libraries(portable_window_navigation_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    foreach(WINDOW_NAVIGATION_TEST quest_native_window_navigation_test portable_window_navigation_test)
+        target_compile_options(${WINDOW_NAVIGATION_TEST} PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${WINDOW_NAVIGATION_TEST} PRIVATE -static -static-libgcc -static-libstdc++)
+    endforeach()
+endif()
+add_test(NAME quest_native_window_navigation COMMAND quest_native_window_navigation_test)
+add_test(NAME portable_window_navigation COMMAND portable_window_navigation_test)
+set_tests_properties(portable_window_navigation PROPERTIES SKIP_RETURN_CODE 77)
+
 # Observation tool, deliberately not a CTest acceptance result. Exit2 means
 # a safely rolled-back first-Training startup boundary, not a passing startup.
 add_executable(portable_training_startup_probe portable_training_startup_probe.cpp)

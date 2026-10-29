@@ -159,6 +159,12 @@ None property. The real Training continuation reaches ClearAugmentationDisplay
 PC15/native1455 GetTopChild; see ORIGINAL-FLAGBASE-CONSTRUCTOR-IMPLEMENTATION.md.
 Positive flag nodes and native archive/travel remain separate required work.
 
+The subsequent Window query/client-object batch now clears that1455 dependency
+and returns from the actual TravelPostAccept. The next observed first-Training
+boundary is ClientSetMusic PC0: its real imported Music asset needs source
+admission (ORIGINAL-TRAINING-MUSIC-ASSET.md), not a decoder or a fabricated None.
+Two boundary repeats verify full undo; PostLogin/tail startup remain incomplete.
+
 After SpawnPlayActor returns, LoadMap still requires moving-brush tracking,
 subsystem rebinding, per-viewport ResetInput/render services and DetailChange.
 Finishing this tail alone does not prove completed startup or live gameplay.

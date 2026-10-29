@@ -60,6 +60,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 1270: case 1272: case 1486: // GC wrappers copy initialized input temporaries.
     case 1242: case 1281: case 1469: // Font selection/height and copied script FString conversion.
     case 1410: case 1413: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1463: case 1464: case 1467:
+    case 1455: case 1456: case 1457: case 1458: case 1487:
     case 1475: case 1476: case 1477: case 1483: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
     case 1541: case 1544: case 1545: case 1550: case 1556: case 1557: case 1558: case 1572: case 1573:
         return true; // Retail window wrappers have no OUT parameters.
@@ -1901,7 +1902,8 @@ private:
                 const bool scalarCompound=nativeCall&&index>=182u&&index<=185u;
                 const bool copiedScalar=nativeCall&&(index==169u||index==171u||index==172u||index==174u||index==175u||
                     (index>=176u&&index<=181u)||
-                    index==1242u||index==1281u||index==1469u||index==1024u||index==1120u||(index==1280u&&(i==0u||i==3u))||
+                    index==1242u||index==1281u||index==1469u||index==1024u||index==1120u||
+                    (index>=1455u&&index<=1458u)||index==1487u||(index==1280u&&(i==0u||i==3u))||
                     (index==0u&&fn&&Lower(fn->path)=="core.object.getenum")||
                     (scalarCompound&&i==1u));
                 auto argument = Eval(frame, n.children[i], frame.self,
