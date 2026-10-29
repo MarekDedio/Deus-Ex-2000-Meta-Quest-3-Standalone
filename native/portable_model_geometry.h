@@ -135,15 +135,29 @@ PortableModelGeometry LoadPortableRootModel68(const PortablePackageTables& packa
 std::vector<std::int32_t> ReadPortableLevel68ActorOrder(const PortablePackageTables& package,
     std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
 
-// Actual native ULevel.Serialize prefix AFTER Model/ReachSpecs, not reflected
-// tag absence or a fabricated transient zero. firstDeletedOffset is the
-// absolute source-file position of its compact object reference, for audits.
-// Reference bounds are checked here; actual Actor identity belongs to the
-// runtime loader. No world startup/deletion or native clock is initialized.
+// Original native TMap<FString,FString> pair order. ANSI source bytes are
+// zero-extended; UTF16 units (including embedded NULs/isolated surrogates) are
+// preserved. The archive's mandatory final terminator is not part of these
+// strings. No lookup, case folding, duplicate removal or travel import occurs.
+struct PortableLevel68TravelEntry {
+    std::u16string key,value;
+    bool operator==(const PortableLevel68TravelEntry& other) const {
+        return key==other.key&&value==other.value;
+    }
+};
+// Actual native ULevel.Serialize prefix AFTER Model/ReachSpecs, including its
+// subsequent v68 travel map, not reflected tag absence or fabricated emptiness.
+// Offsets are absolute source-file positions: FirstDeleted's compact object
+// reference, then travel count, then the first byte AFTER all travel pairs.
+// Reference bounds are checked here; actual Actor identity and optional incoming
+// travel-map replacement belong to the runtime loader. No world startup,
+// deletion, native clock or successful travel import is initialized here.
 struct PortableLevel68DeferredState {
     std::int32_t firstDeleted{};
     float serializedTime{};
     std::size_t reachSpecs{},firstDeletedOffset{};
+    std::vector<PortableLevel68TravelEntry> travelMap;
+    std::size_t travelMapOffset{},travelMapEndOffset{};
 };
 PortableLevel68DeferredState ReadPortableLevel68DeferredState(const PortablePackageTables& package,
     std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);

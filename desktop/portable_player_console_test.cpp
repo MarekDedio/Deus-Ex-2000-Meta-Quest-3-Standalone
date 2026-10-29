@@ -327,7 +327,8 @@ Tables Build(Fixture& fixture, const unsigned malformed = 0u) {
     for (unsigned i = 0u; i < 5u; ++i) Index(worldBytes, 0);
     U32(worldBytes, 7777u); U32(worldBytes, 0u); Index(worldBytes, worldModel); Index(worldBytes, 0);
     U32(worldBytes,0u); Index(worldBytes,0); // Original serialized Float time and preliminary +100.
-    for(unsigned i=0u;i<16u;++i)Index(worldBytes,0); // +9C pointer sequence, including final +100 alias.
+    for(unsigned i=0u;i<16u;++i)Index(worldBytes,0); // Separate +0x9C..+0xD8 pointers, not FirstDeleted+0x100.
+    Index(worldBytes,0); // Original v68 serialized native travel-map count.
     map.Body(world, std::move(worldBytes));
     Bytes modelBytes; Index(modelBytes, 0); for (unsigned i = 0u; i < 6u; ++i) U32(modelBytes, 0u);
     modelBytes.push_back(0u); for (unsigned i = 0u; i < 4u; ++i) U32(modelBytes, 0u);

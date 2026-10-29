@@ -279,7 +279,9 @@ Tables Build(Fixture& fixture,unsigned malformed=0u) {
     Bytes b;Index(b,0);U32(b,4u);U32(b,4u);for(const auto ref:{levelActor,driver,raw,empty})Index(b,ref);
     for(unsigned i=0u;i<5u;++i)Index(b,0);
     U32(b,7777u);U32(b,0u);Index(b,worldModel);Index(b,0);
-    U32(b,0u);Index(b,0);for(unsigned i=0u;i<16u;++i)Index(b,0);map.Body(world,std::move(b));
+    U32(b,0u);Index(b,0);for(unsigned i=0u;i<16u;++i)Index(b,0);
+    Index(b,0); // Original v68 serialized native travel-map count.
+    map.Body(world,std::move(b));
     Bytes m;Index(m,0);for(unsigned i=0u;i<6u;++i)Float(m,0.0f);m.push_back(0u);
     for(unsigned i=0u;i<4u;++i)Float(m,0.0f);
     for(unsigned i=0u;i<5u;++i)Index(m,0);

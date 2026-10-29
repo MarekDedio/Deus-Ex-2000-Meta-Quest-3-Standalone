@@ -1,5 +1,49 @@
 # Port status
 
+## Latest: original player travel prefix and native travel ownership (2026-10-29)
+
+The captured real Login pawn now continues through original role/remote-role,
+display/admin stores, appCmdLine/ParseParam, TravelPreAccept, actual native travel
+selection and GameInfo.AcceptInventory, in the existing startup Execution/root.
+Pawn and Game callbacks share original checked lookup/ProcessEvent gates, with
+authenticated Pawn/PlayerPawn packets. PostLogin/tail return are wired but remain
+unreached: the actual TravelPostAccept ancestry stops at native544 ResetKeyboard.
+This is player spawning/gameplay startup, not account/login UI.
+
+The v68 loader now owns bounded ordered travel-map FString pairs and exact
+source offsets, plus explicit independent incoming-map authority. Native tick
+changes/undo and same-map checkpoint resets retain immutable travel identity.
+Actual allocations are charged before publishing slot0/Level.Model authority.
+Incoming-replacement checkpoints explicitly refuse before file writes/decode/
+restore-side collection until that independent profile has an archive service;
+eight generated refusal controls cover empty/nonempty replacements and unchanged
+bytes/mtime/actors/revision/GC, with normal authored/no-incoming positive controls.
+
+Final guarded snapshot: full desktop, strict ARM64 and Android-native builds
+pass. CTest238 executed/286 registered/48 explicit owned-data skips/zero failures,
+140.19s. Generated Spawn13803 checks/231 refusals includes new checkpoint controls.
+Owned Level/travel1856/199 and deferred429/21 pass. Normal first-Training startup
+reaches native544 at264064 instructions/36592 writes with roles/preTravel/travel/
+AcceptInventory returned, complete rollback and41 unchanged owned sources.
+
+Before the final checkpoint-only guard, the same gameplay prefix also passed
+two-Fire repeat2 at272616/37200, both native544 PC6, two notifies/four traces/two
+crate changes/nine births/full undo; owned HUD12211, CoreSET9548/6, GC155/16,
+crate415/5, animation588/24, FastTrace252/0, Input10315/24 and config9989/48 passed.
+Pure ParseParam686550/110 and tail provider mocks441 checks/125 cases pass.
+These explicit boundary diagnostics are NOT successful startup/live VR gameplay.
+
+Final audit:1833 frozen compiler/dependency/patch inputs unchanged,45 originals
+unchanged (length/mtime/SHA256), no live jobs. Superseded builds, the corrected
+C++17 consumer failure and discovery-only runs remain recorded, not passing gates.
+No new APK, live headset crate/loot/gravity completion, other-map integration,
+account UI, accepted VR-layout change or resource-limit increase is claimed.
+
+Next: real native544 ResetKeyboard/selected InputExt.ResetConfig with separately
+pinned read-only DefUser cache and distinct cache/Flush authority; remaining
+TravelPostAccept callbacks, Input.Init/Reset/ReadInput, then live player-command/
+world-frame/render publication. See ORIGINAL-TRAINING-POST-POSSESS.md.
+
 ## Latest: rooted System and same-root Input SET (2026-10-29)
 
 Actual Core.System Class/two CDOs/eight fields/rooted GSys now precedes viewport

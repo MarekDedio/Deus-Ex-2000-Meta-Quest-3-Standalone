@@ -271,7 +271,8 @@ Tables Build(Fixture& fixture,const Options& options={}) {
     for(unsigned i=0u;i<5u;++i) Index(body,0);
     U32(body,7777u);U32(body,0);Index(body,worldModel);Index(body,0);
     U32(body,0u);Index(body,0); // Original serialized Float time and preliminary +100.
-    for(unsigned i=0u;i<16u;++i)Index(body,0); // +9C pointer sequence, including final +100 alias.
+    for(unsigned i=0u;i<16u;++i)Index(body,0); // Separate +0x9C..+0xD8 pointers, not FirstDeleted+0x100.
+    Index(body,0); // Original v68 serialized native travel-map count.
     map.Body(world,std::move(body));map.Body(worldModel,EmptyModel(options.outside));
     static_cast<void>(cv);return {{coreTable,engineTable,classesTable},fixture.Write(map,true)};
 }

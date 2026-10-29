@@ -138,6 +138,8 @@
 #include "quest_object_destroy.h"
 #include "quest_world_actor_order.h"
 #include "quest_spawn_play_actor_login.h"
+#include "quest_spawn_play_actor_tail.h"
+#include "quest_command_line_param.h"
 #include "quest_load_context_save.h"
 #include "quest_dump_location.h"
 
@@ -335,7 +337,28 @@ struct RuntimeNativeLinker {
 
 // Fresh exact ULevel allocation/default-copy baseline (native size0x1150,
 // Super LevelBase0x8C). Mutations belong to the shared Level/Actor root.
-struct RuntimeNativeLevelTickContext { std::int32_t parity{},inTick{}; };
+struct RuntimeNativeLevelTravelState {
+    std::vector<PortableLevel68TravelEntry> entries;
+    std::size_t serializedOffset{},serializedEndOffset{};
+    bool incomingEstablished{},incomingReplacement{};
+};
+static std::size_t NativeLevelTravelRetainedBytes(const RuntimeNativeLevelTravelState& travel) {
+    auto bytes=QuestVr::DecalStateDetail::Add(sizeof(travel)+4u*sizeof(void*),
+        QuestVr::DecalStateDetail::Multiply(travel.entries.capacity(),sizeof(PortableLevel68TravelEntry)));
+    for(const auto& entry:travel.entries)for(const auto* text:{&entry.key,&entry.value}) {
+        const auto data=reinterpret_cast<std::uintptr_t>(text->data());
+        const auto header=reinterpret_cast<std::uintptr_t>(text);
+        if(data<header||data-header>=sizeof(*text))bytes=QuestVr::DecalStateDetail::Add(bytes,
+            QuestVr::DecalStateDetail::Multiply(text->capacity()+1u,sizeof(char16_t)));
+    }
+    return bytes;
+}
+struct RuntimeNativeLevelTickContext {
+    std::int32_t parity{},inTick{};
+    // Immutable loader-owned ULevel+E4 data. Sharing its identity in a tick
+    // before-image never clones it or adds a pointer to every non-Level UObject.
+    std::shared_ptr<const RuntimeNativeLevelTravelState> travel;
+};
 class RuntimeObject : public GCObject {
 public:
     RuntimeObject(
@@ -2643,6 +2666,16 @@ bool HasActiveNativeLevelTick() {
     return persistentRuntime&&persistentRuntime->get()&&
         std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
             [](const auto* object){return object&&object->nativeLevelTickContext&&object->nativeLevelTickContext->inTick;});
+}
+bool HasNativeIncomingTravelReplacement() {
+    // Check the actual loader-owned immutable profile, not source presence:
+    // explicit "no incoming replacement" retains the same authored map data.
+    return persistentRuntime&&persistentRuntime->get()&&
+        std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
+            [](const auto* object) {
+                const auto* tick=object?object->nativeLevelTickContext.get():nullptr;
+                return tick&&tick->travel&&tick->travel->incomingReplacement;
+            });
 }
 bool HasNativeDeferredOwnership() {
     return persistentRuntime&&persistentRuntime->get()&&
@@ -5837,6 +5870,9 @@ public:
         ValidateStateBudget(NativePackageRetainedBytes(staged));
     }
     void ValidateAdditionalPackageBudget(const std::size_t bytes) const {ValidateStateBudget(bytes);}
+    std::size_t RemainingNativeStateBytes() const {
+        std::size_t result{};ValidateStateBudget(0u,nullptr,&result);return result;
+    }
     void ValidateEngineCollisionBudget(const RuntimeEngineCollisionDomain& staged,const std::size_t staging=0u) const {
         ValidateStateBudget(QuestVr::DecalStateDetail::Add(EngineCollisionRetainedBytes(staged),staging));
     }
@@ -8804,6 +8840,7 @@ public:
 #include "portable_startup_weapon_fire.inl"
 #include "portable_startup_mover.inl"
 #include "portable_player_login.inl"
+#include "portable_startup_player_tail.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
         PortableRetailCollisionSnapshot* originalCollision=nullptr,
@@ -11295,7 +11332,8 @@ private:
         RefreshAIRoots(manager);
         return {};
     }
-    void ValidateStateBudget(const std::size_t extraRetained = 0u,const RuntimeObject* clonedDefaults = nullptr) const {
+    void ValidateStateBudget(const std::size_t extraRetained = 0u,const RuntimeObject* clonedDefaults = nullptr,
+        std::size_t* remainingBytes=nullptr) const {
         // Bound persistent state across independent calls, not just one VM's
         // temporary allocations. Measure without copying live values/sets.
         // State/default storage is bounded without copying live values. The
@@ -11380,12 +11418,6 @@ private:
         defaults.Retain(NativeInputJournalBytes());
         defaults.Retain(UserConfigStorageBytes());
         if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
-        if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
-            auto* model=persistentWorldActors.front()->nativeXLevel->nativeLevelModel;
-            if(model&&model->nativeModelZoneRenderTimes)defaults.Retain(sizeof(*model->nativeModelZoneRenderTimes));
-            const auto* tick=persistentWorldActors.front()->nativeXLevel->nativeLevelTickContext.get();
-            if(tick)defaults.Retain(sizeof(*tick));
-        }
         if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
         defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
@@ -11470,6 +11502,15 @@ private:
                 persistentConversationNodes[objectIndex-exports.size()-windowObjects]:
                 persistentDumpObjects[objectIndex-exports.size()-windowObjects-persistentConversationNodes.size()];
             if(!object)continue;
+            // Count actual native allocations even while the loader has not
+            // yet published slot0/Level.Model query authority. Accounting an
+            // allocation never grants permission to use that native service.
+            if(object->nativeModelZoneRenderTimes)defaults.Retain(sizeof(*object->nativeModelZoneRenderTimes));
+            if(object->nativeLevelTickContext) {
+                const auto& tick=*object->nativeLevelTickContext;
+                defaults.Retain(sizeof(tick));
+                if(tick.travel)defaults.Retain(NativeLevelTravelRetainedBytes(*tick.travel));
+            }
             if(object->animationClock) {
                 defaults.Retain(sizeof(QuestVr::ActorAnimationClock));
                 defaults.Retain(object->animationClock->pose.main.sequence.capacity()+1u);
@@ -11555,6 +11596,7 @@ private:
             measured.MeasureStateObject(*object->stateObject);
         }
         QuestVr::ValidateRuntimeStateCombinedBudget(limits, defaults, measured.measuredBudget());
+        if(remainingBytes)*remainingBytes=limits.maxBytes-defaults.retained-measured.measuredBudget().retained;
         }catch(const std::exception& error) {
             if(!persistentRetailCollision) throw;
             throw std::runtime_error(std::string(error.what())+" [native-state retained="+
@@ -11913,6 +11955,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(HasNativeIncomingTravelReplacement())
+        throw std::runtime_error("Incoming native Level travel replacement checkpoint capture is not implemented");
     if(HasActiveNativeLevelTick())
         throw std::runtime_error("Cannot capture native Level state during an active Tick");
     if(persistentDumpSession.saved || !persistentDumpObjects.empty())
@@ -12876,6 +12920,8 @@ void MeasureLegacySimBlendImports(const QuestVr::ScriptSavedState& saved,
 
 PreparedScriptState PrepareScriptSavedState(
     const QuestVr::ScriptSavedState& saved, const bool apply, const QuestVr::ScriptStateLimits& limits) {
+    if(HasNativeIncomingTravelReplacement())
+        throw std::runtime_error("Incoming native Level travel replacement checkpoint restoration is not implemented");
     if(apply&&HasActiveNativeLevelTick())
         throw std::runtime_error("Cannot restore native Level state during an active Tick");
     if(apply&&HasNativeDeferredOwnership())
@@ -16118,7 +16164,7 @@ PortableActorPrimitivePointSnapshot ProbePortableRuntimeActorPrimitivePoint(cons
 }
 
 static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
-    const PortablePackageTables& package, const std::size_t first) {
+    const PortablePackageTables& package,const std::size_t first,const PortableMapTravelSource* travelSource) {
     PortableActorVmHost host;
     std::pair<RuntimeObject*,RuntimeObject*> pendingModel{};
     std::vector<RuntimeObject*> actorOrder;
@@ -16146,8 +16192,9 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
         host.ValidateNativeLevelModel(xlevel,model);
         // Core native Class default preparation + fresh template0 CreateExport,
         // not serialized zero: ORIGINAL-MODEL-ZONE-TIMESTAMP-INITIALIZATION.md.
+        host.ValidateAdditionalPackageBudget(sizeof(std::array<float,64u>));
         model->nativeModelZoneRenderTimes=std::make_unique<std::array<float,64u>>();
-        const auto deferred=ReadPortableLevel68DeferredState(package);
+        auto deferred=ReadPortableLevel68DeferredState(package,host.RemainingNativeStateBytes());
         if(deferred.firstDeleted)
             throw std::runtime_error("Authored nonempty native FirstDeleted queue loading/cleanup is not implemented");
         xlevel->nativeFirstDeleted=nullptr;xlevel->nativeFirstDeletedBound=true;
@@ -16158,8 +16205,42 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
         xlevel->nativeTimeSeconds=0.0;
         // Actual Level registration/default-copy/constructor/serializer proof,
         // not absent reflected tags: ORIGINAL-LEVEL-TICK-CONTEXT.md.
+        RuntimeNativeLevelTravelState travel;
+        travel.serializedOffset=deferred.travelMapOffset;travel.serializedEndOffset=deferred.travelMapEndOffset;
+        travel.entries=std::move(deferred.travelMap);
+        travel.incomingEstablished=travelSource!=nullptr;
+        travel.incomingReplacement=travelSource&&travelSource->replacement.has_value();
+        host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(
+            sizeof(RuntimeNativeLevelTickContext),NativeLevelTravelRetainedBytes(travel)));
         xlevel->nativeLevelTickContext=std::make_unique<RuntimeNativeLevelTickContext>();
-        const auto order = ReadPortableLevel68ActorOrder(package);
+        if(travel.incomingReplacement) {
+            const auto& incoming=*travelSource->replacement;
+            if(incoming.size()>1'000'000u)throw std::runtime_error("Incoming native Level travel map exceeds entry bound");
+            RuntimeNativeLevelTravelState staged;
+            const auto oldBytes=NativeLevelTravelRetainedBytes(travel);
+            host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(oldBytes,
+                QuestVr::DecalStateDetail::Add(sizeof(staged),QuestVr::DecalStateDetail::Multiply(
+                    incoming.size(),sizeof(PortableLevel68TravelEntry)))));
+            staged.entries.reserve(incoming.size());
+            if(staged.entries.capacity()!=incoming.size())
+                throw std::runtime_error("Incoming native travel map capacity exceeds admitted storage");
+            for(const auto& entry:incoming) {
+                const auto units=QuestVr::DecalStateDetail::Add(
+                    QuestVr::DecalStateDetail::Add(entry.first.size(),1u),QuestVr::DecalStateDetail::Add(entry.second.size(),1u));
+                host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(oldBytes,
+                    QuestVr::DecalStateDetail::Add(NativeLevelTravelRetainedBytes(staged),
+                        QuestVr::DecalStateDetail::Multiply(units,4u*sizeof(char16_t)))));
+                auto& target=staged.entries.emplace_back();target.key=entry.first;target.value=entry.second;
+                host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(oldBytes,NativeLevelTravelRetainedBytes(staged)));
+            }
+            travel.entries.swap(staged.entries);
+        }
+        host.ValidateAdditionalPackageBudget(NativeLevelTravelRetainedBytes(travel));
+        xlevel->nativeLevelTickContext->travel=std::make_shared<const RuntimeNativeLevelTravelState>(std::move(travel));
+        // The allocation ledger sees all three retained native payloads now,
+        // before slot0 or native Level.Model are published. The next decoder
+        // borrows only their actual remaining aggregate allowance.
+        const auto order = ReadPortableLevel68ActorOrder(package,host.RemainingNativeStateBytes());
         persistentWorldActors.assign(order.size(), nullptr);
         actorOrder.reserve(order.size());
         for (std::size_t slot = 0u; slot < order.size(); ++slot) {
@@ -16209,7 +16290,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
 }
 
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
-    const PortablePackageTables& package) {
+    const PortablePackageTables& package,const PortableMapTravelSource* travelSource) {
     CollectBirthGarbageAtBoundary collect;
     if (!persistentRuntime || !persistentRuntime->get()) {
         throw std::runtime_error("Cannot load a map without an initialized runtime");
@@ -16366,7 +16447,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     summary.exports = graph.objects.size()-summary.contextExcludedExports;
     persistentMapPackageName = packageName;
     persistentMapSourcePath = package.sourcePath;
-    const auto pendingModel=BindAuthoredActorSlots(package, first);
+    const auto pendingModel=BindAuthoredActorSlots(package,first,travelSource);
     std::vector<RuntimeObject*> lookupObjects;
     if(auto* root=persistentRuntime->get()->mapLinkerRoot) lookupObjects.push_back(root);
     for(std::size_t index=first;index<persistentRuntime->get()->exports.size();++index)
@@ -18146,6 +18227,10 @@ bool SavePortableRuntimeState(const std::string& path) {
 static bool ReadPortableRuntimeState(const std::string& path, const bool apply, const std::string& expectedMapName) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     try {
+        // This applies even to read-only validation and legacy/non-script
+        // envelopes: none binds an incoming replacement's independent data.
+        if(HasNativeIncomingTravelReplacement())
+            throw std::runtime_error("Incoming native Level travel replacement checkpoint restoration is not implemented");
         if(apply&&HasActiveNativeLevelTick())
             throw std::runtime_error("Cannot restore native Level state during an active Tick");
         if(persistentDumpSession.saved || !persistentDumpObjects.empty())
@@ -18520,7 +18605,11 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             // baseline. Never merge the current history or guess it from a
             // mutable/lossy reflected Float. New records publish after staging.
             if (object->nativeTimeSeconds) object->nativeTimeSeconds=0.0;
-            if(object->nativeLevelTickContext)*object->nativeLevelTickContext=RuntimeNativeLevelTickContext{};
+            if(object->nativeLevelTickContext) {
+                object->nativeLevelTickContext->parity=0;object->nativeLevelTickContext->inTick=0;
+                // Portable checkpoint restoration resets only the transient
+                // tick words, not immutable source/incoming-map ownership.
+            }
             object->nativeFirstDynamic.reset();object->nativeActorOrderChanged=false;
             if(object->nativeXLevel||object->runtimeBirth)object->worldActorIndex=-1;
             object->scriptValues.clear(); object->classDefaultValues.clear();
@@ -18587,6 +18676,13 @@ bool ValidatePortableRuntimeState(const std::string& path, const std::string& ex
 }
 
 bool LoadPortableRuntimeState(const std::string& path) {
+    // Refuse before even the ordinary boundary collector can alter native
+    // object lifetime. Persisting/rebinding replacement data needs its own
+    // archive profile; silently keeping another replacement is not a restore.
+    if(HasNativeIncomingTravelReplacement()) {
+        __android_log_print(ANDROID_LOG_WARN,"quest_main","Incoming native Level travel replacement checkpoint restoration is not implemented");
+        return false;
+    }
     CollectBirthGarbageAtBoundary collect;
     if(HasNativeConversationBindings()) {
         __android_log_print(ANDROID_LOG_WARN,"quest_main","Native conversation checkpoint/rebind restoration is not implemented");

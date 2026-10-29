@@ -141,6 +141,44 @@ public:
             Fail("Level URL string is not terminated");
         Skip(byteCount);
     }
+    void OwnedString(std::u16string& value,const char* label) {
+        if(!value.empty()||value.capacity()!=std::u16string{}.capacity())
+            Fail("owned archive string destination is not fresh inline storage");
+        const std::int32_t units=Index();
+        const std::uint64_t magnitude=units<0
+            ?static_cast<std::uint64_t>(-static_cast<std::int64_t>(units))
+            :static_cast<std::uint64_t>(units);
+        if(magnitude>MaxPayloadBytes/sizeof(char16_t))
+            Fail(std::string(label)+" exceeds decoded string bound");
+        const auto count=static_cast<std::size_t>(magnitude);
+        const auto byteCount=Multiply(count,units<0?2u:1u,label);
+        Require(byteCount);
+        if(count) {
+            const auto last=position_+byteCount-(units<0?2u:1u);
+            if(bytes_[last]!=0u||(units<0&&bytes_[last+1u]!=0u))
+                Fail(std::string(label)+" is not terminated");
+        }
+        const auto length=count?count-1u:0u;
+        const auto inlineCapacity=value.capacity();
+        // The destination string header/inline buffer is already charged with
+        // its owning entry. Admit only an actual separate heap allocation,
+        // including its final native terminator, before reserve/copy.
+        if(length>inlineCapacity) {
+            const auto allocation=Multiply(length+1u,sizeof(char16_t),label);
+            if(allocation>decodedLimit_-decodedBytes_)
+                Fail("decoded strings exceed working-byte budget");
+            decodedBytes_+=allocation;
+            value.reserve(length);
+            CapacityExcess(value.capacity(),length,sizeof(char16_t),label);
+        }
+        for(std::size_t index=0u;index<length;++index) {
+            const auto offset=position_+index*(units<0?2u:1u);
+            const auto unit=units<0?static_cast<std::uint16_t>(bytes_[offset]|
+                (static_cast<std::uint16_t>(bytes_[offset+1u])<<8u)):bytes_[offset];
+            value.push_back(static_cast<char16_t>(unit));
+        }
+        Skip(byteCount);
+    }
 private:
     void Require(std::size_t count) const {
         if (count > Remaining()) Fail("serialized section is truncated");
@@ -537,9 +575,8 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package,
     reader.CheckedCount(static_cast<std::size_t>(actorCount), "Level actor", 1u, sizeof(std::int32_t));
     LevelSelection selection;
     selection.actorOrder.reserve(static_cast<std::size_t>(actorCount));
-    if (Multiply(selection.actorOrder.capacity(), sizeof(std::int32_t), "Level actor") >
-            propertyWorkingBytes - levelOverhead - bytes.capacity())
-        Fail("Level actor capacity exceeds working-byte budget");
+    reader.CapacityExcess(selection.actorOrder.capacity(),static_cast<std::size_t>(actorCount),
+        sizeof(std::int32_t),"Level actor");
     for (std::int32_t index = 0; index < actorCount; ++index) {
         const std::int32_t reference = reader.Index();
         ValidateReference(reference, package.imports.size(), package.exports.size());
@@ -581,9 +618,24 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package,
             const auto reference=reader.Index();
             ValidateReference(reference,package.imports.size(),package.exports.size());
         }
-        // Later Level maps belong to their own decoder. This API authenticates
-        // the actual FirstDeleted and entire following pointer prefix, not all
-        // remaining Level serialization or startup/cleanup service ownership.
+        // Original ULevel.Serialize1039D5ED..602 (version>62) and selected
+        // map serializer103A16D2..17A5: compact count, then key/value FString
+        // pairs. Native pair hash/link words are NOT archived. Preserve source
+        // order and duplicate/empty keys rather than running a lookup here.
+        selection.deferred.travelMapOffset=bodyFileOffset+reader.Position();
+        const auto count=reader.Count("Level travel map",MaxRecords,2u,sizeof(PortableLevel68TravelEntry));
+        selection.deferred.travelMap.reserve(count);
+        reader.CapacityExcess(selection.deferred.travelMap.capacity(),count,
+            sizeof(PortableLevel68TravelEntry),"Level travel map");
+        for(std::size_t index=0u;index<count;++index) {
+            auto& entry=selection.deferred.travelMap.emplace_back();
+            reader.OwnedString(entry.key,"Level travel key");
+            reader.OwnedString(entry.value,"Level travel value");
+        }
+        selection.deferred.travelMapEndOffset=bodyFileOffset+reader.Position();
+        // Later Level arrays still belong to their own decoder. This authenticates
+        // the actual FirstDeleted/pointer/travel prefix, not all remaining Level
+        // serialization or startup/cleanup/travel-import service ownership.
     }
     return selection;
 }

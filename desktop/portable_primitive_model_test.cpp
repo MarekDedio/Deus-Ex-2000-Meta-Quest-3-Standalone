@@ -180,7 +180,8 @@ Tables Build(Fixture& fixture,bool replacement=false,bool inactiveGarbage=false,
     for(unsigned i=0;i<5u;++i) {Index(wb,0);}
     U32(wb,7777);U32(wb,0);Index(wb,root);Index(wb,0);
     U32(wb,0u);Index(wb,0); // Original serialized Float time and preliminary +100.
-    for(unsigned i=0u;i<16u;++i)Index(wb,0); // +9C pointer sequence, including final +100 alias.
+    for(unsigned i=0u;i<16u;++i)Index(wb,0); // Separate +0x9C..+0xD8 pointers, not FirstDeleted+0x100.
+    Index(wb,0); // Original v68 serialized native travel-map count.
     map.Body(world,std::move(wb));
     return {{ct,et,at,st},fixture.Write(map,true)};
 }

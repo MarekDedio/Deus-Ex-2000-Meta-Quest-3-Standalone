@@ -1252,6 +1252,7 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0);
     U32(levelBody,0u); Index(levelBody,0); // Original serialized Float time and actual +0x100 FirstDeleted.
     for(unsigned i=0u;i<16u;++i)Index(levelBody,0); // Separate +0x9C..+0xD8 pointer sequence; no +0x100 alias.
+    Index(levelBody,0); // Original v68 serialized native travel-map count.
     map.Body(world, std::move(levelBody));
     Bytes modelBody; Index(modelBody, 0); for (unsigned i = 0u; i < 6u; ++i) FloatBytes(modelBody, 0.0f); modelBody.push_back(0u);
     for (unsigned i = 0u; i < 4u; ++i) FloatBytes(modelBody, 0.0f);
@@ -3159,10 +3160,76 @@ void DecalNativeSynthetic() {
     }
 }
 #include "portable_actor_order_birth_cases.inl"
+void IncomingTravelCheckpointGuards(const Fixture& fixture,const Tables& tables) {
+    const auto baselinePath=fixture.directory/"Legacy.sav";
+    const auto baseline=ReadBytes(baselinePath);
+    Require(baseline==fixture.legacy,"Incoming travel guard test lost its authored checkpoint baseline");
+    const auto reload=[&](const PortableMapTravelSource* source) {
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed,
+            "Cannot reinitialize generated incoming travel checkpoint fixture");
+        Require(LoadPortableRuntimeMap(tables.map,source).passed,
+            "Cannot load actual generated Level with explicit incoming travel source");
+        Require(ActorPaths(true).size()==tables.initialActors,
+            "Incoming travel source changed generated authored actor publication");
+    };
+    // Ordinary authored checkpoints remain accepted both with absent source
+    // capability and explicitly established no-incoming-map authority.
+    Require(ValidatePortableRuntimeState(baselinePath.string(),"SpawnFixture")&&
+        LoadPortableRuntimeState(baselinePath.string())&&fixture.Snapshot("IncomingAuthoredBaseline")==baseline,
+        "Authored checkpoint round trip failed before incoming replacement controls");
+    for(const auto nonempty:{false,true}) {
+        PortableMapTravelSource source;source.replacement.emplace();
+        if(nonempty)source.replacement->emplace_back(u"Player",u"class=SpawnClasses.Leaf name=ImportedLeaf");
+        reload(&source);
+        const auto suffix=nonempty?"Nonempty":"Empty";
+        const auto existing=fixture.directory/(std::string("IncomingPreserve")+suffix+".sav");
+        const auto missing=fixture.directory/(std::string("IncomingMissing")+suffix+".sav");
+        const Bytes sentinel{'u','n','t','o','u','c','h','e','d','-',static_cast<std::uint8_t>(nonempty?'1':'0')};
+        WriteBytes(existing,sentinel);
+        std::filesystem::last_write_time(existing,std::filesystem::file_time_type::clock::now()-std::chrono::hours(2));
+        const auto modified=std::filesystem::last_write_time(existing);
+        const auto baselineModified=std::filesystem::last_write_time(baselinePath);
+        Require(!std::filesystem::exists(missing),"Missing-output incoming checkpoint control already exists");
+        const auto paths=ActorPaths(true);const auto order=ReadPortableWorldActorOrder();
+        Require(order.available,"Incoming checkpoint controls do not own a real native Level actor order");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto rejected=[&](const std::function<bool()>& operation,const char* label) {
+            Require(!operation(),std::string("Incoming travel checkpoint unexpectedly accepted ")+label);
+            // Inspect immediately, without a fresh collection/save/runtime
+            // mutation that could conceal a rejected entry point's effects.
+            const auto after=GC::GetStats();
+            Require(after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage,
+                std::string("Incoming checkpoint refusal changed immediate GC state: ")+label);
+            Require(GetPortableRuntimeWorldRevision()==revision&&ActorPaths(true)==paths&&ReadPortableWorldActorOrder()==order,
+                std::string("Incoming checkpoint refusal changed actor/order/revision state: ")+label);
+            Require(ReadBytes(existing)==sentinel&&std::filesystem::last_write_time(existing)==modified,
+                std::string("Incoming checkpoint refusal changed existing output bytes/mtime: ")+label);
+            Require(!std::filesystem::exists(missing),
+                std::string("Incoming checkpoint refusal created a missing output: ")+label);
+            Require(ReadBytes(baselinePath)==baseline&&std::filesystem::last_write_time(baselinePath)==baselineModified,
+                std::string("Incoming checkpoint refusal changed its input save: ")+label);
+            ++refusals;
+        };
+        rejected([&]{return SavePortableRuntimeState(existing.string());},"capture over existing output");
+        rejected([&]{return SavePortableRuntimeState(missing.string());},"capture to missing output");
+        rejected([&]{return ValidatePortableRuntimeState(baselinePath.string(),"SpawnFixture");},"read-only validation");
+        rejected([&]{return LoadPortableRuntimeState(baselinePath.string());},"restore");
+        fixture.UnchangedSources();
+    }
+    const PortableMapTravelSource noIncoming;
+    for(const auto* source:{static_cast<const PortableMapTravelSource*>(nullptr),&noIncoming}) {
+        reload(source);
+        Require(ValidatePortableRuntimeState(baselinePath.string(),"SpawnFixture")&&
+            LoadPortableRuntimeState(baselinePath.string())&&fixture.Snapshot(source?"IncomingExplicitNone":"IncomingAbsentSource")==baseline,
+            "Returning to authored/no-incoming authority did not restore canonical checkpoint support");
+    }
+    fixture.Reset();fixture.UnchangedSources();
+}
 void Synthetic() {
     Fixture fixture; const auto tables = Build(fixture);
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed, "Generated spawn runtime/map metadata initialization failed");
     Require(ActorPaths(true).size() == tables.initialActors, "Generated true Level published nonactors/holes or missed original actors"); fixture.legacy = fixture.Snapshot("Legacy"); Require(fixture.legacy[4u] == 3u, "Untouched generated spawn baseline invented persistent state");
+    IncomingTravelCheckpointGuards(fixture,tables);
     const auto nestedPath=ExecutePortableActorFunction(Path("Driver"),"LoadedObjectPath");
     Require(nestedPath.passed() && nestedPath.value.kind==Kind::String && nestedPath.value.text=="Engine.Actor.Level" &&
         fixture.Snapshot("ReadonlyObjectString")==fixture.legacy,"ObjectToString lost a loaded property's complete nested path or changed state");

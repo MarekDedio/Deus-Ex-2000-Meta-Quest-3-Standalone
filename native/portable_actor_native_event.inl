@@ -2,12 +2,17 @@
 // root. Input packets are deliberately limited to the authenticated scalar
 // Float/Bool/Actor or no-parameter forms reached by these native phases.
     void OriginalNativeActorCallback(RuntimeObject* actor,const char* name,std::optional<Value> input,
-        QuestVr::Vm::Execution& execution) {
+        QuestVr::Vm::Execution& execution,const char* objectInputClass="Engine.Actor") {
         if(!transaction_)throw std::runtime_error("Original native Actor callback lacks its caller root");
         actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
         if(input&&input->kind!=Kind::Bool&&input->kind!=Kind::Float&&input->kind!=Kind::Object)
             throw std::runtime_error("Original native Actor callback received an unaudited input packet");
-        if(input&&input->kind==Kind::Object)ValidateObjectValue(*input,"Engine.Actor",false);
+        if(input&&input->kind==Kind::Object) {
+            auto* inputClass=Object(objectInputClass);
+            if(!IsDerivedFromPath(inputClass,"Engine.Actor"))
+                throw std::runtime_error("Original native Actor callback input class is not Actor-derived");
+            ValidateObjectValue(*input,objectInputClass,false);
+        }
         QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,4096u,
             [this](std::size_t bytes){ValidateStateBudget(bytes);});
         std::shared_ptr<const Function> function;
@@ -52,7 +57,7 @@
             if(!input||parameters++||field.zero.kind!=input->kind||field.arrayDimension!=1u||field.flags!=0x80u||
                 parameter->outer!=method||!parameter->property||parameter->property->type!=type||
                 parameter->property->baseField||
-                (actorInput?LowerAscii(Qualified(Table(parameter->sourcePath),parameter->property->referencedType))!="engine.actor":
+                (actorInput?LowerAscii(Qualified(Table(parameter->sourcePath),parameter->property->referencedType))!=LowerAscii(objectInputClass):
                     parameter->property->referencedType!=0)||
                 LowerAscii(Qualified(Table(parameter->sourcePath),Table(parameter->sourcePath).exports.at(parameter->exportIndex).ObjClass))!=
                     std::string("core.")+LowerAscii(type))

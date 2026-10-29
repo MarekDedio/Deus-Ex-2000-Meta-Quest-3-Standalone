@@ -9,8 +9,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 // Data-only admission: original serialized Level head, NOT world startup,
@@ -28,6 +30,18 @@ void Index(Bytes& bytes,std::int32_t value){
     if(magnitude)first|=64u;
     bytes.push_back(first);
     while(magnitude){auto next=static_cast<std::uint8_t>(magnitude&127u);magnitude>>=7u;if(magnitude)next|=128u;bytes.push_back(next);}
+}
+void AnsiString(Bytes& bytes,std::string_view text){
+    Require(text.size()<static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()),"Generated ANSI string size exceeds compact bound");
+    Index(bytes,static_cast<std::int32_t>(text.size()+1u));
+    for(const unsigned char unit:text)bytes.push_back(unit);
+    bytes.push_back(0u);
+}
+void WideString(Bytes& bytes,std::u16string_view text){
+    Require(text.size()<static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()),"Generated UTF16 string size exceeds compact bound");
+    Index(bytes,-static_cast<std::int32_t>(text.size()+1u));
+    for(const auto unit:text){bytes.push_back(static_cast<std::uint8_t>(unit));bytes.push_back(static_cast<std::uint8_t>(unit>>8u));}
+    bytes.push_back(0u);bytes.push_back(0u);
 }
 std::string Fold(std::string value){for(auto& c:value)if(c>='A'&&c<='Z')c=static_cast<char>(c-'A'+'a');return value;}
 bool Within(const fs::path& child,const fs::path& parent){auto a=child.begin();for(auto b=parent.begin();b!=parent.end();++a,++b)if(a==child.end()||Fold(a->string())!=Fold(b->string()))return false;return true;}
@@ -58,7 +72,7 @@ struct Fixture {
         package.exports[0].ObjOffset=0;package.exports[0].ObjSize=static_cast<std::int32_t>(bytes.size());}
 };
 struct Body {
-    Bytes bytes;std::size_t prefix{},reachCount{},start{},end{},time{},preliminary{},head{};
+    Bytes bytes;std::size_t prefix{},reachCount{},start{},end{},time{},preliminary{},head{},travel{};
     std::array<std::size_t,16u> tail{};
     explicit Body(std::int32_t first=3,std::uint32_t timeBits=0xc0200000u,
         std::optional<std::int32_t> initial={},std::int32_t slotZero=0){
@@ -73,13 +87,16 @@ struct Body {
             tail[index]=bytes.size();
             Index(bytes,index==0u?slotZero:index==1u?initial.value_or(first):0);
         }
+        travel=bytes.size();Index(bytes,0); // Actual v68 travel-map count.
     }
 };
 void Generated(const fs::path& original){
     Fixture fixture(original);const Body good;fixture.Write(good.bytes);
     const auto read=[&]{return ReadPortableLevel68DeferredState(fixture.package,65536u);};
     const auto value=read();Require(value.firstDeleted==3&&value.reachSpecs==2u&&value.firstDeletedOffset==good.head&&
-        std::bit_cast<std::uint32_t>(value.serializedTime)==0xc0200000u,"Generated original native sequence/offset/value changed");
+        std::bit_cast<std::uint32_t>(value.serializedTime)==0xc0200000u&&value.travelMap.empty()&&
+        value.travelMapOffset==good.travel&&value.travelMapEndOffset==good.bytes.size(),
+        "Generated original native sequence/offset/value/travel-map changed");
     for(const auto first:{0,-4,2}){const Body body(first,0x80000000u);fixture.Write(body.bytes);const auto result=read();
         Require(result.firstDeleted==first&&std::bit_cast<std::uint32_t>(result.serializedTime)==0x80000000u,
             "Decoder discarded valid compact reference or signed-zero time");}
@@ -113,6 +130,54 @@ void Generated(const fs::path& original){
         variable.tail[1u]==variable.head+4u,
         "Later variable-width unrelated references changed FirstDeleted value/offset");
     fixture.package.imports=smallImports;
+    // The native map archives ordered key/value FString pairs, not its hash
+    // links. Preserve duplicates, empty source strings, ANSI zero-extension,
+    // isolated surrogates and units after embedded NULs without eager lookup.
+    auto travel=good.bytes;travel.resize(good.travel);Index(travel,4);
+    AnsiString(travel,"Player");AnsiString(travel,"First");
+    AnsiString(travel,"player");AnsiString(travel,"");
+    const std::string ansiUnits{'A',static_cast<char>(0x80u),static_cast<char>(0xffu),'\0','Z'};
+    const std::u16string wideUnits{u'B',static_cast<char16_t>(0xd800u),u'\0',static_cast<char16_t>(0xdc00u),u'Q'};
+    AnsiString(travel,ansiUnits);WideString(travel,wideUnits);
+    Index(travel,0);Index(travel,0); // Zero-length native FString storage.
+    const auto travelEnd=travel.size();travel.insert(travel.end(),{0x7fu,0xffu,0x80u}); // Later Level arrays remain outside this API.
+    fixture.Write(travel);const auto entries=read();
+    Require(entries.travelMap==std::vector<PortableLevel68TravelEntry>{{u"Player",u"First"},{u"player",u""},
+        {std::u16string{u'A',static_cast<char16_t>(0x80u),static_cast<char16_t>(0xffu),u'\0',u'Z'},wideUnits},{u"",u""}}&&
+        entries.travelMapOffset==good.travel&&entries.travelMapEndOffset==travelEnd,
+        "Actual travel pair order/duplicates/empty/ANSI/UTF16 units or exact prefix boundary changed");
+    for(std::size_t size=good.travel;size<travelEnd;++size){fixture.Write(Bytes(travel.begin(),travel.begin()+size));
+        Refused(read,"Truncated nonempty travel count/key/value was accepted");}
+    auto missing=good.bytes;missing.resize(good.travel);fixture.Write(missing);
+    Refused(read,"Missing travel archive count fabricated an empty runtime map");
+    for(const auto count:{-1,1'000'001,std::numeric_limits<std::int32_t>::max()}) {
+        auto malformed=missing;Index(malformed,count);malformed.insert(malformed.end(),8u,0u);fixture.Write(malformed);
+        Refused(read,"Negative/excessive travel count was accepted");
+    }
+    for(const auto unicode:{false,true}) {
+        auto malformed=missing;Index(malformed,1);Index(malformed,unicode?-2:2);
+        malformed.push_back('X');if(unicode)malformed.push_back(0u);
+        malformed.push_back('Y');if(unicode)malformed.push_back(0u);
+        Index(malformed,0);fixture.Write(malformed);
+        Refused(read,"Unterminated archived travel FString was accepted");
+    }
+    for(const auto count:{std::numeric_limits<std::int32_t>::max(),-std::numeric_limits<std::int32_t>::max()}) {
+        auto malformed=missing;Index(malformed,1);Index(malformed,count);Index(malformed,0);fixture.Write(malformed);
+        Refused(read,"Oversized/truncated travel string magnitude was accepted");
+    }
+    auto many=missing;Index(many,80);
+    const std::string heapString(80u,'a');
+    for(std::size_t i=0u;i<80u;++i){AnsiString(many,heapString);AnsiString(many,heapString);}
+    fixture.Write(many);const auto retained=read();
+    Require(retained.travelMap.size()==80u&&retained.travelMap.back().value==std::u16string(80u,u'a'),
+        "Cumulatively bounded owned travel string payload changed");
+    Refused([&]{static_cast<void>(ReadPortableLevel68DeferredState(fixture.package,32768u));},
+        "Travel entry/string allocations bypassed cumulative body/actor/string working budget");
+    auto longValue=missing;Index(longValue,1);Index(longValue,0);AnsiString(longValue,std::string(70'000u,'x'));
+    fixture.Write(longValue);const auto longParsed=ReadPortableLevel68DeferredState(fixture.package,262144u);
+    Require(longParsed.travelMap.size()==1u&&longParsed.travelMap.front().key.empty()&&
+        longParsed.travelMap.front().value==std::u16string(70'000u,u'x'),
+        "Travel payload was silently constrained to URL's unrelated65536-unit string bound");
     for(std::size_t size=0u;size<good.bytes.size();++size){fixture.Write(Bytes(good.bytes.begin(),good.bytes.begin()+size));
         Refused(read,"Truncated Level native deferred prefix was accepted");}
     fixture.Write(Bytes(good.bytes.begin(),good.bytes.begin()+good.prefix));
@@ -141,7 +206,7 @@ void Generated(const fs::path& original){
     fixture.package.exports[1].ObjClass=-4;Refused(read,"Non-Model source reference accepted");fixture.package=baseline;
     fixture.package.exports[2].ObjClass=-2;Refused(read,"Ambiguous actual Level selection accepted");fixture.package=baseline;
     for(const auto limit:{0u,1u,32u})Refused([&]{static_cast<void>(ReadPortableLevel68DeferredState(fixture.package,limit));},"Deferred decoder bypassed caller working budget");
-    std::cout<<"PASS generated native Level prefix: "<<checks<<" checks / "<<refusals<<" bounded malformed/truncated refusals\n";
+    std::cout<<"PASS generated native Level deferred/travel prefix: "<<checks<<" checks / "<<refusals<<" bounded malformed/truncated refusals\n";
 }
 void Owned(const fs::path& root){
     const auto path=fs::canonical(root/"Maps"/"00_Training.dx");const auto size=fs::file_size(path);
@@ -150,10 +215,16 @@ void Owned(const fs::path& root){
     // Independent literal witnesses from static ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md,
     // NOT expected values produced by a production table/decoder.
     Require(result.firstDeleted==0&&result.reachSpecs==60u&&result.firstDeletedOffset==4370509u&&
-        std::bit_cast<std::uint32_t>(result.serializedTime)==0x4324ee0du,"First Training differs from original deferred-state witnesses");
+        std::bit_cast<std::uint32_t>(result.serializedTime)==0x4324ee0du&&result.travelMap.empty()&&
+        result.travelMapOffset==4370527u&&result.travelMapEndOffset==4370528u,
+        "First Training differs from original deferred/travel-state witnesses");
     std::ifstream file(path,std::ios::binary);file.seekg(4370505);std::array<unsigned char,7u> witness{};
     file.read(reinterpret_cast<char*>(witness.data()),witness.size());Require(bool(file)&&witness==std::array<unsigned char,7u>{0x0du,0xeeu,0x24u,0x43u,0u,0u,0u},
         "Independent raw time/FirstDeleted/unrelated native reference source bytes changed");
+    file.seekg(4370527);std::array<unsigned char,4u> travelWitness{};
+    file.read(reinterpret_cast<char*>(travelWitness.data()),travelWitness.size());
+    Require(bool(file)&&travelWitness==std::array<unsigned char,4u>{0u,0x59u,0x04u,0x5bu},
+        "Independent raw first Training empty travel count/prefix boundary changed");
     // Repeat the conflicting-reference controls on an isolated copy of the
     // actual first map, not just the generated minimum format. Commercial
     // bytes remain data-only, temporary and never part of the repository.
@@ -168,11 +239,12 @@ void Owned(const fs::path& root){
             output.write(reinterpret_cast<const char*>(changed.data()),static_cast<std::streamsize>(changed.size()));
             Require(bool(output),"Cannot write isolated owned-map reference fixture");}
         const auto parsed=ReadPortableLevel68DeferredState(copiedTables,65536u);
-        Require(parsed.firstDeleted==pair[0u]&&parsed.firstDeletedOffset==4370509u,
+        Require(parsed.firstDeleted==pair[0u]&&parsed.firstDeletedOffset==4370509u&&parsed.travelMap.empty()&&
+            parsed.travelMapOffset==4370527u&&parsed.travelMapEndOffset==4370528u,
             "Actual Training copy incorrectly aliases native0xA0 and0x100 archive destinations");
     }
     Require(fs::file_size(path)==size&&fs::last_write_time(path)==modified&&Hash(path)==hash,"Original Training bytes/size/mtime changed");
-    std::cout<<"PASS ONLY first Training actual serialized deferred head: None / 60 ReachSpecs / absolute4370509 (native0x100, NOT unrelated0xA0/4370511) / Float4324EE0D; original unchanged. No runtime/startup/cleanup/physics claim.\n";
+    std::cout<<"PASS ONLY first Training actual serialized deferred head: None / 60 ReachSpecs / absolute4370509 (native0x100, NOT unrelated0xA0/4370511) / Float4324EE0D / empty travel count4370527, end4370528; original unchanged. No runtime/startup/cleanup/physics claim.\n";
 }
 }
 int main(int argc,char** argv){try{

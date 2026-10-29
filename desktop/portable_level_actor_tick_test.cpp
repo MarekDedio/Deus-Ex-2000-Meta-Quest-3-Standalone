@@ -782,6 +782,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     U32(levelBytes,7777u);U32(levelBytes,0u);
     Index(levelBytes,worldModel);Index(levelBytes,0);U32(levelBytes,0u);Index(levelBytes,0);
     for(unsigned i=0u;i<16u;++i) {Index(levelBytes,0);}
+    Index(levelBytes,0); // Original v68 serialized native travel-map count.
     map.Body(world,std::move(levelBytes));
     Bytes modelBytes;Index(modelBytes,0);for(unsigned i=0u;i<6u;++i)FloatBytes(modelBytes,0.0f);
     modelBytes.push_back(0u);for(unsigned i=0u;i<4u;++i)FloatBytes(modelBytes,0.0f);for(unsigned i=0u;i<5u;++i)Index(modelBytes,0);

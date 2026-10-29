@@ -19,7 +19,8 @@
             ValidateStateBudget(sizeof(*beforeLevelTickContext_));
             beforeLevelTickContext_=std::pair{level,*level->nativeLevelTickContext};
         }
-        *level->nativeLevelTickContext={parity,inTick};
+        level->nativeLevelTickContext->parity=parity;
+        level->nativeLevelTickContext->inTick=inTick;
         ValidateStateBudget();
     }
     void RetireOriginalTickLease() noexcept {

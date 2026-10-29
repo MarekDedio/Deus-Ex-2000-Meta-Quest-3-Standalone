@@ -451,7 +451,8 @@ Tables Build(Fixture& fixture,bool outside=true) {
     for(unsigned i=0u;i<5u;++i) {Index(worldBody,0);}
     U32(worldBody,7777u);U32(worldBody,0);Index(worldBody,worldModel);Index(worldBody,0);
     U32(worldBody,0u);Index(worldBody,0); // Original serialized Float time and preliminary +100.
-    for(unsigned i=0u;i<16u;++i)Index(worldBody,0); // +9C pointer sequence, including final +100 alias.
+    for(unsigned i=0u;i<16u;++i)Index(worldBody,0); // Separate +0x9C..+0xD8 pointers, not FirstDeleted+0x100.
+    Index(worldBody,0); // Original v68 serialized native travel-map count.
     map.Body(world,std::move(worldBody));
     map.Body(worldModel,EmptyModel(outside));return {{coreTable,engineTable,classesTable},fixture.Write(map,true)};
 }

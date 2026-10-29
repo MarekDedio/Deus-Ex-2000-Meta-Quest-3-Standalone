@@ -266,11 +266,25 @@ void ObservePlayerLogins(const PortableWorldStartupProbeResult& world) {
             "Original Login entry lacks actual class/GameInfo/function authority");
         Require(!login.loginReturned||login.loginEntered,"Original Login returned without dispatch");
         Require(!login.paired||(login.loginReturned&&!login.playerPath.empty()),"Possession preceded an actual returned PlayerPawn");
+        Require((!login.rolesApplied||login.paired)&&(!login.preTravelReturned||login.rolesApplied)&&
+            (!login.travelSelected||login.preTravelReturned)&&(!login.acceptInventoryReturned||login.travelSelected)&&
+            (!login.postTravelEntered||login.acceptInventoryReturned)&&(!login.postTravelReturned||login.postTravelEntered)&&
+            (!login.postLoginReturned||login.postTravelReturned)&&(!login.tailReturned||login.postLoginReturned),
+            "Original player tail observations violate source callback/store order");
+        if(login.travelSelected)Require(login.travelMapCount==0u&&login.travelMapOffset==4370527u&&
+            login.travelIncomingEstablished&&!login.travelIncomingReplacement&&!login.travelLoadOnly&&!login.travelPointerPresent,
+            "Training tail did not use actual authored empty travel data and explicit no-incoming policy");
         std::cout<<"PLAYER LOGIN viewport="<<login.viewportIdentity<<" attempted="<<login.attempted
             <<" class="<<std::quoted(login.selectedClass)<<" game="<<std::quoted(login.gamePath)
             <<" function="<<std::quoted(login.functionPath)<<" entered="<<login.loginEntered
             <<" returned="<<login.loginReturned<<" pawn="<<std::quoted(login.playerPath)
-            <<" paired="<<login.paired<<" outError="<<std::quoted(login.error)<<'\n';
+            <<" paired="<<login.paired<<" roles="<<login.rolesApplied<<" preTravel="<<login.preTravelReturned
+            <<" travel="<<login.travelSelected<<" acceptInventory="<<login.acceptInventoryReturned
+            <<" postTravelEntered="<<login.postTravelEntered<<" postTravel="<<login.postTravelReturned
+            <<" postLogin="<<login.postLoginReturned<<" tailReturned="<<login.tailReturned
+            <<" travelCount="<<login.travelMapCount<<" travelOffset="<<login.travelMapOffset
+            <<" incomingEstablished="<<login.travelIncomingEstablished<<" incomingReplacement="<<login.travelIncomingReplacement
+            <<" outError="<<std::quoted(login.error)<<'\n';
     }
     std::cout<<"PLAYER LOGIN OBSERVATIONS count="<<world.playerLogins.size()
         <<"; same rollback root, NOT published possession or completed startup\n";
@@ -633,7 +647,11 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         "Cannot construct/initialize original configured Console after Canvas/Input: "+console.execution.error);
     std::cout<<"VIEWPORT CONSOLE "<<console.console.objectPath<<" class="<<console.console.classPath
         <<" viewport="<<console.console.viewportPath<<"; original constructor/Init/frame only, NOT FExec or OpenWindow/Input.Init\n";
-    const auto loaded=LoadPortableRuntimeMap(map);
+    // This embedding launches the plain authored Training map without an
+    // incoming travel replacement. That is explicit LoadMap authority, not
+    // an inference from the subsequently decoded authored zero entry count.
+    const PortableMapTravelSource travelSource;
+    const auto loaded=LoadPortableRuntimeMap(map,&travelSource);
     Require(loaded.passed,"Cannot load actual first Training map");
     Require(loaded.exports==1356u&&loaded.contextExcludedExports==1991u&&loaded.actors==312u,
         "First Training source-context census differs from independent original flag/table oracle");
@@ -733,7 +751,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         {"00_Training.CrateBreakableMedGeneral2"},1u,0.4f,8u};
     // Explicit diagnostic binding of already-decoded plain-map FURL fields.
     // This is NOT the original FURL constructor/default-options parser. Only
-    // Portal and Op are read by the reached SpawnPlayActor Login prefix.
+    // Portal/Op plus the following explicit engine-session tail sources.
     options.playerLogin.emplace();
     const auto userConfig=QuestVr::NativeConfig::ReadOrderedIni(userIni);
     const auto iniConfig=QuestVr::NativeConfig::ReadOrderedIni(fs::path(ini));
@@ -742,10 +760,19 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         options.playerLogin->userDefaultPlayerClass=QuestVr::UnrealString::Decode(*value);
     if(const auto value=iniConfig->Scalar("URL","Class"))
         options.playerLogin->iniUrlClass=QuestVr::UnrealString::Decode(*value);
+    options.playerLogin->tail.emplace();
+    // The diagnostic embedding's actual virtual engine invocation has no
+    // engine command-line flags. Probe control arguments are NOT appCmdLine.
+    options.playerLogin->tail->commandLine=u"";
+    // Original FURL.StaticInit calls this explicit Editor-profile GetStr with
+    // a1024-unit destination. Missing lookup produces an empty CString.
+    if(const auto value=iniConfig->PropertyScalar("URL","Name"))
+        options.playerLogin->tail->urlDefaultName=QuestVr::UnrealString::Decode(*value);
     std::cout<<"PLAYER LOGIN SOURCE explicit decoded diagnostic Portal=empty/Op=empty; owned User.ini DefaultPlayer.Class="
         <<std::quoted(options.playerLogin->userDefaultPlayerClass?QuestVr::UnrealString::Encode(*options.playerLogin->userDefaultPlayerClass):"<absent>")
         <<" DeusEx.ini URL.Class="<<std::quoted(options.playerLogin->iniUrlClass?QuestVr::UnrealString::Encode(*options.playerLogin->iniUrlClass):"<absent>")
-        <<"; NOT full FURL default construction\n";
+        <<" FURL.DefaultName="<<std::quoted(QuestVr::UnrealString::Encode(options.playerLogin->tail->urlDefaultName))
+        <<"; explicit empty engine appCmdLine/no incoming travel replacement; NOT full FURL default construction\n";
     QuestVr::Vm::Limits limits;limits.instructions=4'000'000u;limits.nodes=1'048'576u;
     limits.writes=damageWriteLimit.value_or(StartupWriteLimit);limits.retainedBytes=128u<<20u;
     limits.nativeWork=nativeWork;

@@ -233,7 +233,7 @@
                 }
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));
                 observation.paired=true;
-                throw std::runtime_error("Original SpawnPlayActor post-Possess role/travel continuation is not implemented");
+                StartupPlayerTail(level,player,source,{source.portal,options},observation,execution);
             }
         }catch(...){retainObservation();throw;}
         retainObservation();

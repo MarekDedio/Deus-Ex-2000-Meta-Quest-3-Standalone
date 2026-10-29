@@ -19,6 +19,7 @@
 #include <string>
 #include <set>
 #include <optional>
+#include <utility>
 
 struct PortableRuntimeSummary {
     bool passed{};
@@ -210,6 +211,11 @@ enum class PortableWorldStartupPhase : std::uint8_t {
     SetActorZone, LastRenderTime, PostBeginPlay, SetInitialState, WorldBases,
     ClearStartup, PostPostBeginPlay, CompactActorSlots, ClientSetup, Count
 };
+struct PortablePlayerTailSource {
+    // Explicit engine-session appCmdLine and FURL.StaticInit URL.Name values.
+    // Neither an omitted provider nor standalone NetMode establishes these.
+    std::u16string commandLine,urlDefaultName;
+};
 struct PortablePlayerLoginSource {
     // Decoded original FURL portal/options, preserving native option order.
     // Not a new URL parser or permission to synthesize a PlayerPawn.
@@ -218,6 +224,7 @@ struct PortablePlayerLoginSource {
     // Explicit owned-file alias resolution; absence is a failed alias load,
     // never a hardcoded replacement class. Loading still checks the real UClass.
     std::optional<std::u16string> userDefaultPlayerClass,iniUrlClass;
+    std::optional<PortablePlayerTailSource> tail;
 };
 // Optional diagnostic commands inside genuine startup, AFTER original Login
 // returns a real Pawn and BEFORE pairing/Possess. Not a live weapon bridge.
@@ -496,6 +503,10 @@ struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
     std::string selectedClass,gamePath,functionPath,playerPath,error;
     bool attempted{},loginEntered{},loginReturned{},paired{};
+    bool rolesApplied{},preTravelReturned{},travelSelected{},acceptInventoryReturned{};
+    bool postTravelEntered{},postTravelReturned{},postLoginReturned{},tailReturned{};
+    std::size_t travelMapCount{},travelMapOffset{};
+    bool travelIncomingEstablished{},travelIncomingReplacement{},travelLoadOnly{},travelPointerPresent{};
     bool operator==(const PortablePlayerLoginObservation&) const = default;
 };
 struct PortableSpawnEncroachmentSnapshot {
@@ -1341,8 +1352,14 @@ bool GetPortableRuntimeScriptStatePresent();
 // Map-discard guard (historical name), not an indicator that saving cleared
 // dirty state. Excludes the engine-global RNG that survives map replacement.
 bool GetPortableRuntimeUnsavedScriptState();
+struct PortableMapTravelSource {
+    // Explicit LoadMap incoming argument. A present source with no replacement
+    // binds the real "no incoming map" embedding policy, independently of the
+    // authored map's serialized entry count. A missing source binds neither.
+    std::optional<std::vector<std::pair<std::u16string,std::u16string>>> replacement;
+};
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
-    const PortablePackageTables& package);
+    const PortablePackageTables& package,const PortableMapTravelSource* travelSource=nullptr);
 std::size_t UnloadPortableRuntimeMap();
 // Renderer lists normally exclude picked-up/destroyed actors. Asset preparation
 // includes them so a later quickload can reactivate their original materials.
