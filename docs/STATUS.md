@@ -1,5 +1,36 @@
 # Port status
 
+## Latest: actual PlayerPawnExt FlagBase construction (2026-10-30)
+
+PlayerPawnExt now constructs its real non-Actor FlagBase before actor callbacks,
+with authenticated native CDO/tail copying, actual pawn Outer, flags0, original
+unique-name/class counter, shared paged-index transaction and native GC edges.
+Initial CheckFlag1120 uses actual FName identity and the recovered64-bucket
+hash/lookup protocol. Nonempty Flag/FlagInt graphs and unsupported save/travel
+preservation still explicitly refuse; those remain full-campaign requirements.
+
+Original Training discovery gets past RestoreSkillPoints and reaches the next
+missing original operation: Window.GetTopChild1455 in
+HUDActiveAugsBorder.ClearAugmentationDisplay PC15/opcode101,266299 instructions/
+37893 writes. The actual constructed object is
+00_Training.JCDentonMale0.FlagBase0 (index103162, flags0), not a diagnostic stand-in.
+The discovery verifies full rollback and42 unchanged sources; it is NOT successful
+startup or live Quest crate/loot/gravity acceptance.
+
+Focused desktop, strict ARM64 and Android-native builds pass. The resumed full
+desktop build also passes; CTest243 executed/294 registered/51 explicit owned-data
+skips/zero failures207.66s. Owned FlagBase74 checks/9 refusals, generated
+VM701280/1039 and pure hash/lookup24/4 pass. Owned Core SET9548/6 and Input
+ResetConfig9632/15 also pass. Both resumed Training attempts match the1455
+boundary/counts and verify full rollback/42 sources; expected-boundary success
+is not successful startup. The final audit verifies1856 frozen compiler inputs,
+45 originals unchanged and no live jobs. The interrupted initial full build/
+repeat2 remain incomplete, NOT passing gates. No new APK is packaged.
+
+See ORIGINAL-FLAGBASE-CONSTRUCTOR-IMPLEMENTATION.md and the next source contract
+ORIGINAL-WINDOW-CHILD-QUERIES.md. Accepted VR layouts remain unchanged and only
+the first Training map is used for immediate original-data integration.
+
 ## Latest: original StringToName and bounded real FName additions (2026-10-29)
 
 Original Extension native1024 StringToName now authenticates its declaration,

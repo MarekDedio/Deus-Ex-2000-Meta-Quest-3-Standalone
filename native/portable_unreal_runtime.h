@@ -588,6 +588,13 @@ struct PortableWorldStartupProbeResult {
     PortableWorldActorOrderSnapshot beforeActorOrder,afterActorOrder;
     std::vector<PortablePlayerLoginObservation> playerLogins;
     std::vector<PortableDumpLocationObservation> dumpLocations;
+    struct FlagBaseObservation {
+        std::string path,pawnPath;
+        std::uint32_t objectIndex{},flags{};
+        bool copiedDefaults{},constructorCompleted{};
+        bool operator==(const FlagBaseObservation&) const = default;
+    };
+    std::vector<FlagBaseObservation> flagBases;
     std::vector<PortableStartupDamageObservation> damageObservations;
     std::vector<PortableStartupLandingObservation> landingObservations;
     std::vector<PortableStartupFallingObservation> fallingObservations;

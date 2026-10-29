@@ -505,7 +505,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==1024u || index==0u || index==1410u || index==1413u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
+        if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==1024u || index==1120u || index==0u || index==1410u || index==1413u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
             index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
             index==1270u || index==1272u || index==1486u || index==1483u || index==1550u ||
@@ -1435,6 +1435,33 @@ void ParametersAndReturns() {
     auto native=Function("OutNative",Return(Native(1004,{Ref(0x01,8)})),"CallerPackage");
     r=Vm::Execute(host,native,"Self");Returned(r,"Native out alias");
     Require(host.Load("Self",actor).integer==9,"Native argument lost writable alias");
+}
+void CheckFlagInputContracts() {
+    for(const bool indexed:{false,true})for(const bool unwritten:{false,true}){
+        TestHost host;auto native=Function("CheckFlag",{},"Extension");
+        native.path="Extension.FlagBase.CheckFlag";native.nativeIndex=1120u;native.flags=0x401u;
+        native.variables={{native.path+".FlagName","FlagName",Value::Text(Vm::Kind::Name,"WrongMetadataSeed"),0x80u,1u},
+            {native.path+".flagType","flagType",Value::Byte(71),0x80u,1u},
+            {native.path+".ReturnValue","ReturnValue",Value::Bool(false),0x580u,1u}};
+        const auto name=unwritten?Bytes{0x0bu}:Ref(0x01u,1);
+        const auto type=unwritten?Bytes{0x0bu}:Bytes{0x24u,2u};
+        const auto caller=Function("CheckFlagCallerFrame",Return(Context(Ref(0x20u,9),
+            indexed?Native(1120u,{name,type}):Call(0x1cu,7,{name,type}))));
+        const auto property=host.Property(caller,1,"ActualName",Value::Text(Vm::Kind::Name,"None"));
+        host.Store("Self",property,{Value::Text(Vm::Kind::Name,"SKTemp_SkillPointsAvail")});
+        host.Store("Other",property,{Value::Text(Vm::Kind::Name,"WrongReceiver")});
+        host.objects[{caller.source,9}]="Other";host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+        std::size_t calls{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&){
+            ++calls;Require(receiver=="Other"&&args.size()==2u&&!args[0].reference&&!args[1].reference&&
+                args[0].value.kind==Vm::Kind::Name&&args[0].value.text==(unwritten?"None":"SKTemp_SkillPointsAvail")&&
+                args[1].value.kind==Vm::Kind::Byte&&args[1].value.integer==(unwritten?0:2),
+                "CheckFlag did not copy Name/Byte in caller frame with native-local seeds");
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"CheckFlag copied input/initialized local contract");
+        Require(result.value.boolean&&calls==1u&&host.referenceReads==(unwritten?0u:1u),"CheckFlag duplicated or skipped native input reads");
+    }
 }
 void StringToNameInputContracts() {
     // This generated host observes native1024's original local-FString packet
@@ -7480,6 +7507,7 @@ int main() {
         NativeArgumentSeedContracts();
         CoreGetEnumInputContracts();
         StringToNameInputContracts();
+        CheckFlagInputContracts();
         CoreColorResultLayoutContracts();
         UninitializedNativeArgumentContracts();
         DirectNativeInitializedArgumentContracts();

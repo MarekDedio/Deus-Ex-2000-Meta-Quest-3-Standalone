@@ -78,6 +78,8 @@
 #include "quest_name_arena_stage.h"
 #include "quest_original_string_to_name.h"
 #include "portable_string_to_name.h"
+#include "portable_flag_base.h"
+#include "quest_flag_base.h"
 #include "quest_native_window_store.h"
 #include "quest_decal_checkpoint.h"
 #include "quest_decal_projection.h"
@@ -318,6 +320,12 @@ struct RuntimeNativeConversationState {
     bool headWritten{},node{},retired{};
 };
 void RetireRuntimeConversationObject(RuntimeObject*) noexcept;
+struct RuntimeNativeFlagBaseState {
+    std::array<RuntimeObject*,64u> buckets{};
+    std::int32_t defaultExpiration{};
+    bool defaultCopyVerified{},constructorCompleted{};
+};
+void RetireRuntimeFlagBaseObject(RuntimeObject*) noexcept;
 
 // Actual portable loader service. Its stable identity and mutable ExportMap
 // are NOT the Package root UObject, combined runtime export array or immutable
@@ -439,6 +447,9 @@ public:
     std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
     std::unique_ptr<RuntimeNativeConversationState> nativeConversation;
     std::unique_ptr<RuntimeNativeDumpState> nativeDump;
+    std::unique_ptr<RuntimeNativeFlagBaseState> nativeFlagBase;
+    RuntimeObject* nativePlayerFlagBase{};
+    bool nativePlayerFlagBaseBound{};
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     // Explicit loader/Spawn-owned transient native Actor slot. The portable
     // renderer does not allocate an original RenderIterator. Absence comes
@@ -575,6 +586,7 @@ protected:
         if(nativeConsoleObject)RetireRuntimeConsoleObject(this);
         if(nativeConversation && nativeConversation->node) RetireRuntimeConversationObject(this);
         if(nativeDump)RetireRuntimeDumpObject(this);
+        if(nativeFlagBase&&!defaultOwner)RetireRuntimeFlagBaseObject(this);
         if(nativePackageInstance) RetireRuntimeNativePackage(this);
         if (destroyed_ != nullptr) ++*destroyed_;
     }
@@ -683,6 +695,8 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
         marklist=GC::MarkObject(marklist,nativeInputInstance->values.keyEnum);
     }
     marklist = GC::MarkObject(marklist, nativeRootWindow);
+    marklist = GC::MarkObject(marklist, nativePlayerFlagBase);
+    if(nativeFlagBase)for(auto* head:nativeFlagBase->buckets)marklist=GC::MarkObject(marklist,head);
     marklist = GC::MarkObject(marklist, nativeLevelModel);
     // Level.Engine is a current-generation native binding, not an archived
     // ownership edge. The collision domain roots the Engine explicitly.
@@ -1228,6 +1242,15 @@ struct RuntimeDumpServices {
 std::optional<RuntimeDumpServices> persistentDumpServices;
 QuestVr::DumpLocation::Session persistentDumpSession;
 std::vector<RuntimeObject*> persistentDumpObjects; // Weak, not a hidden AddToRoot.
+std::vector<RuntimeObject*> persistentFlagBases; // Weak: actual Pawn/Outer/fields own GC edges.
+void RetireRuntimeFlagBaseObject(RuntimeObject* object) noexcept {
+    const auto canonical=persistentQualifiedObjects.find(object->reflection.objectPath);
+    if(canonical!=persistentQualifiedObjects.end()&&canonical->second==object)persistentQualifiedObjects.erase(canonical);
+    const auto alias=persistentVmObjects.find(object->birthVmKey);
+    if(alias!=persistentVmObjects.end()&&alias->second==object)persistentVmObjects.erase(alias);
+    persistentFlagBases.erase(std::remove(persistentFlagBases.begin(),persistentFlagBases.end(),object),persistentFlagBases.end());
+    if(persistentFlagBases.empty())std::vector<RuntimeObject*>{}.swap(persistentFlagBases);
+}
 void RetireRuntimeDumpObject(RuntimeObject* object) noexcept {
     const auto found=persistentQualifiedObjects.find(object->reflection.objectPath);
     if(found!=persistentQualifiedObjects.end() && found->second==object)persistentQualifiedObjects.erase(found);
@@ -3584,6 +3607,7 @@ public:
         beforeCanvasInventory_.reset();provisionalCanvases_.clear();
         beforeConsoleInventory_.reset();provisionalConsoles_.clear();
         provisionalDumps_.clear();
+        provisionalFlagBases_.clear();
         provisionalLookupObjects_.clear();
         beforeLinkerSlots_.clear();
         beforeLinkerHeaders_.clear();
@@ -3688,6 +3712,8 @@ public:
             entry.first->nativePlayer = persistentNativeClient.HasClient() ? entry.second.player : nullptr;
             entry.first->nativeViewportActor = persistentNativeClient.HasClient() ? entry.second.viewportActor : nullptr;
             entry.first->nativeRootWindow=entry.second.rootWindow;
+            entry.first->nativePlayerFlagBase=entry.second.flagBase;
+            entry.first->nativePlayerFlagBaseBound=entry.second.flagBaseBound;
             entry.first->nativeCanvasPeer=entry.second.canvasPeer;
             entry.first->nativeViewportConsole=entry.second.viewportConsole;
             entry.first->uniqueObjectCounter=entry.second.uniqueCounter;
@@ -3746,6 +3772,8 @@ public:
         beforeConsoleInventory_.reset();provisionalConsoles_.clear();
         for(auto& root:provisionalDumps_)RetireRuntimeDumpObject(root.get());
         provisionalDumps_.clear();persistentDumpSession=beforeDumpSession_;
+        for(auto& root:provisionalFlagBases_)RetireRuntimeFlagBaseObject(root.get());
+        provisionalFlagBases_.clear();
         beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
@@ -3780,7 +3808,7 @@ public:
             return object->reflection.objectPath;
         }
         if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass ||
-            object->nativeWindowObject || object->nativePackageInstance || object->nativeDump || IsNativeConversationNode(object))
+            object->nativeWindowObject || object->nativePackageInstance || object->nativeDump || object->nativeFlagBase || IsNativeConversationNode(object))
             return object->reflection.objectPath;
         // No native Rename/SetOuter exists in this host. Loaded object names
         // and complete package/outer paths are immutable, including nested
@@ -4309,6 +4337,7 @@ public:
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
         const std::optional<Value>& context) override {
         if(index==1024u)return OriginalStringToNameNative(Object(receiver),arguments,declaration,execution);
+        if(index==1120u)return OriginalCheckFlagNative(Object(receiver),arguments,declaration,execution);
         if (index==229u) return CoreGetAxesNative(arguments,declaration);
         if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum")
             return CoreGetEnumNative(arguments,declaration);
@@ -4348,6 +4377,7 @@ public:
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if(index==1024u)return OriginalStringToNameNative(Object(receiver),arguments,declaration,execution);
+        if(index==1120u)return OriginalCheckFlagNative(Object(receiver),arguments,declaration,execution);
         if(index==0u&&declaration&&LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
             return PlayerPawnConsoleCommand(Object(receiver),arguments,*declaration,execution);
         if(index==229u) return CoreGetAxesNative(arguments,declaration);
@@ -4602,6 +4632,7 @@ public:
 #include "portable_core_static_exec.inl"
 #include "portable_input_reset_host.inl"
 #include "portable_string_to_name_host.inl"
+#include "portable_flag_base_host.inl"
 #include "portable_viewport_canvas_host.inl"
 #include "portable_viewport_console_host.inl"
 #include "portable_system_host.inl"
@@ -8337,21 +8368,7 @@ public:
         const bool nativeRegionStorage=false,const bool nativePhysicsVectorStorage=false,
         const bool nativeLandingZoneVelocityStorage=false,const bool nativeFallingOldLocationStorage=false,
         const bool nativeMovingBrushVectorStorage=false,const bool nativeScriptedPawnVectorStorage=false) {
-        if(!defaults&&!immutable&&!object->defaultOwner&&
-            LowerAscii(property.key)=="extension.playerpawnext.flagbase") {
-            auto* field=Object(property.key);
-            if(index||property.arrayDimension!=1u||property.zero.kind!=Kind::Object||property.flags!=0x10002u||
-                !OwnsProperty(object->cls,property)||!IsDerivedFromPath(object->cls,"Extension.PlayerPawnExt")||
-                !field->property||field->outer!=Object("Extension.PlayerPawnExt")||
-                field->property->type!="ObjectProperty"||!field->property->referencedType||
-                Qualified(Table(field->sourcePath),field->property->referencedType)!="Extension.FlagBase")
-                throw std::runtime_error("PlayerPawnExt.FlagBase lost its actual native property authority");
-            // Original PlayerPawnExt10037CC0..CFD constructs this actual
-            // UObject during pawn construction. An absent serialized tag is
-            // NOT a legitimate None field: null Context would silently skip
-            // CheckFlag/GetInt/DeleteFlag and misreport startup progress.
-            throw std::runtime_error("PlayerPawnExt.FlagBase requires its original constructor-owned native service");
-        }
+        if(const auto native=ReadNativeFlagBaseValue(object,property,index,defaults,immutable))return *native;
         if(nativePhysicsVectorStorage) {
             if(defaults || immutable || index || ActorPhysicsVectorProperty(object,property.key.c_str()).key!=property.key)
                 throw std::runtime_error("Raw physics Vector read has no actual native field authority");
@@ -9379,6 +9396,7 @@ private:
         }
         // A preceding conversation bind may have opened the same index domain.
         // Admit its next journal page before constructing another native object.
+        if(IsDerivedFromPath(cls,"Extension.PlayerPawnExt"))EnsureConversationIndexTransaction();
         if(conversationIndices_)conversationIndices_->PrepareNextEntryCapacity();
         pendingBirthGarbage = true;
         GCRoot<RuntimeObject> rooted(GC::Alloc<RuntimeObject>(PortableReflectionObject{
@@ -9397,6 +9415,7 @@ private:
         if (!persistentQualifiedObjects.emplace(path,actor).second || !persistentVmObjects.emplace(actor->birthVmKey,actor).second)
             throw std::runtime_error("Spawn identity collision");
         PublishTransactionalLookupObject(actor);
+        if(IsDerivedFromPath(cls,"Extension.PlayerPawnExt"))ConstructPlayerFlagBase(actor);
         persistentWorldActors.push_back(actor);
         BindNativeDeleted(actor);
         BindNativePendingTouch(actor);
@@ -9755,6 +9774,8 @@ private:
         std::uint64_t retailHash{};
         std::optional<RuntimeNativeConversationState> conversation;
         std::uint32_t objectFlags{};
+        RuntimeObject* flagBase{};
+        bool flagBaseBound{};
     };
 #include "portable_input_mutation.inl"
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
@@ -9889,6 +9910,7 @@ private:
             before.lifecycle==actor->committedLifecycle && before.removed==actor->worldRemoved &&
             before.playerBinding==actor->nativePlayerBinding && before.player==actor->nativePlayer &&
             before.viewportActor==actor->nativeViewportActor && before.rootWindow==actor->nativeRootWindow &&
+            before.flagBase==actor->nativePlayerFlagBase && before.flagBaseBound==actor->nativePlayerFlagBaseBound &&
             before.canvasPeer==actor->nativeCanvasPeer && before.viewportConsole==actor->nativeViewportConsole &&
             before.uniqueCounter==actor->uniqueObjectCounter && before.windowPropertyRoots==actor->nativeWindowPropertyRoots &&
             !actor->nativeWindowState && !before.windowState && before.objectFlags==actor->reflection.flags &&
@@ -9932,6 +9954,7 @@ private:
     };
     std::vector<GCRoot<RuntimeObject>> provisionalConversations_;
     std::vector<GCRoot<RuntimeObject>> provisionalDumps_;
+    std::vector<GCRoot<RuntimeObject>> provisionalFlagBases_;
     QuestVr::DumpLocation::Session beforeDumpSession_;
     std::vector<RetiredConversationObject> retiredConversations_;
     std::optional<QuestVr::ObjectIndexPool::Transaction> conversationIndices_;
@@ -10590,7 +10613,7 @@ private:
             if(!registered) throw std::runtime_error("Native class is not an audited registration");
             return *registered;
         }
-        if (object->runtimeBirth || object->nativeWindowObject || object->nativeDump || IsNativeConversationNode(object))
+        if (object->runtimeBirth || object->nativeWindowObject || object->nativeDump || object->nativeFlagBase || IsNativeConversationNode(object))
             throw std::runtime_error("Constructed instance is not a UClass");
         const auto& table = Table(object->sourcePath);
         const auto& entry = table.exports.at(object->exportIndex);
@@ -10641,7 +10664,7 @@ private:
                 throw std::runtime_error("Constructed native Package cast identity is invalid");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
-        if (object->runtimeBirth || object->nativeWindowObject || object->nativeDump || IsNativeConversationNode(object)) {
+        if (object->runtimeBirth || object->nativeWindowObject || object->nativeDump || object->nativeFlagBase || IsNativeConversationNode(object)) {
             if (!object->cls || !object->cls->classDescriptor)
                 throw std::runtime_error("Runtime birth has no original class identity");
             return {object->reflection.objectPath, object->cls->reflection.objectPath, false};
@@ -10750,6 +10773,8 @@ private:
                 object->committedScriptState=true;return;
             }
             if(WriteNativeConversationValue(object,property,index,defaults,value)) return;
+            if(object->nativeFlagBase||LowerAscii(property.key)=="extension.playerpawnext.flagbase")
+                throw std::runtime_error("Native FlagBase/pawn ownership writes require their original constructor/native service");
             auto* nativeOwner=object->defaultOwner?object->defaultOwner:
                 (object->classDescriptor||object->nativeEngineClass||object->nativeMetadataClass)?object:nullptr;
             if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct ||object->nativeInputInstance||
@@ -10911,7 +10936,7 @@ private:
                 object->nativeWindowState?std::make_unique<RuntimeNativeWindowState>(*object->nativeWindowState):nullptr,
                 object->nativeRetailHash,object->nativeConversation?
                     std::optional<RuntimeNativeConversationState>{*object->nativeConversation}:std::nullopt,
-                object->reflection.flags});
+                object->reflection.flags,object->nativePlayerFlagBase,object->nativePlayerFlagBaseBound});
             // Library copies may select different capacities. The admitted
             // source graph covers equal/smaller copies; validate any excess.
             if(NativeObjectPropertyRootBytes(saved_.at(object).windowPropertyRoots)>rootBytes)ValidateStateBudget();
@@ -11466,6 +11491,14 @@ private:
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
         defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
         defaults.Retain(persistentConversationNodes.capacity()*sizeof(RuntimeObject*));
+        defaults.Retain(persistentFlagBases.capacity()*sizeof(RuntimeObject*)+
+            provisionalFlagBases_.capacity()*sizeof(GCRoot<RuntimeObject>)+provisionalFlagBases_.size()*sizeof(GCRootNode));
+        for(const auto* flag:persistentFlagBases) {
+            if(!flag||!flag->nativeFlagBase)throw std::runtime_error("FlagBase weak inventory lost native ownership");
+            defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+flag->reflection.objectPath.capacity()+
+                flag->reflection.metaClass.capacity()+flag->reflection.outerPath.capacity()+flag->sourcePath.capacity()+flag->birthVmKey.capacity()+5u+
+                2u*(sizeof(std::string)+6u*sizeof(void*)+flag->reflection.objectPath.capacity()+1u));
+        }
         defaults.Retain(persistentDumpObjects.capacity()*sizeof(RuntimeObject*)+
             provisionalDumps_.capacity()*sizeof(GCRoot<RuntimeObject>)+provisionalDumps_.size()*sizeof(GCRootNode));
         if(persistentDumpServices)defaults.Retain(sizeof(RuntimeDumpServices)+persistentDumpServices->userIni.capacity()+
@@ -11539,17 +11572,22 @@ private:
         const auto& exports=persistentRuntime->get()->exports;
         const auto* windows=persistentWindowDomain && persistentWindowDomain->get() ? persistentWindowDomain->get() : nullptr;
         const auto windowObjects=windows?windows->objects.size():0u;
-        const auto totalObjects=exports.size()+windowObjects+persistentConversationNodes.size()+persistentDumpObjects.size();
+        const auto totalObjects=exports.size()+windowObjects+persistentConversationNodes.size()+persistentDumpObjects.size()+persistentFlagBases.size();
         for(std::size_t objectIndex=0u;objectIndex<totalObjects;++objectIndex) {
             const auto* object=objectIndex<exports.size()?exports[objectIndex]:objectIndex<exports.size()+windowObjects?
                 windows->objects[objectIndex-exports.size()]:objectIndex<exports.size()+windowObjects+persistentConversationNodes.size()?
                 persistentConversationNodes[objectIndex-exports.size()-windowObjects]:
-                persistentDumpObjects[objectIndex-exports.size()-windowObjects-persistentConversationNodes.size()];
+                objectIndex<exports.size()+windowObjects+persistentConversationNodes.size()+persistentDumpObjects.size()?
+                persistentDumpObjects[objectIndex-exports.size()-windowObjects-persistentConversationNodes.size()]:
+                persistentFlagBases[objectIndex-exports.size()-windowObjects-persistentConversationNodes.size()-persistentDumpObjects.size()];
             if(!object)continue;
             // Count actual native allocations even while the loader has not
             // yet published slot0/Level.Model query authority. Accounting an
             // allocation never grants permission to use that native service.
             if(object->nativeModelZoneRenderTimes)defaults.Retain(sizeof(*object->nativeModelZoneRenderTimes));
+            if(object->nativeFlagBase)defaults.Retain(sizeof(RuntimeNativeFlagBaseState));
+            if(object->classDescriptor&&object->defaultObject&&object->defaultObject->nativeFlagBase)
+                defaults.Retain(sizeof(RuntimeNativeFlagBaseState));
             if(object->nativeLevelTickContext) {
                 const auto& tick=*object->nativeLevelTickContext;
                 defaults.Retain(sizeof(tick));
@@ -11999,6 +12037,7 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(!persistentFlagBases.empty())throw std::runtime_error("Live native FlagBase checkpoint capture requires its archive/rebind service");
     if(HasNativeIncomingTravelReplacement())
         throw std::runtime_error("Incoming native Level travel replacement checkpoint capture is not implemented");
     if(HasActiveNativeLevelTick())
@@ -13999,6 +14038,7 @@ void ShutdownPortableRuntime() {
     persistentContextExcluded.clear();
     persistentConversationNodes.clear();
     persistentDumpObjects.clear();persistentDumpServices.reset();persistentDumpSession={};
+    persistentFlagBases.clear();
     persistentWindowDomain.reset();persistentRootWindowClass.reset();
     persistentConfigClasses.reset();
     persistentInputClasses.reset();persistentInputClass.reset();
@@ -14724,6 +14764,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 #include "portable_user_config_api.inl"
 #include "portable_input_reset_api.inl"
 #include "portable_string_to_name_api.inl"
+#include "portable_flag_base_api.inl"
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {
@@ -16063,6 +16104,7 @@ bool GetPortableRuntimeScriptStatePresent() {
 }
 
 bool GetPortableRuntimeUnsavedScriptState() {
+    if(!persistentFlagBases.empty())return true;
     if(persistentDumpSession.saved || !persistentDumpObjects.empty())return true;
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     if(HasNativeConversationBindings()) return true;
@@ -16526,6 +16568,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 }
 
 std::size_t UnloadPortableRuntimeMap() {
+    if(!persistentFlagBases.empty())throw std::runtime_error("Live FlagBase map travel requires its original purge/archive service");
     if(!persistentDumpObjects.empty())throw std::runtime_error("Map travel requires live DumpLocation ownership retirement");
     if(HasNativeDeferredOwnership())
         throw std::runtime_error("Map unload refused: native deferred Actor archiving/cleanup is not implemented");
@@ -18279,6 +18322,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             throw std::runtime_error("Incoming native Level travel replacement checkpoint restoration is not implemented");
         if(apply&&HasActiveNativeLevelTick())
             throw std::runtime_error("Cannot restore native Level state during an active Tick");
+        if(!persistentFlagBases.empty())throw std::runtime_error("Live native FlagBase checkpoint restore requires its archive/rebind service");
         if(persistentDumpSession.saved || !persistentDumpObjects.empty())
             throw std::runtime_error("Live DumpLocation/session checkpoint restore needs its native archive service");
         if(persistentRetailCollision)

@@ -39,6 +39,7 @@
 #include "portable_engine_collision.h"
 #include "portable_input_schema.h"
 #include "portable_input_reset.h"
+#include "portable_flag_base.h"
 #include "portable_system_services.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_native_client.h"
@@ -715,6 +716,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const auto collisionEngine=PreparePortableRuntimeEngineCollision(
                 "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini");
             PreparePortableRuntimeInputSchema();
+            PreparePortableRuntimeFlagBaseClasses();
             const auto system=PreparePortableRuntimeSystemServices(
                 "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini");
             BindPortableRuntimeUserConfigStorage(

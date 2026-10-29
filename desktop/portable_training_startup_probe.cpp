@@ -4,6 +4,7 @@
 #include "portable_system_services.h"
 #include "portable_core_static_exec.h"
 #include "portable_input_reset.h"
+#include "portable_flag_base.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "portable_startup_weapon_fire_probe.h"
@@ -623,6 +624,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         "Cannot prepare genuine Engine/metadata/config/Package/Input/lookup/Cylinder/Input-schema prerequisites");
     std::cout<<"BOOTSTRAP preparing actual System Class/default/config/root service\n";
     Require(PreparePortableRuntimeSystemServices(ini).prepared,"Cannot prepare genuine native System service");
+    Require(PreparePortableRuntimeFlagBaseClasses().prepared,"Cannot prepare original native FlagBase class/defaults");
     std::cout<<"BOOTSTRAP binding isolated app-owned User config backend\n";
     Require(BindPortableRuntimeUserConfigStorage(temporary.directory.string(),userIni.string()).prepared,
         "Cannot bind isolated app-owned config backend for actual nested SET");
@@ -783,6 +785,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<Boundary> boundary;std::optional<std::vector<PortableSpawnEncroachmentSnapshot>> spawnPackets;bool completed{};
     std::optional<std::vector<PortablePlayerLoginObservation>> playerLogins;
     std::optional<std::vector<PortableDumpLocationObservation>> dumpLocations;
+    std::optional<std::vector<PortableWorldStartupProbeResult::FlagBaseObservation>> flagBases;
     std::optional<std::vector<PortableStartupDamageObservation>> damageObservations;
     std::optional<std::vector<PortableStartupLootObservation>> lootObservations;
     std::optional<std::vector<PortableStartupLandingObservation>> landingObservations;
@@ -911,6 +914,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 Require(ReadPortableRuntimeLevelTickParity()==0,"Failed startup retained native frame parity");
             }
         }else Require(!world.dynamicActors,"Unrequested dynamic-actor phase was executed");
+        for(const auto& flag:world.flagBases) {
+            Require(flag.copiedDefaults&&flag.constructorCompleted&&flag.flags==0u&&flag.objectIndex&&
+                flag.path.rfind(flag.pawnPath+'.',0u)==0u,"Player FlagBase constructor lost actual pawn/flags/default/index authority");
+            std::cout<<"FLAGBASE CONSTRUCTOR path="<<flag.path<<" pawn="<<flag.pawnPath<<" index="<<flag.objectIndex<<" flags="<<flag.flags<<'\n';
+        }
+        if(flagBases)Require(*flagBases==world.flagBases,"Repeated FlagBase constructor observations changed");
+        else flagBases=world.flagBases;
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
                 dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&

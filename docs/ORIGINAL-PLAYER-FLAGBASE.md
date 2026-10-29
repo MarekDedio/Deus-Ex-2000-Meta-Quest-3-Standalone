@@ -1,9 +1,25 @@
-# Original constructor-owned player FlagBase: remaining service (2026-10-29)
+# Original constructor-owned player FlagBase: source contract (2026-10-29)
 
-Source evidence for the next first-Training startup dependency, not an
-implemented constructor/storage service. Only static package/PE inspection;
+Source evidence for the first-Training startup dependency. Only static package/PE inspection;
 never load or execute commercial DLLs/EXEs. An absent serialized FlagBase tag is
 NOT authority for native None, empty flags or successful skill restoration.
+
+## Implementation continuation
+
+The constructor, authenticated CDO/native-tail copy, actual pawn ownership,
+non-Actor allocation/lookup/GC/undo and initial empty-table CheckFlag1120 are now
+implemented. The real first-Training startup constructs
+00_Training.JCDentonMale0.FlagBase0 (index103162, requested flags0), gets past
+RestoreSkillPoints, and reaches HUDActiveAugsBorder.ClearAugmentationDisplay
+PC15/native1455 GetTopChild. That discovery verifies complete rollback; it is
+not successful startup. See ORIGINAL-FLAGBASE-CONSTRUCTOR-IMPLEMENTATION.md.
+
+The source contracts below remain authoritative. The integration-seam section
+describes the pre-constructor baseline and is retained as provenance, not the
+current implementation status. Positive Flag/FlagInt nodes, setters/GetInt/
+DeleteFlag/expiration and archive/travel/rebind are still required. Nonempty
+native tables and unsupported preservation operations explicitly refuse;
+neither an empty CheckFlag diagnostic nor transient fields prove those services.
 
 ## Construction and storage
 

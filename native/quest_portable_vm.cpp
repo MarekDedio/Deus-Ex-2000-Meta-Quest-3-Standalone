@@ -53,6 +53,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 262: case 283: return true; // Collision setters consume each Bool/Float before the next Step.
     case 316: return true; // Original Core copies Rotator A before evaluating B.
     case 1024: return true; // StringToName Steps into an initialized local FString.
+    case 1120: return true; // CheckFlag copies initialized Name0 then Byte0.
     case 169: case 171: case 172: case 174: case 175:
     case 176: case 177: case 178: case 179: case 180: case 181:
         return true; // Original Core scalar operands are copied by each Step.
@@ -1627,7 +1628,7 @@ private:
         for (std::size_t slot=0u;slot<count;++slot) {
             const bool materialize=ReadOnlyNativeSeedOperation([&] {
                 return host_.MaterializeNativeArgumentOmission(index,receiver,slot,declaration);
-            }) || (index==1024u&&slot==0u);
+            }) || (index==1024u&&slot==0u)||(index==1120u&&slot<2u);
             if (!materialize) continue;
             // No allocation or changed omission behavior without opt-in.
             if (capabilities.empty()) {
@@ -1787,6 +1788,7 @@ private:
         // Extension1003795D..65 initializes the sole FString before Step.
         // Reflected metadata zero is not the authority for this local seed.
         case 1024:return argument==0u?std::optional<Value>{zero(Kind::String)}:std::nullopt;
+        case 1120:return argument<2u?std::optional<Value>{zero(argument==0u?Kind::Name:Kind::Byte)}:std::nullopt;
         case 127: case 128: case 234:return zero(argument==0u ? Kind::String : Kind::Int);
         case 143: case 144: case 145: case 146: case 147: case 150: case 151: case 152: case 153:
         case 154: case 155: case 156: case 157: case 158: case 161: case 162: case 163: case 164:
@@ -1899,7 +1901,7 @@ private:
                 const bool scalarCompound=nativeCall&&index>=182u&&index<=185u;
                 const bool copiedScalar=nativeCall&&(index==169u||index==171u||index==172u||index==174u||index==175u||
                     (index>=176u&&index<=181u)||
-                    index==1242u||index==1281u||index==1469u||index==1024u||(index==1280u&&(i==0u||i==3u))||
+                    index==1242u||index==1281u||index==1469u||index==1024u||index==1120u||(index==1280u&&(i==0u||i==3u))||
                     (index==0u&&fn&&Lower(fn->path)=="core.object.getenum")||
                     (scalarCompound&&i==1u));
                 auto argument = Eval(frame, n.children[i], frame.self,

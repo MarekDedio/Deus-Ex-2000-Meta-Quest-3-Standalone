@@ -153,8 +153,11 @@ the five prior SET bindings. Cache dirtiness must stay distinct from explicit
 pending Flush snapshots; do not accidentally publish later cache-only changes.
 These effects now pass owned integration and the actual startup return; see
 ORIGINAL-INPUT-RESET-CONFIG.md. Native1024 is also implemented in the subsequent
-bounded-name batch. The current missing service is constructor-owned FlagBase
-and its actual restore operations, not an optional None property.
+bounded-name batch. The constructor-owned FlagBase and initial empty CheckFlag
+path are now implemented from actual CDO/constructor authority, not an optional
+None property. The real Training continuation reaches ClearAugmentationDisplay
+PC15/native1455 GetTopChild; see ORIGINAL-FLAGBASE-CONSTRUCTOR-IMPLEMENTATION.md.
+Positive flag nodes and native archive/travel remain separate required work.
 
 After SpawnPlayActor returns, LoadMap still requires moving-brush tracking,
 subsystem rebinding, per-viewport ResetInput/render services and DetailChange.
