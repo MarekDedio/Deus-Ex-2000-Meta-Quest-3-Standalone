@@ -134,7 +134,7 @@ void SameInput(const PortableViewportInputSnapshot& a,const PortableViewportInpu
         "Core SET rollback changed an Input payload/identity/bootstrap/lifetime snapshot");
 }
 void SameSchema(const PortableInputSchemaSnapshot& a,const PortableInputSchemaSnapshot& b) {
-    Require(a.prepared==b.prepared&&a.defaultsPrepared==b.defaultsPrepared&&a.configApplied==b.configApplied&&a.configSourcePath==b.configSourcePath&&
+    Require(a.prepared==b.prepared&&a.defaultsPrepared==b.defaultsPrepared&&a.configApplied==b.configApplied&&a.configCacheDirty==b.configCacheDirty&&a.configSourcePath==b.configSourcePath&&
         a.configPasses==b.configPasses&&a.configImports==b.configImports&&a.configFailures==b.configFailures&&a.configWarnings==b.configWarnings&&
         a.configWork==b.configWork&&a.keyEnumPath==b.keyEnumPath&&a.keyEnumIndex==b.keyEnumIndex&&a.retainedBytes==b.retainedBytes&&
         a.strPropertyUniqueCounter==b.strPropertyUniqueCounter&&a.defaults.size()==b.defaults.size()&&a.fields.size()==b.fields.size()&&a.links.size()==b.links.size(),

@@ -205,6 +205,32 @@ public:
         return std::nullopt;
     }
     std::optional<std::string_view> Scalar(std::string_view,std::string_view) const &&=delete;
+    // Editor GetSection traverses the section's actual pairs in source order,
+    // including duplicate/empty keys and values. Views borrow this immutable
+    // document; they must not outlive it or a move/replacement. A false visitor
+    // return stops the prefix, but the return value still reports that the
+    // section exists (including a section with no pairs). No records are copied.
+    // Work admission covers only this query's temporary lookup storage; the
+    // caller must keep any separately admitted visitor workspace live itself.
+    template<class Visitor>
+    bool VisitSectionPairs(std::string_view section,Visitor&& visitor,const Work& callbacks={}) const & {
+        Detail::ValidateLimits(limits_);Detail::Operation operation{limits_,callbacks};
+        auto retained=sizeof(Detail::Operation)+sizeof(std::string)+sizeof(std::optional<std::size_t>);
+        operation.Admit(retained);
+        const auto sectionName=Detail::MutationText(section,operation,retained);
+        retained=Detail::Sum(retained,sectionName.capacity()+1u);operation.Admit(retained);
+        std::optional<std::size_t> selected;
+        for(std::size_t i=0u;i<sections_.size();++i)
+            if(operation.Equal(sections_[i],sectionName)) {selected=i;break;}
+        if(!selected)return false;
+        for(const auto& entry:entries_) {
+            operation.Step();
+            if(entry.section==*selected&&!visitor(std::string_view(entry.key),std::string_view(entry.value)))break;
+        }
+        return true;
+    }
+    template<class Visitor>
+    bool VisitSectionPairs(std::string_view,Visitor&&,const Work& ={}) const &&=delete;
     std::optional<std::vector<std::string>> StringArray(std::string_view section,std::string_view key) const {
         const auto sectionName=Detail::Name(section,limits_),keyName=Detail::Name(key,limits_);
         std::size_t work{};const auto selected=Section(sectionName,work);

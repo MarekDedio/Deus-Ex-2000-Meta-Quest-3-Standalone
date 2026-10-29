@@ -53,6 +53,7 @@ PortableInputSchemaSnapshot InputSchemaSnapshot(const RuntimeNativeInputDomain& 
             config->scratchLedger||config->scratchValidate)
             throw std::runtime_error("Native Input config lost its explicit document/import authority");
         result.configSourcePath=config->sourcePath;result.configPasses=config->passes;result.configImports=config->imports;
+        result.configCacheDirty=config->cacheDirty;
         result.configFailures=config->failures;result.configWarnings=config->warnings;result.configWork=config->work;
     }
     result.keyEnumPath=enumeration.objectPath;result.keyEnumIndex=enumeration.objectIndex;

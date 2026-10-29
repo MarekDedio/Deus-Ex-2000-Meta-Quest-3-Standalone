@@ -97,6 +97,10 @@
 #include "quest_config_file_backend.h"
 #include "quest_core_set_command.h"
 #include "portable_core_static_exec.h"
+#include "portable_input_reset.h"
+#include "quest_config_readonly_source.h"
+#include "quest_reset_keyboard.h"
+#include "quest_reset_config_section.h"
 #include "portable_viewport_canvas.h"
 #include "portable_viewport_console.h"
 #include "portable_quest_input_source.h"
@@ -843,6 +847,7 @@ struct RuntimeNativeInputConfig {
     std::string sourcePath;
     std::string seedPath; // Empty for legacy supplied-file read-only bindings.
     QuestVr::NativeConfig::OrderedIni document;
+    bool cacheDirty{}; // Cache-only changes never imply a file Flush.
     std::size_t passes{},imports{},failures{},warnings{},work{};
     // Borrowed only by local import invocations, never retained in the domain
     // cache. Native runtime reloads share their caller's execution work budget.
@@ -888,12 +893,24 @@ std::size_t NativeInputConfigBytes(const RuntimeNativeInputConfig& config) {
         config.document.RetainedBytes()-sizeof(QuestVr::NativeConfig::OrderedIni));
 }
 using InputConfigPayloads=std::array<const RuntimePreparedNativeDefaults*,2u>;
+struct RuntimeNativeInputResetSource {
+    QuestVr::ConfigFile::ReadOnlySource source;
+    QuestVr::NativeConfig::OrderedIni document;
+    std::string path;
+    std::size_t sourceBytes{};
+};
+std::size_t NativeInputResetSourceBytes(const RuntimeNativeInputResetSource& reset) {
+    return QuestVr::DecalStateDetail::Add(sizeof(reset)+reset.path.capacity()+1u,
+        QuestVr::DecalStateDetail::Add(reset.source.RetainedBytes()-sizeof(reset.source),
+            reset.document.RetainedBytes()-sizeof(QuestVr::NativeConfig::OrderedIni)));
+}
 struct RuntimeNativeInputDomain final : GCObject {
     RuntimeObject *inputClass{},*inputExtClass{},*keyEnum{},*aliasStruct{};
     // Default classes own their CDOs/Children. Alias is retained through the
     // actual StructProperty.Struct edge, not an inventory root masking it.
     std::vector<RuntimeObject*> defaultClasses,defaults,fields;
     std::unique_ptr<const RuntimeNativeInputConfig> config;
+    std::unique_ptr<const RuntimeNativeInputResetSource> resetSource;
     std::unique_ptr<const RuntimeExtensionInputNames> extensionNames;
 protected:
     GCAllocation* Mark(GCAllocation* marklist) override {
@@ -921,6 +938,7 @@ std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
     auto bytes=sizeof(RuntimeNativeInputDomain)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimeNativeInputDomain>)+sizeof(GCRootNode);
     const auto* config=stagedConfig?stagedConfig:domain.config.get();
     if(config)bytes=Add(bytes,NativeInputConfigBytes(*config));
+    if(domain.resetSource)bytes=Add(bytes,NativeInputResetSourceBytes(*domain.resetSource));
     if(domain.extensionNames)bytes=Add(bytes,sizeof(RuntimeExtensionInputNames));
     bytes=Add(bytes,Multiply(domain.defaults.capacity()+domain.defaultClasses.capacity()+domain.fields.capacity(),sizeof(RuntimeObject*)));
     const auto object=[&](const RuntimeObject* value,const bool published) {
@@ -4291,6 +4309,7 @@ public:
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if(index==544u)return PlayerPawnResetKeyboardNative(Object(receiver),arguments,declaration,execution);
         if (index==264u) return PlaySoundNative(Object(receiver),arguments,declaration,execution,context);
         if (index != 113u) return NativeWithExecution(index, receiver, arguments, declaration, execution);
         auto* actor = Object(receiver);
@@ -4574,6 +4593,7 @@ public:
         return {Value::Text(Kind::String,queried.output),{}};
     }
 #include "portable_core_static_exec.inl"
+#include "portable_input_reset_host.inl"
 #include "portable_viewport_canvas_host.inl"
 #include "portable_viewport_console_host.inl"
 #include "portable_system_host.inl"
@@ -14678,6 +14698,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 #include "portable_system_services.inl"
 #include "portable_input_config.inl"
 #include "portable_user_config_api.inl"
+#include "portable_input_reset_api.inl"
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {

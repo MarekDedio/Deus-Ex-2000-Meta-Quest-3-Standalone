@@ -180,16 +180,19 @@
                     exported=defaults->input->bindings[NativeInputBindingSlot(domain,field)];
                 }
                 auto changed=config.document.WithString(section->reflection.objectPath,key,exported,work);
-                if(changed) {config.document=std::move(*changed);nativeConfigDirty_=true;result.cacheChanged=true;}
+                if(changed) {config.document=std::move(*changed);config.cacheDirty=true;result.cacheChanged=true;}
                 ++result.configExports;
             }
         }
         result.flushRequested=true;
-        if(nativeConfigDirty_) {
+        if(config.cacheDirty) {
             auto serialized=config.document.Serialize(work);
             ValidateStateBudget(serialized.capacity()+1u+serialized.size());
             nativeConfigBytes_.assign(serialized.begin(),serialized.end());
             config.sourcePath=persistentUserConfigStorage->targetPath;
+            // This is the logical Flush snapshot. A later ResetConfig in this
+            // root may dirty the cache again, but must not alter these bytes.
+            nativeConfigFlushPending_=true;config.cacheDirty=false;
         }
     }
     void ReloadCoreInputDefaults(RuntimeNativeInputConfig& profile,QuestVr::Vm::Execution& execution,
@@ -284,7 +287,7 @@
         return true;
     }
     void PublishNativeUserConfig() {
-        if(!nativeConfigDirty_)return;
+        if(!nativeConfigFlushPending_)return;
         if(!persistentUserConfigStorage||!nativeConfigExpected_)
             throw std::runtime_error("Native config publication lost its app-owned snapshot authority");
         auto& storage=*persistentUserConfigStorage;

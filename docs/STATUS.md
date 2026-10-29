@@ -1,5 +1,36 @@
 # Port status
 
+## Latest: original ResetKeyboard and journaled Input ResetConfig (2026-10-29)
+
+The actual native544 ResetKeyboard now authenticates the original declaration,
+follows the real Player/Viewport/Input gates, and resets the selected InputExt
+class in the same startup Execution/root. A separately pinned read-only DefUser
+source supplies ordered section overlays; selected/descendant CDOs reload first,
+then matching live instances. Cache dirtiness and explicit Flush snapshots remain
+independent, including SET-before/reset/SET-after ordering. Original data is not
+written, and this does not stand in for Input.Init/ResetInput/ReadInput.
+
+Normal first-Training startup now returns from native544 and reaches the next
+actual missing operation: Extension.ExtensionObject.StringToName native1024,
+inside DeusExPlayer.RestoreSkillPoints at PC23/opcode100. Two expected-boundary
+runs agree at265657 instructions/37823 writes, with full save/state/revision/hash/
+RNG/client/lookup/Actor/GC undo and42 unchanged owned sources. This diagnostic
+passes its boundary/rollback assertions, NOT successful startup or live gameplay.
+
+Full desktop, strict ARM64 and Android-native builds pass. CTest241 executed/
+290 registered/49 explicit owned-data skips/zero failures199.98s. Owned Input
+reset9632 checks/15 refusals and Core SET9548/6 pass; pure ResetKeyboard311/42,
+section packet146/12 and pinned read-only source193/21 pass. The final audit
+finds1843 frozen compiler inputs, two deployment scripts and45 originals unchanged,
+with no live jobs. Corrected discovery failures and the explicitly superseded
+build remain recorded, not passing gates.
+
+No new APK or live Quest crate/loot/gravity acceptance is claimed. Next are
+genuine StringToName/FlagBase restoration and the remaining original startup/
+Input services, then committing controller/world/render integration. First
+Training remains the only immediate integration target. See
+ORIGINAL-INPUT-RESET-CONFIG.md for source contracts and evidence.
+
 ## Latest: original player travel prefix and native travel ownership (2026-10-29)
 
 The captured real Login pawn now continues through original role/remote-role,

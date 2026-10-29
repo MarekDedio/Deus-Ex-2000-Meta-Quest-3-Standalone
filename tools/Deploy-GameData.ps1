@@ -64,6 +64,8 @@ try {
     Write-Host 'Verifying required files on Quest...'
     $requiredRemoteFiles = @(
         "$remoteRoot/System/DeusEx.ini",
+        "$remoteRoot/System/User.ini",
+        "$remoteRoot/System/DefUser.ini",
         "$remoteRoot/System/DeusEx.u",
         "$remoteRoot/Maps/00_Training.dx",
         "$remoteRoot/Textures/CoreTexMetal.utx",

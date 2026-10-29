@@ -27,7 +27,8 @@
     std::size_t nativeInputReferenceBytes_{};
     std::optional<QuestVr::ConfigFile::Snapshot> nativeConfigExpected_;
     QuestVr::ConfigFile::Bytes nativeConfigBytes_;
-    bool nativeConfigDirty_{};
+    bool nativeConfigFlushPending_{}; // Only an explicit Flush snapshots file bytes.
+    bool nativeInputResetSourceUsed_{};
     PortableCoreExecResult* nativeCoreExecResult_{};
     // Nested viewport commands outlive their C++ callback until root Commit.
     // A stack-local result would dangle in PublishNativeUserConfig.
@@ -48,7 +49,7 @@
     }
     void RequireEmptyNativeInputJournal() const {
         if(!nativeInputCellReferences_.empty()||!beforeNativeInputInstances_.empty()||!beforeNativeInputDefaults_.empty()||beforeNativeInputConfig_||nativeInputReferenceBytes_||
-            nativeConfigExpected_||!nativeConfigBytes_.empty()||nativeConfigDirty_||nativeCoreExecResult_||nativeViewportCoreResult_)
+            nativeConfigExpected_||!nativeConfigBytes_.empty()||nativeConfigFlushPending_||nativeInputResetSourceUsed_||nativeCoreExecResult_||nativeViewportCoreResult_)
             throw std::runtime_error("Native Input journal survived its previous root transaction");
     }
     std::size_t NativeInputJournalBytes() const {
@@ -133,10 +134,17 @@
         std::vector<NativeInputCellReference>{}.swap(nativeInputCellReferences_);
         beforeNativeInputInstances_.clear();beforeNativeInputDefaults_.clear();beforeNativeInputConfig_.reset();
         nativeInputReferenceBytes_=0u;
-        nativeConfigExpected_.reset();nativeConfigBytes_.clear();nativeConfigDirty_=false;nativeCoreExecResult_=nullptr;
+        nativeConfigExpected_.reset();nativeConfigBytes_.clear();nativeConfigFlushPending_=false;nativeCoreExecResult_=nullptr;
         nativeViewportCoreResult_.reset();
+        nativeInputResetSourceUsed_=false;
     }
     void ValidateNativeInputMutationLeases() const {
+        if(nativeInputResetSourceUsed_) {
+            if(!persistentInputSchema||!persistentInputSchema->get()||!persistentInputSchema->get()->resetSource)
+                throw std::runtime_error("Input ResetConfig lost its actual DefUser source before publication");
+            static_cast<void>(persistentInputSchema->get()->resetSource->source.ReadAdmitted(
+                [this](std::size_t bytes){ValidateStateBudget(bytes);}));
+        }
         for(const auto& entry:beforeNativeInputInstances_)
             if(!ActualNativeInputInstanceValid(entry.owner.get()))
                 throw std::runtime_error("Native Input lease was revoked before config/state publication");

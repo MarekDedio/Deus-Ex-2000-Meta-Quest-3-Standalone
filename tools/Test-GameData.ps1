@@ -6,6 +6,8 @@ param(
 
 $requiredFiles = @(
     'System\DeusEx.ini',
+    'System\User.ini',
+    'System\DefUser.ini',
     'System\DeusEx.u',
     'System\DeusExCharacters.u',
     'System\DeusExConversations.u',

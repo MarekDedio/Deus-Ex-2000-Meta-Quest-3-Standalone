@@ -3,6 +3,7 @@
 #include "portable_engine_collision.h"
 #include "portable_system_services.h"
 #include "portable_core_static_exec.h"
+#include "portable_input_reset.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "portable_startup_weapon_fire_probe.h"
@@ -603,11 +604,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance,bool observeDynamicActors,
     const std::vector<PortableStartupMoverCommand>& moverCommands) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
-    sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
+    sources.reserve(QuestVr::RuntimeScriptPackages.size()+4u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
         scripts.push_back(LoadPortablePackageTables(sources.back().path.string()));}
     sources.emplace_back(root/"System"/"DeusEx.ini");const auto ini=sources.back().path.string();
     sources.emplace_back(root/"System"/"User.ini");const auto userIni=sources.back().path;
+    sources.emplace_back(root/"System"/"DefUser.ini");const auto defUserIni=sources.back().path;
     sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
     Require(scripts.size()==38u,"Startup diagnostic differs from exact Quest script package list");
     const auto initialized=InitializePortableRuntime(scripts,InitialSeed,QuestVr::OriginalLinkerLoadProfile{false,true,true});
@@ -628,6 +630,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const auto inputConfig=PreparePortableRuntimeInputConfig(userIni.string());
     Require(inputConfig.configApplied&&inputConfig.configPasses==3u,
         "Cannot configure actual Input/InputExt defaults from the explicit owned User.ini");
+    Require(PreparePortableRuntimeInputResetConfigSource(defUserIni.string()).prepared,
+        "Cannot pin the separate original DefUser cache for native544 ResetKeyboard");
     std::cout<<"INPUT CONFIG parent-first passes="<<inputConfig.configPasses<<" imports="<<inputConfig.configImports
         <<" failures="<<inputConfig.configFailures<<" warnings="<<inputConfig.configWarnings
         <<"; real native CDO payloads, NOT an Input instance or live controller acceptance\n";

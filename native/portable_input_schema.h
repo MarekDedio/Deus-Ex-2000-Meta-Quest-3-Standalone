@@ -38,7 +38,7 @@ struct PortableInputNativeStructSnapshot {
     std::uint32_t objectIndex{},classIndex{},outerIndex{},objectFlags{},propertiesSize{};
 };
 struct PortableInputSchemaSnapshot {
-    bool prepared{},defaultsPrepared{},configApplied{};
+    bool prepared{},defaultsPrepared{},configApplied{},configCacheDirty{};
     std::string configSourcePath;
     std::size_t configPasses{},configImports{},configFailures{},configWarnings{},configWork{};
     std::string keyEnumPath;

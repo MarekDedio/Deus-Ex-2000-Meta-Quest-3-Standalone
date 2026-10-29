@@ -4,8 +4,10 @@ The explicit immutable User.ini/default-import portion is now implemented in
 portable_input_config.inl; owned integration passes34355 checks/1357 refusals. See
 ORIGINAL-INPUT-CONFIG-DEFAULTS.md. Constructor-only Input/InputExt, viewport owning
 edges and key-query FExec are now implemented in ORIGINAL-VIEWPORT-INPUT.md.
-Init/reset, remaining FExec and ReadInput below remain next-step evidence. First
-Training is the integration target; no account or character-creation screen is needed.
+Original native544 ResetKeyboard and selected-class ResetConfig are now implemented
+and verified in ORIGINAL-INPUT-RESET-CONFIG.md. Input.Init/ResetInput, remaining
+FExec and ReadInput below remain next-step evidence. First Training is the
+integration target; no account or character-creation screen is needed.
 
 Owned Core/Extension hashes are recorded in ORIGINAL-PLAYER-INPUT-CONSOLE.md.
 Only static PE/package inspection was used; never load or execute commercial
@@ -107,6 +109,12 @@ Ordinary malformed-import return values preserve prefix writes and warnings;
 only genuine provider/provenance/work/resource faults abort the atomic phase.
 
 ## ResetConfig native544 dependency
+
+This dependency is now implemented: owned Input reset9632 checks/15 refusals and
+the actual first-Training native544 return pass. Two startup boundary runs next
+reach RestoreSkillPoints PC23/native1024 with full rollback. The contract below
+is retained as source evidence; it no longer describes a missing ResetConfig
+service. See ORIGINAL-INPUT-RESET-CONFIG.md and STATUS.md for current results.
 
 Core exportEAT1156/ordinal1157,10101A14 ->10151AC0..10151D85 selects Default.ini
 for System ConfigName and DefUser.ini for User; other names return. It reads

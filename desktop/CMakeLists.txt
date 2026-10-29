@@ -35,6 +35,27 @@ foreach(OBJECT_HELPER quest_object_names quest_object_indices quest_engine_confi
     add_test(NAME ${OBJECT_HELPER} COMMAND ${OBJECT_HELPER}_test)
 endforeach()
 
+# Original native544/provider, bounded ResetConfig packet and immutable source.
+foreach(INPUT_RESET_PURE_TEST quest_reset_keyboard quest_reset_config_section quest_config_readonly_source)
+    add_executable(${INPUT_RESET_PURE_TEST}_test ${INPUT_RESET_PURE_TEST}_test.cpp)
+    target_compile_features(${INPUT_RESET_PURE_TEST}_test PRIVATE cxx_std_20)
+    target_include_directories(${INPUT_RESET_PURE_TEST}_test PRIVATE "${PORT_NATIVE}")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${INPUT_RESET_PURE_TEST}_test PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${INPUT_RESET_PURE_TEST}_test PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME ${INPUT_RESET_PURE_TEST} COMMAND ${INPUT_RESET_PURE_TEST}_test)
+endforeach()
+add_executable(portable_input_reset_test portable_input_reset_test.cpp)
+target_compile_features(portable_input_reset_test PRIVATE cxx_std_20)
+target_link_libraries(portable_input_reset_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_input_reset_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_input_reset_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_input_reset COMMAND portable_input_reset_test)
+set_tests_properties(portable_input_reset PROPERTIES SKIP_RETURN_CODE 77)
+
 # Observation tool, deliberately not a CTest acceptance result. Exit2 means
 # a safely rolled-back first-Training startup boundary, not a passing startup.
 add_executable(portable_training_startup_probe portable_training_startup_probe.cpp)

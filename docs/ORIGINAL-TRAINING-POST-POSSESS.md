@@ -12,6 +12,18 @@ return current viewport.Actor in place of that original pawn.
 
 ## Verified reached prefix
 
+The latest native544 batch now returns from original ResetKeyboard and advances
+through TravelPostAccept into DeusExPlayer.RestoreSkillPoints. Two normal
+first-Training expected-boundary runs reach PC23/opcode100/native1024 at265657
+instructions/37823 writes, with complete rollback and42 unchanged owned sources.
+The next service is actual Extension.ExtensionObject.StringToName and subsequent
+FlagBase restoration, not another ResetKeyboard bypass. Full desktop/strict
+ARM64/Android-native builds and CTest241 executed/290 registered/49 explicit
+owned skips/zero failures199.98s pass. See ORIGINAL-INPUT-RESET-CONFIG.md.
+Startup and live controller/crate/loot/gravity acceptance remain incomplete.
+
+The following native544 observations are earlier checkpoints, before that batch.
+
 The final compatible-snapshot first-Training two-Fire diagnostic repeats2 at
 272616 instructions/37200 writes. Both runs apply roles/display/admin, execute
 TravelPreAccept, select the actual loader-owned empty travel map, return from
@@ -123,7 +135,7 @@ checks real Player->Viewport->Input and calls UObject.ResetConfig(Input.Class)
 through IAT1059A098. Its configured-class/default/cache effects must have a
 typed real service, not empty keyboard state. See ORIGINAL-INPUT-CONFIG-INSTANCE.md.
 
-Native544 remains the current genuine reached missing service. Its original
+Native544 is now implemented and verified; its source contract remains: original
 gates are Player None, non-Viewport, then Input None; otherwise reset the actual
 Input.Class. It does not require Input.Viewport/Init. A separately pinned
 read-only DefUser cache is needed, not a writable User-backend alias. ResetConfig
@@ -132,6 +144,9 @@ then live instances, and does not Flush. Actual DefUser lacks Extension.InputExt
 so this profile has zero overlay calls but still requires real reloads preserving
 the five prior SET bindings. Cache dirtiness must stay distinct from explicit
 pending Flush snapshots; do not accidentally publish later cache-only changes.
+These effects now pass owned integration and the actual startup return; see
+ORIGINAL-INPUT-RESET-CONFIG.md. The current missing service is native1024 in
+RestoreSkillPoints, followed by actual FlagBase restore operations.
 
 After SpawnPlayActor returns, LoadMap still requires moving-brush tracking,
 subsystem rebinding, per-viewport ResetInput/render services and DetailChange.
