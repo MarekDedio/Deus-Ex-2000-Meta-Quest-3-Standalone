@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "quest_brush_coords.h"
+#include "portable_brush_transform.h"
 #include "quest_original_sine_table.h"
 #include "quest_save_bundle.h"
 
@@ -29,6 +30,7 @@ using Value=QuestVr::Vm::Value;
 using Kind=QuestVr::Vm::Kind;
 using Vec=PortableModelVec3;
 std::size_t checks{},refusals{},actorCount{},brushCount{},moverCount{};
+std::size_t moverSources{},transformedPolygons{},transformedVertices{};
 void Require(bool condition,const std::string& reason) {
     ++checks;if(!condition) throw std::runtime_error(reason);
 }
@@ -162,6 +164,65 @@ void SameCoords(const PortableActorToWorldSnapshot& actual,const QuestVr::Origin
     SameVector(actual.origin,expected.origin,actual.actorPath+" Origin");SameVector(actual.xAxis,expected.xAxis,actual.actorPath+" XAxis");
     SameVector(actual.yAxis,expected.yAxis,actual.actorPath+" YAxis");SameVector(actual.zAxis,expected.zAxis,actual.actorPath+" ZAxis");
 }
+QuestVr::OriginalBrushModelCoords SameModelCoords(const std::string& actor) {
+    const auto rotation=Declared(actor,"Engine.Actor.Rotation",Kind::Rotator).rotation;
+    const auto main=Scale(Declared(actor,"Engine.Brush.MainScale",Kind::Struct));
+    const auto post=Scale(Declared(actor,"Engine.Brush.PostScale",Kind::Struct));
+    const auto expected=QuestVr::BuildOriginalBrushModelCoords({rotation[0u],rotation[1u],rotation[2u]},main,post,
+        QuestVr::OriginalSineProfile::Table());
+    const auto actual=ReadPortableRuntimeBrushModelCoords(actor);
+    Require(actual.actorPath==actor,"BuildCoords changed canonical actor identity");
+    const auto same=[&](const QuestVr::OriginalModelCoords& a,const QuestVr::OriginalModelCoords& b,const char* label) {
+        for(const auto& pair:{std::pair{a.origin,b.origin},std::pair{a.xAxis,b.xAxis},std::pair{a.yAxis,b.yAxis},std::pair{a.zAxis,b.zAxis}})
+            SameVector({pair.first.x,pair.first.y,pair.first.z},pair.second,actor+' '+label);
+    };
+    same(actual.coords.point,expected.point,"BuildCoords PointXform");
+    same(actual.coords.vector,expected.vector,"BuildCoords VectorXform");
+    Require(std::bit_cast<std::uint32_t>(actual.coords.orientation)==std::bit_cast<std::uint32_t>(expected.orientation),
+        "BuildCoords orientation sign bits differ");
+    return actual.coords;
+}
+void TransformMoverSource(const PortablePackageTables& map,const std::string& actor,
+    const QuestVr::OriginalBrushModelCoords& coords) {
+    // Composed SOURCE-data integration only: actual qualified Actor.Brush ->
+    // serialized Model.Polys -> retained records -> copied transform/sphere.
+    // This does not mutate source/live UPolys links or publish a BSP tracker.
+    const auto brush=Declared(actor,"Engine.Actor.Brush",Kind::Object);
+    Require(!brush.text.empty(),"Selected Training mover has no actual Brush Model");
+    const auto stem=fs::path(map.sourcePath).stem().string();std::size_t selected=map.exports.size();
+    for(std::size_t i=0;i<map.exports.size();++i)
+        if(Fold(stem+'.'+GetPortableObjectPath(map,static_cast<std::int32_t>(i+1u)))==Fold(brush.text)) {
+            Require(selected==map.exports.size(),"Ambiguous Training Brush export");selected=i;
+        }
+    Require(selected<map.exports.size()&&Fold(GetPortableObjectPath(map,map.exports[selected].ObjClass))=="engine.model",
+        "Mover Brush does not bind an actual source Model export");
+    const auto model=LoadPortableCollisionModel68(map,selected);
+    Require(model.polysReference>0&&static_cast<std::size_t>(model.polysReference)<=map.exports.size(),
+        "Selected mover Model lacks its actual local Polys reference");
+    const auto source=LoadPortableBrushPolys68(map,static_cast<std::size_t>(model.polysReference-1));
+    const auto pre=Vector(Declared(actor,"Engine.Actor.PrePivot",Kind::Vector));
+    const auto location=Vector(Declared(actor,"Engine.Actor.Location",Kind::Vector));
+    std::size_t count{};for(const auto& p:source.polygons)count+=static_cast<std::size_t>(p.vertexCount);
+    Require(count<=1600000u,"Source mover vertex sum exceeds admitted polygon storage");
+    std::vector<Vec> points;points.reserve(count);
+    for(const auto& poly:source.polygons) {
+        const auto transformed=QuestVr::TransformOriginalBrushPoly(poly,coords,pre,location);
+        Require(transformed.polyFlags==poly.polyFlags&&transformed.actorReference==poly.actorReference&&
+            transformed.textureReference==poly.textureReference&&transformed.itemNameReference==poly.itemNameReference&&
+            transformed.vertexCount==poly.vertexCount&&transformed.link==poly.link&&transformed.brushPoly==poly.brushPoly&&
+            transformed.panU==poly.panU&&transformed.panV==poly.panV,"Actual source polygon lost nongeometry fields during transform");
+        for(std::int32_t i=0;i<transformed.vertexCount;++i)points.push_back(transformed.vertices[static_cast<std::size_t>(i)]);
+    }
+    Require(points.size()==count,"Actual mover transform lost active vertices");
+    const auto sphere=QuestVr::BuildOriginalBrushSphere(points);
+    Require(std::isfinite(sphere.x)&&std::isfinite(sphere.y)&&std::isfinite(sphere.z)&&std::isfinite(sphere.radius)&&sphere.radius>=0,
+        "Actual mover source sphere is nonfinite/negative");
+    for(const auto& point:points) {
+        const double x=double(point.x)-sphere.x,y=double(point.y)-sphere.y,z=double(point.z)-sphere.z;
+        Require(x*x+y*y+z*z<=double(sphere.radius)*sphere.radius,"Actual mover sphere does not enclose transformed vertices");
+    }
+    ++moverSources;transformedPolygons+=source.polygons.size();transformedVertices+=count;
+}
 template<class F> void Refused(F&& operation,const std::string& why) {
     bool refused{};try {operation();} catch(const std::exception&) {refused=true;}
     Require(refused,why);++refusals;
@@ -193,11 +254,15 @@ void Original(const fs::path& root) {
             actual.nativeImplementation==(brush?"ABrush::ToWorld":"AActor::ToWorld"),
             "Original native class/virtual implementation provenance mismatch: "+actor.objectPath);
         SameCoords(actual,expected);++actorCount;
-        if(brush) {++brushCount;if(brushPath.empty()) brushPath=actor.objectPath;} else if(genericPath.empty()) genericPath=actor.objectPath;
+        if(brush) {const auto coords=SameModelCoords(actor.objectPath);++brushCount;if(brushPath.empty()) brushPath=actor.objectPath;
+            if(mover&&!Declared(actor.objectPath,"Engine.Actor.bStatic",Kind::Bool).boolean)TransformMoverSource(map,actor.objectPath,coords);}
+        else {Refused([&]{static_cast<void>(ReadPortableRuntimeBrushModelCoords(actor.objectPath));},"Generic Actor accepted by ABrush.BuildCoords");
+            if(genericPath.empty()) genericPath=actor.objectPath;}
         if(mover) ++moverCount;
     }
     Require(brushCount>0u&&moverCount>0u&&actorCount>brushCount&&!genericPath.empty(),
         "Original Training did not exercise both actual native ToWorld branches and Movers");
+    Require(moverSources&&transformedPolygons&&transformedVertices,"Training did not exercise positive moving-brush source transforms");
     // Case-insensitive lookup must still return the original canonical identity.
     for(const auto& path:{brushPath,genericPath}) {
         const auto query=ReadPortableRuntimeActorToWorld(Fold(path));Require(query.actorPath==path,"Case-folded lookup fabricated a new actor identity");
@@ -208,7 +273,8 @@ void Original(const fs::path& root) {
         "Engine.Brush.MainScale","@ClassDefault:Engine.Actor","@ClassDefault:Engine.Brush","@ClassDefault:Engine.Mover",
         "00_Training","00_Training.MissingActor","MissingMap.Mover0","Default__Mover",
         "00_Training.Default__Mover",std::string(4097u,'x'),std::string("00_Training.LevelInfo0\0suffix",29u)})
-        Refused([&] {static_cast<void>(ReadPortableRuntimeActorToWorld(path));},"Invalid/class/CDO/non-slot identity was accepted");
+        {Refused([&] {static_cast<void>(ReadPortableRuntimeActorToWorld(path));},"Invalid/class/CDO/non-slot identity was accepted");
+        Refused([&] {static_cast<void>(ReadPortableRuntimeBrushModelCoords(path));},"Invalid/class/CDO/non-slot BuildCoords identity was accepted");}
     const auto afterModel=ReadPortableRuntimeNativeModel();
     Require(temporary.Snapshot("After")==before&&GetPortableRuntimeWorldRevision()==revision&&WorldPaths()==world&&
         ReadPortableRuntimeLevelTime()==0.0&&GC::GetStats().numObjects==gc.numObjects&&GC::GetStats().memoryUsage==gc.memoryUsage,
@@ -221,6 +287,8 @@ void Original(const fs::path& root) {
     std::cout<<"PASS original dormant Training coordinate provider: "<<actorCount<<" actors, "<<brushCount<<" Brushes, "<<moverCount
         <<" Movers; qualified original fields, actual RF_Native ancestry, all12 Float bits, complete read-only checkpoint/revision/GC/source checks. "
         "Not original startup, Move/FindBase/falling, render or headset evidence.\n";
+    std::cout<<"Actual non-static mover source transforms: "<<moverSources<<" Models/Polys, "<<transformedPolygons
+        <<" polygons, "<<transformedVertices<<" vertices; no live Model/UPolys/BSP writes.\n";
 }
 } // namespace
 int main(int argc,char** argv) {

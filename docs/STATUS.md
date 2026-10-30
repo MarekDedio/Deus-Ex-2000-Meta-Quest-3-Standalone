@@ -1,5 +1,41 @@
 # Port status
 
+## Latest: original brush Model coordinates, polygon transform and sphere (2026-10-30)
+
+Exact selected inverse FScale/rotation, ABrush.BuildCoords first output,
+FPoly.Transform/reversal/SafeNormal and FSphere are implemented with the existing
+integer PC64 arithmetic and original Float boundaries. The direct native Brush
+field bridge authenticates complete class ancestry and original declared
+Rotation/MainScale/PostScale schema; it does not substitute virtual ToWorld,
+renderer matrices or a fabricated original GMath object. A copied diagnostic
+exposes the two coordinate packets and orientation for an indexed map Brush.
+
+Independent hardware x87 tests pass28351 checks/12735 exact comparisons,
+2553 matching numeric refusals,31 explicit refusals and4 effective rounding
+controls. The root-spill-sensitive finite-sample search is informational only;
+no unwitnessed numeric distinction is claimed. Extended owned first-Training
+integration passes89192 checks/325 identity refusals over1308 Actors/1017
+Brushes/25 Movers, with both packets/orientation matching qualified fields.
+All25 actual non-static movers' source Models/Polys transform150 polygons/
+600 vertices and produce enclosing spheres without losing nongeometry fields.
+Complete checkpoint/revision/slots/native-time/GC and17 source checks pass.
+
+Full desktop, strict ARM64 and Android-native builds pass. Final CTest246
+executed/300 registered/54 explicit owned-data skips/zero failures118.14s.
+Final audit:1870 compiler inputs and45 originals unchanged, Training Music hash
+verified, no live jobs. The initial desktop range-loop-copy warning is recorded
+as a failed gate; its const-reference correction passes on the final snapshot.
+No compiler inputs changed during active builds/tests.
+
+This is source-value/adapter progress, NOT a published mutable Model/UPolys
+payload or completed tracker. The post-partition startup guard remains. Next
+are actual Model/Polys/GC ownership and same-root journaled mutation, dynamic
+pools, prefilter/splitting/BSP insertion/update/teardown, and revision-aware
+collision/render views. Later startup/input/render/detail services and live
+Training crates/loot/gravity still require implementation/verification. Accepted
+VR layouts/controls are unchanged, other-map integration is skipped, and no
+new APK is packaged. See ORIGINAL-BRUSH-TRANSFORM.md and the tracker contracts.
+
 ## Latest: lossless native brush polygon admission (2026-10-30)
 
 The shared native/desktop library now contains a detached v68 UPolys loader

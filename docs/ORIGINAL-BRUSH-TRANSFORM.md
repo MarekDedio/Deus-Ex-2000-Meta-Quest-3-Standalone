@@ -264,14 +264,70 @@ that negative-count input, but the native behavior is not a rejection.
 
 ## Integration boundary
 
-This establishes selected source values and arithmetic schedules. It does
-not implement or test new inverse helpers, polygon transform, sphere code,
-class/property binding, live Model geometry, or initial BSP insertion. The
-existing numerical helper tests do not automatically verify these new call
-sites or their different Float boundaries. Still required are independent
-generated/oracle tests and the actual first-Training selected mover evidence,
-all mutations under the existing caller journal and retained startup guard.
-No other-map integrations are required for this increment.
+The static audit above establishes selected source values and arithmetic
+schedules, not runtime publication. The implementation and separate new tests
+below now cover the selected coordinate/polygon/sphere operations; earlier
+ToWorld tests alone did not prove these different Float boundaries. Live Model
+geometry, actual UPolys writes and initial BSP insertion still require the
+existing caller journal and retained startup guard. No other-map integration
+is required for this increment.
+
+## Implemented selected value operations and actual field bridge
+
+`quest_brush_poly_transform.h` now implements inverse FScale and inverse
+Roll/Pitch/Yaw, the selected first BuildCoords output/transpose/orientation,
+full copied FPoly transform/reversal/SafeNormal and the allocation-free sphere
+operation. Existing integer PC64 primitives implement the evidenced arithmetic;
+no host matrix inverse, reciprocal-scale substitute, host sqrt/trig, fused
+point pipeline or bounding-box geometry substitute was introduced. Metadata
+and unused fixed vertex slots retain their bits. Unsupported nonfinite active
+numeric data/division/output domains refuse explicitly; inactive fields and
+unknown-axis discarded shear results do not create invented reads.
+
+The runtime `NativeBrushBuildCoords` is a **direct ABrush method** bridge.
+It validates the complete bounded original class chain and actual RF_Native
+Engine.Brush base, independently of virtual ToWorld selection. Rotation and
+MainScale/PostScale use existing exact declaring-property flags, dimensions,
+canonical Vector/Rotator/Scale types and field layouts. The selected port-owned
+sine numeric profile supplies values; no original GMath UObject, DLL execution,
+native default authority or original mutable global lifecycle was fabricated.
+`portable_brush_transform.h` exposes only a copied diagnostic packet from an
+actual indexed current-map Actor. Generic Actors, class/CDO/non-slot/stale
+identities are not accepted as Brushes because they have a Brush primitive.
+
+The new standalone `quest_brush_poly_transform_test` independently expresses
+hardware x87 PC64 arithmetic and FSIN/FSQRT instructions. It passes28351 checks,
+12735 exact comparisons,2553 matching numeric refusals,31 explicit refusals
+and4 effective rounding controls. Controls distinguish reciprocal versus true
+division, early point-delta stores, VectorBy/PostAdd stores and asymmetric
+sphere midpoint overflow. The finite50000-sample retained-vs-Double-root
+search did not find a Float witness and is explicitly informational, not a
+claimed proof or a required invented failure. The test's independently built
+table is a supplied numeric value, not an initialized original GMath instance.
+
+Extended owned `portable_actor_coords_test` passes89192 checks/325 identity
+refusals over the first Training's1308 Actors,1017 Brushes and25 Movers.
+Every Brush's two coordinate packets and orientation agree with the separately
+tested scalar helper using original declared fields. All25 actual non-static
+Mover Brush Models resolve their serialized local Polys sources:150 polygons
+and600 vertices transform successfully, preserve nongeometry fields, and fit
+their computed spheres. This is composed source-data/adapter evidence, not an
+independent arithmetic oracle or live BSP publication. Complete checkpoint,
+world revision/slots/native time/GC graph and17 original source fingerprints
+remain unchanged, with clean GC after shutdown.
+
+Strict ARM64 and Android-native compilation pass. Wider final regression and
+frozen-input/original-file audit results are recorded in STATUS.md. Initial
+desktop verification stopped on a range-loop-copy warning in the owned test;
+that failure remains recorded, was corrected with a const reference, and is
+not a passing gate. No compiler inputs changed during running builds/tests.
+
+These helpers do **not** install a tracker, rewrite live polygon LinkIndex,
+append world pools/surfaces, update collision proofs or finish original startup.
+Actual Model/UPolys/GC ownership, journaled mutation, sphere prefilter, splitting,
+BSP insertion, update/removal/teardown and current-revision query/render views
+remain next. The post-partition guard and accepted VR layouts are unchanged;
+there is no new APK or live crate/loot/gravity acceptance from this batch.
 
 ## Bounded static reproduction
 

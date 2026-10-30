@@ -93,6 +93,7 @@
 #include "quest_model_fast_line_check.h"
 #include "quest_sound_hearing.h"
 #include "quest_brush_coords.h"
+#include "portable_brush_transform.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
 #include "quest_pawn_pick_target.h"
@@ -5596,6 +5597,39 @@ public:
         result.coords=QuestVr::BuildOriginalBrushCoords(point,angles,{pivot.vector[0u],pivot.vector[1u],pivot.vector[2u]},
             post,main,QuestVr::OriginalSineProfile::Table());
         return result;
+    }
+    QuestVr::OriginalBrushModelCoords NativeBrushBuildCoords(RuntimeObject* actor) {
+        // BuildCoords is a DIRECT ABrush method, not virtual ToWorld. Validate
+        // its actual complete Brush ancestry without selecting a renderer or
+        // pretending that a generic Actor with a Brush primitive is an ABrush.
+        if(!actor || actor->classDescriptor || actor->defaultOwner || !actor->cls ||
+            CastObjectIdentity(actor->reflection.objectPath).classObject)
+            throw std::runtime_error("Native BuildCoords receiver is not an actual Brush instance");
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};bool brush{},nativeBrush{};
+        for(auto* cls=actor->cls;cls;cls=cls->base) {
+            if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth ||
+                !cls->classDescriptor || cls->reflection.metaClass!="Class" || !cls->classFieldLinksValid)
+                throw std::runtime_error("Native BuildCoords class ancestry is malformed, cyclic or excessive");
+            visited[depth++]=cls;
+            const auto identity=CastClassIdentity(cls->reflection.objectPath);
+            if(LowerAscii(identity.path)=="engine.brush") {
+                brush=true;nativeBrush=(cls->reflection.flags&0x04000000u)!=0u;
+            }
+        }
+        if(!brush || !nativeBrush)
+            throw std::runtime_error("Native BuildCoords receiver lacks its actual native Engine.Brush base");
+        const auto rotation=NativeCoordsRead(actor,"Engine.Actor.Rotation",Kind::Rotator,0x23u);
+        const QuestVr::OriginalBrushRotation angles{rotation.rotation[0u],rotation.rotation[1u],rotation.rotation[2u]};
+        const auto main=NativeCoordsScale(actor,"Engine.Brush.MainScale");
+        const auto post=NativeCoordsScale(actor,"Engine.Brush.PostScale");
+        // Selected first FModelCoords output / null second. Original UnitCoords
+        // and the existing explicit port-owned sine numeric profile supply
+        // values, not a fabricated original GMath UObject/session identity.
+        return QuestVr::BuildOriginalBrushModelCoords(angles,main,post,QuestVr::OriginalSineProfile::Table());
+    }
+    PortableBrushModelCoordsSnapshot ReadBrushModelCoordsSnapshot(RuntimeObject* actor) {
+        RequireIndexedPrimitiveDiagnosticOwner(actor);
+        return {actor->reflection.objectPath,NativeBrushBuildCoords(actor)};
     }
     PortableActorToWorldSnapshot ReadActorToWorldSnapshot(RuntimeObject* actor) {
         RequireMapActor(actor);
@@ -16217,6 +16251,13 @@ PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& 
         throw std::invalid_argument("Native ToWorld diagnostic actor identity is invalid");
     PortableActorVmHost host;
     return host.ReadActorToWorldSnapshot(host.Object(actorPath));
+}
+
+PortableBrushModelCoordsSnapshot ReadPortableRuntimeBrushModelCoords(const std::string& actorPath) {
+    if(actorPath.empty() || actorPath.size()>4096u || actorPath.find('\0')!=std::string::npos)
+        throw std::invalid_argument("Native BuildCoords diagnostic actor identity is invalid");
+    PortableActorVmHost host;
+    return host.ReadBrushModelCoordsSnapshot(host.Object(actorPath));
 }
 
 static RuntimeObject* PrimitiveDiagnosticOwner(PortableActorVmHost& host,const std::string& actorPath) {
