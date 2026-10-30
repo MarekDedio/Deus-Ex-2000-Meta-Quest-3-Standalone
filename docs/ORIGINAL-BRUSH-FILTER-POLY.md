@@ -216,7 +216,52 @@ as if they had authentic zero/default values.
 & C:/ProgramData/mingw64/mingw64/bin/objdump.exe -s --start-address=0x1042d518 --stop-address=0x1042d530 'D:/Steam/steamapps/common/Deus Ex/System/Engine.dll'
 ```
 
-This establishes the selected filter/split graph. AddPolyToBsp's allocator,
+This audit establishes the selected filter/split graph. AddPolyToBsp's allocator,
 zone/leaf topology, failure behavior and point ownership, plus noninitial
 flush/dependency propagation, still need their own concrete implementation and
 verification. This audit does not advance the runtime startup guard.
+
+## Implemented detached split operations (2026-10-30)
+
+`quest_brush_poly_split.h` implements the selected half split and fast plane
+split with the project's integer PC64 arithmetic. Its typed clip polygon
+contains only Base, Normal, fixed16 vertex storage, count and flags. It has no
+texture/ref/name/link/pan fields for the original fast splitter to accidentally
+invent. Full selected storage is copied for Make/Halve; split fragments expose
+only source-defined fields/active vertices. Unused portable slots are not a
+claim about native scratch initialization. Input values are not mutated.
+
+Count0 returns before reading any plane/vertex/metadata values. Nonsplit and
+classification-only paths publish no fragments. Native counts/output capacity,
+active nonfinite arithmetic and undefined division explicitly refuse; no t
+clamping, epsilon change, welding, or symmetric intersection replacement is
+used. Half's unsupported count follows an explicit missing original-error
+provider boundary rather than a fabricated replacement triangle.
+
+Independent hardware x87 PC64 controls pass23409 checks/9636 exact comparisons,
+406 matching numeric/capacity refusals,30 explicit refusals and4 effective
+rounding controls. They distinguish plane association, retained-versus-stored
+X delta, Y/Z offset stores and unwelded rounded intersections. Other checks
+cover strict threshold neighbors, zero-side versus tolerance classification,
+fragment edge order, signed zero/subnormal/extreme inputs, read selection and
+full selected storage preservation. No production arithmetic is the expected
+oracle; no original DLL/EXE executes.
+
+The owned first-Training coordinate fixture additionally composes real mover
+source transforms with sampled original world planes and checks classification
+versus fragment outcomes, copied Base/Normal/flags and native count bounds.
+It passes150965 checks/325 identity refusals. The25 actual non-static source
+Models/Polys (150 polygons/600 vertices) produce81 coplanar,9976 front,7645 back
+and1648 split outcomes. Actual split fragments retain required copied fields;
+all classification-only calls avoid output publication. Complete checkpoints,
+world revision/slots/time/GC, native Model cache and17 source fingerprints are
+unchanged. Final complete regression evidence is recorded in STATUS.md.
+These are source-data composition checks, not recursive FilterPoly traversal,
+live mutable BSP insertion, collision publication or successful startup.
+
+The source prefilter and collision link-access evidence is separately recorded
+in ORIGINAL-BRUSH-SPHERE-PREFILTER.md. Actual native Model/UPolys ownership,
+same-caller mutation journal/GC, active/index-preserving query authority,
+prefilter/insertion/update/removal/teardown and later startup services remain
+required. The post-partition guard and accepted VR controls/layouts are unchanged;
+no new APK or crate/loot/gravity acceptance is claimed by this implementation.

@@ -1,5 +1,42 @@
 # Port status
 
+## Latest: original fast brush plane split and Training source-plane checks (2026-10-30)
+
+Original FPoly.SplitInHalf and selected SplitWithPlaneFast are implemented in a
+typed clip-only value header. Strict quarter-unit classification, separate zero
+side bits, previous-last/current-first edge order, asymmetric retained X versus
+Float Y/Z intersection stores and copied fragment fields follow the recovered
+source. No texture/ref/link defaults, welding/clamping, epsilon changes or
+native unused-field initialization is invented. Count0 and classification-only
+paths avoid unselected reads/output. Native bounds and unsupported numeric/error
+provider cases explicitly refuse. No existing cap or VR layout/control changed.
+
+Generated independent hardware x87 controls pass23409 checks/9636 comparisons,
+406 matching numeric/capacity refusals,30 explicit refusals and4 effective
+rounding controls. Extended owned first-Training fixture passes150965 checks/
+325 identity refusals:25 actual non-static mover Models/Polys,150 transformed
+polygons/600 vertices against sampled original world planes produce81 coplanar,
+9976 front,7645 back and1648 split outcomes with required fragment fields intact.
+Complete checkpoint/revision/slots/native time/GC, Model cache and17 source
+fingerprints remain unchanged. This is composed source-data evidence, not live
+FilterPoly traversal or BSP insertion.
+
+Full desktop, strict ARM64 and Android-native builds pass. Final CTest247
+executed/301 registered/54 explicit owned-data skips/zero failures117.35s.
+Final audit:1872 compiler inputs and45 originals unchanged, Training Music hash
+verified, no live jobs. No original commercial module executed. The source
+prefilter's exact flag writes, FP arithmetic, back-first overlap traversal and
+actual collision/region child-link use are documented separately.
+
+Live Model/UPolys ownership, GC and same-root journal are still missing, followed
+by prefilter/recursive filtering/insertion/update/removal/teardown and revision-
+aware active/index-preserving query/render access. Immutable authored-source
+proofs cannot authenticate mutated geometry; malformed-source validation remains
+unchanged. The post-partition startup guard is retained, later startup services
+and live Training crate/loot/gravity acceptance remain open, other-map work is
+skipped, and no new APK is packaged. See ORIGINAL-BRUSH-FILTER-POLY.md,
+ORIGINAL-BRUSH-SPHERE-PREFILTER.md and BRUSH-TRACKER-INTEGRATION-NOTES.md.
+
 ## Latest: original brush Model coordinates, polygon transform and sphere (2026-10-30)
 
 Exact selected inverse FScale/rotation, ABrush.BuildCoords first output,

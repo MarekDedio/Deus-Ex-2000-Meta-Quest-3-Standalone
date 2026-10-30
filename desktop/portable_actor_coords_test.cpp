@@ -3,6 +3,7 @@
 #include "portable_unreal_runtime.h"
 #include "quest_brush_coords.h"
 #include "portable_brush_transform.h"
+#include "quest_brush_poly_split.h"
 #include "quest_original_sine_table.h"
 #include "quest_save_bundle.h"
 
@@ -31,6 +32,7 @@ using Kind=QuestVr::Vm::Kind;
 using Vec=PortableModelVec3;
 std::size_t checks{},refusals{},actorCount{},brushCount{},moverCount{};
 std::size_t moverSources{},transformedPolygons{},transformedVertices{};
+std::array<std::size_t,4u> planeClassifications{};
 void Require(bool condition,const std::string& reason) {
     ++checks;if(!condition) throw std::runtime_error(reason);
 }
@@ -182,7 +184,7 @@ QuestVr::OriginalBrushModelCoords SameModelCoords(const std::string& actor) {
         "BuildCoords orientation sign bits differ");
     return actual.coords;
 }
-void TransformMoverSource(const PortablePackageTables& map,const std::string& actor,
+void TransformMoverSource(const PortablePackageTables& map,const PortableModelGeometry& world,const std::string& actor,
     const QuestVr::OriginalBrushModelCoords& coords) {
     // Composed SOURCE-data integration only: actual qualified Actor.Brush ->
     // serialized Model.Polys -> retained records -> copied transform/sphere.
@@ -211,6 +213,26 @@ void TransformMoverSource(const PortablePackageTables& map,const std::string& ac
             transformed.textureReference==poly.textureReference&&transformed.itemNameReference==poly.itemNameReference&&
             transformed.vertexCount==poly.vertexCount&&transformed.link==poly.link&&transformed.brushPoly==poly.brushPoly&&
             transformed.panU==poly.panU&&transformed.panV==poly.panV,"Actual source polygon lost nongeometry fields during transform");
+        const auto clipped=QuestVr::MakeOriginalBrushClipPolygon(transformed);
+        const auto stride=std::max<std::size_t>(1u,world.nodes.size()/128u);
+        for(std::size_t node=0;node<world.nodes.size();node+=stride) {
+            const auto& sourcePlane=world.nodes[node];
+            const QuestVr::OriginalExtentPlane plane{sourcePlane.planeX,sourcePlane.planeY,sourcePlane.planeZ,sourcePlane.planeW};
+            const auto classified=QuestVr::SplitOriginalBrushClipPolygon(clipped,plane,false);
+            const auto split=QuestVr::SplitOriginalBrushClipPolygon(clipped,plane,true);
+            Require(classified.side==split.side&&split.side>=0&&split.side<=3&&!classified.front&&!classified.back,
+                "Actual Training plane classification/build paths disagree");
+            ++planeClassifications[static_cast<std::size_t>(split.side)];
+            if(split.side==3) {
+                Require(split.front&&split.back,"Actual Training split lacks one fragment");
+                for(const auto* fragment:{&*split.front,&*split.back}) {
+                    Require(fragment->vertexCount>=3&&fragment->vertexCount<=16&&fragment->polyFlags==clipped.polyFlags,
+                        "Actual Training plane split lost active polygon/count/flags");
+                    SameVector({fragment->base.x,fragment->base.y,fragment->base.z},clipped.base,"Training split copied Base");
+                    SameVector({fragment->normal.x,fragment->normal.y,fragment->normal.z},clipped.normal,"Training split copied Normal");
+                }
+            }else Require(!split.front&&!split.back,"Actual Training nonsplit constructed fragments");
+        }
         for(std::int32_t i=0;i<transformed.vertexCount;++i)points.push_back(transformed.vertices[static_cast<std::size_t>(i)]);
     }
     Require(points.size()==count,"Actual mover transform lost active vertices");
@@ -245,6 +267,7 @@ void Original(const fs::path& root) {
     Require(!dormant.boolean,"Original coordinate test unexpectedly has a begun world");
     const auto before=temporary.Snapshot("Before");const auto revision=GetPortableRuntimeWorldRevision();
     const auto gc=GC::GetStats();const auto model=ReadPortableRuntimeNativeModel();const auto world=WorldPaths();
+    const auto sourceWorld=LoadPortableRootModel68(map);
     std::string brushPath,genericPath;
     for(const auto& actor:actors) {
         const bool brush=classes.Derives(actor.classPath,"Engine.Brush");
@@ -255,7 +278,7 @@ void Original(const fs::path& root) {
             "Original native class/virtual implementation provenance mismatch: "+actor.objectPath);
         SameCoords(actual,expected);++actorCount;
         if(brush) {const auto coords=SameModelCoords(actor.objectPath);++brushCount;if(brushPath.empty()) brushPath=actor.objectPath;
-            if(mover&&!Declared(actor.objectPath,"Engine.Actor.bStatic",Kind::Bool).boolean)TransformMoverSource(map,actor.objectPath,coords);}
+            if(mover&&!Declared(actor.objectPath,"Engine.Actor.bStatic",Kind::Bool).boolean)TransformMoverSource(map,sourceWorld,actor.objectPath,coords);}
         else {Refused([&]{static_cast<void>(ReadPortableRuntimeBrushModelCoords(actor.objectPath));},"Generic Actor accepted by ABrush.BuildCoords");
             if(genericPath.empty()) genericPath=actor.objectPath;}
         if(mover) ++moverCount;
@@ -263,6 +286,8 @@ void Original(const fs::path& root) {
     Require(brushCount>0u&&moverCount>0u&&actorCount>brushCount&&!genericPath.empty(),
         "Original Training did not exercise both actual native ToWorld branches and Movers");
     Require(moverSources&&transformedPolygons&&transformedVertices,"Training did not exercise positive moving-brush source transforms");
+    Require(planeClassifications[0]&&planeClassifications[1]&&planeClassifications[2]&&planeClassifications[3],
+        "Actual Training planes did not exercise all fast split outcomes");
     // Case-insensitive lookup must still return the original canonical identity.
     for(const auto& path:{brushPath,genericPath}) {
         const auto query=ReadPortableRuntimeActorToWorld(Fold(path));Require(query.actorPath==path,"Case-folded lookup fabricated a new actor identity");
@@ -289,6 +314,8 @@ void Original(const fs::path& root) {
         "Not original startup, Move/FindBase/falling, render or headset evidence.\n";
     std::cout<<"Actual non-static mover source transforms: "<<moverSources<<" Models/Polys, "<<transformedPolygons
         <<" polygons, "<<transformedVertices<<" vertices; no live Model/UPolys/BSP writes.\n";
+    std::cout<<"Actual source-plane classification outcomes coplanar/front/back/split: "<<planeClassifications[0]<<'/'
+        <<planeClassifications[1]<<'/'<<planeClassifications[2]<<'/'<<planeClassifications[3]<<"; copied fragment checks, NOT BSP insertion.\n";
 }
 } // namespace
 int main(int argc,char** argv) {

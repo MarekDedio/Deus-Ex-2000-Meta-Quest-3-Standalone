@@ -94,6 +94,7 @@
 #include "quest_sound_hearing.h"
 #include "quest_brush_coords.h"
 #include "portable_brush_transform.h"
+#include "quest_brush_poly_split.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
 #include "quest_pawn_pick_target.h"
