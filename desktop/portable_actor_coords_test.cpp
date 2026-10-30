@@ -4,6 +4,8 @@
 #include "quest_brush_coords.h"
 #include "portable_brush_transform.h"
 #include "quest_brush_poly_split.h"
+#include "quest_brush_sphere_prefilter.h"
+#include "portable_brush_geometry.h"
 #include "quest_original_sine_table.h"
 #include "quest_save_bundle.h"
 
@@ -33,6 +35,7 @@ using Vec=PortableModelVec3;
 std::size_t checks{},refusals{},actorCount{},brushCount{},moverCount{};
 std::size_t moverSources{},transformedPolygons{},transformedVertices{};
 std::array<std::size_t,4u> planeClassifications{};
+std::size_t nativeSphereWrites{};
 void Require(bool condition,const std::string& reason) {
     ++checks;if(!condition) throw std::runtime_error(reason);
 }
@@ -243,6 +246,29 @@ void TransformMoverSource(const PortablePackageTables& map,const PortableModelGe
         const double x=double(point.x)-sphere.x,y=double(point.y)-sphere.y,z=double(point.z)-sphere.z;
         Require(x*x+y*y+z*z<=double(sphere.radius)*sphere.radius,"Actual mover sphere does not enclose transformed vertices");
     }
+    auto expected=world;
+    QuestVr::OriginalBrushSphereFilterQueries prefilter;
+    std::size_t expectedWrites{},steps{};
+    prefilter.work=[&]{Require(++steps<=100000u,"Actual source prefilter exceeded fixture work bound");};
+    prefilter.readNode=[&](std::int32_t i){return expected.nodes.at(static_cast<std::size_t>(i));};
+    prefilter.writeFlags=[&](std::int32_t i,std::uint8_t f){expected.nodes.at(static_cast<std::size_t>(i)).nodeFlags=f;++expectedWrites;};
+    QuestVr::PrecomputeOriginalBrushSphereFilter(expected.nodes.size(),sphere,prefilter);
+    const auto flags=[](const PortableModelGeometry& model){std::uint64_t hash=14695981039346656037ull;
+        for(const auto& node:model.nodes){hash^=node.nodeFlags;hash*=1099511628211ull;}return hash;};
+    QuestVr::Vm::Limits limits;limits.nativeWork=200000u;
+    const auto probe=ProbePortableRuntimeBrushSphereFilter(sphere,0u,limits);
+    Require(probe.execution.status==QuestVr::Vm::Status::Returned&&!probe.execution.committed,
+        "Actual Model prefilter root failed: "+probe.execution.error);
+    Require(probe.mutableOwnerObserved&&probe.queryUsesMutable&&probe.immutableProofRefused&&probe.revision==1u&&
+        probe.generation&&probe.nodes==world.nodes.size()&&probe.surfaces==world.surfaces.size()&&probe.retainedBytes&&
+        probe.beforeFlags==flags(world)&&probe.afterFlags==flags(expected)&&probe.writes==expectedWrites,
+        "Native Model-owned prefilter disagrees with source geometry/callbacks or query/proof separation");
+    Require(!HasPortableRuntimeMutableBrushGeometry(),"Successful prefilter observation published mutable geometry");
+    const auto refused=ProbePortableRuntimeBrushSphereFilter(sphere,1u,limits);
+    Require(refused.execution.status==QuestVr::Vm::Status::Unsupported&&refused.mutableOwnerObserved&&refused.writes==1u&&
+        refused.execution.error.find("Injected native Model journal refusal")!=std::string::npos&&!HasPortableRuntimeMutableBrushGeometry(),
+        "Partial native Model flag mutation did not refuse and restore the complete owner");
+    nativeSphereWrites+=probe.writes;
     ++moverSources;transformedPolygons+=source.polygons.size();transformedVertices+=count;
 }
 template<class F> void Refused(F&& operation,const std::string& why) {
@@ -316,6 +342,8 @@ void Original(const fs::path& root) {
         <<" polygons, "<<transformedVertices<<" vertices; no live Model/UPolys/BSP writes.\n";
     std::cout<<"Actual source-plane classification outcomes coplanar/front/back/split: "<<planeClassifications[0]<<'/'
         <<planeClassifications[1]<<'/'<<planeClassifications[2]<<'/'<<planeClassifications[3]<<"; copied fragment checks, NOT BSP insertion.\n";
+    std::cout<<"Actual Model-owned sphere prefilter writes="<<nativeSphereWrites<<" across25 successful root rollbacks plus25 partial-write refusals; "
+        "current geometry queries and immutable-source proof separation verified, no tracker/pool publication.\n";
 }
 } // namespace
 int main(int argc,char** argv) {

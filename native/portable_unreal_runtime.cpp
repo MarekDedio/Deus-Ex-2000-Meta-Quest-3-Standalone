@@ -95,6 +95,8 @@
 #include "quest_brush_coords.h"
 #include "portable_brush_transform.h"
 #include "quest_brush_poly_split.h"
+#include "quest_brush_sphere_prefilter.h"
+#include "portable_brush_geometry.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
 #include "quest_pawn_pick_target.h"
@@ -371,6 +373,19 @@ static std::size_t NativeLevelTravelRetainedBytes(const RuntimeNativeLevelTravel
     }
     return bytes;
 }
+struct RuntimeNativeMutableModel {
+    PortableModelGeometry geometry;
+    std::uint64_t generation{},revision{};
+};
+static std::size_t NativeMutableModelBytes(const RuntimeNativeMutableModel& state) {
+    auto bytes=QuestVr::DecalStateDetail::Add(sizeof(state),state.geometry.objectPath.capacity()+1u);
+    const auto array=[&](const auto& values){bytes=QuestVr::DecalStateDetail::Add(bytes,
+        QuestVr::DecalStateDetail::Multiply(values.capacity(),sizeof(typename std::decay_t<decltype(values)>::value_type)));};
+    const auto& g=state.geometry;
+    array(g.vectors);array(g.points);array(g.nodes);array(g.surfaces);array(g.vertices);array(g.zones);
+    array(g.lightMaps);array(g.lightBits);array(g.renderBounds);array(g.leafHulls);array(g.leaves);array(g.lights);
+    return bytes;
+}
 struct RuntimeNativeLevelTickContext {
     std::int32_t parity{},inTick{};
     // Immutable loader-owned ULevel+E4 data. Sharing its identity in a tick
@@ -466,6 +481,9 @@ public:
     RuntimeObject* nativePendingTouch{}; // Replaceable reflected Actor edge, not a symbolic GC root.
     bool nativePendingTouchBound{};
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
+    // Serialized references remain source ordinals. Dynamic pointer surfaces,
+    // live UPolys and tracker ownership require separate admission/GC edges.
+    std::unique_ptr<RuntimeNativeMutableModel> nativeMutableModel;
     // Actual freshly loaded exact native Model: its prepared native CDO zero-
     // extension initializes all64 transient timestamp Floats, not its archive.
     // No renderer write API is exposed yet; this baseline is immutable until
@@ -3498,6 +3516,8 @@ public:
     std::optional<QuestVr::NativeWork::Usage> ReadNativeWork() const noexcept override { return nativeWork_.Read(); }
     void BeginRoot(const QuestVr::Vm::Limits& limits) override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        if(beforeMutableModel_)throw std::runtime_error("Native Model journal survived its outer root");
+        brushGeometryPreview_=false;
         RequireEmptyNativeInputJournal();
         nativeWork_.Reset(limits.nativeWork);
         RequireEmptyMoveHits();ClearMoveHits();nativeDurableMoved_.clear();
@@ -3559,7 +3579,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_||startupMoverPreview_) {
+        if(brushGeometryPreview_||retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_||startupMoverPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -3567,7 +3587,7 @@ public:
         // AI-manager-only state already has independent checkpoint/journal
         // ownership and is not actor geometry. Preserve that existing path;
         // coupled AI effects still disqualify the narrow timer-only fast path.
-        const bool worldChanged = beforeDecals_.has_value() || beforeCollision_.has_value() || beforeActorOrder_.has_value() ||
+        const bool worldChanged = beforeMutableModel_.has_value() || beforeDecals_.has_value() || beforeCollision_.has_value() || beforeActorOrder_.has_value() ||
             persistentRuntime->get()->exports.size() != beforeExportCount_ ||
             std::any_of(saved_.begin(), saved_.end(), [this](const auto& entry) {
             return !entry.first->classDescriptor && IsDerivedFromPath(entry.first->cls, "Engine.Actor") &&
@@ -3601,6 +3621,7 @@ public:
         PublishNativeUserConfig(); // Last fallible preparation, then no rollback after a rename.
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
+        beforeMutableModel_.reset();
         if(retailCollisionRoot_) {
             if(!retailCollisionRoot_->CommitPrepared()) std::terminate();
             retailCollisionRoot_.reset();createdRetailCollision_=false;
@@ -3626,6 +3647,10 @@ public:
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        if(beforeMutableModel_) {
+            beforeMutableModel_->model->nativeMutableModel.swap(beforeMutableModel_->state);
+            beforeMutableModel_.reset();
+        }
         ClearMoveHits();nativeDurableMoved_.clear();
         // The VM's value-reference undo has already run. Restore native owning
         // payloads BEFORE any provisional object/index/window retirement.
@@ -6053,6 +6078,13 @@ public:
             !model || model->runtimeBirth || model->sourcePath!=level->sourcePath ||
             model->sourcePath!=persistentMapSourcePath)
             throw std::runtime_error("FastTrace native ULevel has no current loader-owned Model");
+        if(model->nativeMutableModel) {
+            const auto& live=*model->nativeMutableModel;
+            if(live.generation!=level->nativeMapGeneration || live.geometry.exportIndex!=model->exportIndex ||
+                LowerAscii(live.geometry.objectPath)!=LowerAscii(GetPortableObjectPath(Table(model->sourcePath),static_cast<std::int32_t>(model->exportIndex+1u))))
+                throw std::runtime_error("Native mutable Model belongs to another source/generation");
+            return live.geometry;
+        }
         if(persistentNativeModelCache) {
             const auto& cache=*persistentNativeModelCache;
             if(cache.generation!=level->nativeMapGeneration || cache.level!=level || cache.model!=model ||
@@ -6082,7 +6114,10 @@ public:
         persistentNativeModelCache.emplace(std::move(prepared));
         return *persistentNativeModelCache->geometry;
     }
+#include "portable_brush_geometry.inl"
     const QuestVr::OriginalImmutableCollisionModel& NativeWorldCollisionSource(RuntimeObject* level) {
+        if(level&&level->nativeLevelModel&&level->nativeLevelModel->nativeMutableModel)
+            throw std::runtime_error("Mutable Model cannot borrow an immutable authored-source collision proof");
         const auto& geometry=NativeLevelTraceModel(level);
         if(!persistentNativeModelCache||!persistentNativeModelCache->collisionSource||
             &persistentNativeModelCache->collisionSource->Geometry()!=&geometry)
@@ -10035,6 +10070,13 @@ private:
     std::optional<BeforeDecals> beforeDecals_;
     std::optional<std::pair<RuntimeObject*,double>> beforeLevelClock_;
     std::optional<std::pair<RuntimeObject*,RuntimeNativeLevelTickContext>> beforeLevelTickContext_;
+    struct BeforeMutableModel {
+        GCRoot<RuntimeObject> model;
+        std::unique_ptr<RuntimeNativeMutableModel> state;
+        explicit BeforeMutableModel(RuntimeObject* value):model(value){}
+    };
+    std::optional<BeforeMutableModel> beforeMutableModel_;
+    bool brushGeometryPreview_{};
     struct NativePendingTick {
         GCRoot<RuntimeObject> actor;
         std::size_t next{};
@@ -11492,6 +11534,10 @@ private:
         defaults.Retain(nativePhysicsReferenceBytes_);
         defaults.Retain(nativeTileReferenceBytes_);
         defaults.Retain(nativeActorOrderObservationBytes_);
+        if(beforeMutableModel_) {
+            defaults.Retain(sizeof(BeforeMutableModel));
+            if(beforeMutableModel_->state)defaults.Retain(NativeMutableModelBytes(*beforeMutableModel_->state));
+        }
         if(persistentNativeModelCache&&persistentNativeModelCache->collisionSource)
             defaults.Retain(sizeof(QuestVr::OriginalImmutableCollisionModel)+4u*sizeof(void*));
         defaults.Retain(sizeof(nativeStartupOut_)+nativeStartupOut_.capacity()*sizeof(StartupOutStorage));
@@ -11654,6 +11700,7 @@ private:
             // yet published slot0/Level.Model query authority. Accounting an
             // allocation never grants permission to use that native service.
             if(object->nativeModelZoneRenderTimes)defaults.Retain(sizeof(*object->nativeModelZoneRenderTimes));
+            if(object->nativeMutableModel)defaults.Retain(NativeMutableModelBytes(*object->nativeMutableModel));
             if(object->nativeFlagBase)defaults.Retain(sizeof(RuntimeNativeFlagBaseState));
             if(object->classDescriptor&&object->defaultObject&&object->defaultObject->nativeFlagBase)
                 defaults.Retain(sizeof(RuntimeNativeFlagBaseState));
@@ -12106,6 +12153,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(HasPortableRuntimeMutableBrushGeometry())
+        throw std::runtime_error("Mutable native Model checkpoint requires its geometry archive/rebind service");
     if(!persistentFlagBases.empty())throw std::runtime_error("Live native FlagBase checkpoint capture requires its archive/rebind service");
     if(HasNativeIncomingTravelReplacement())
         throw std::runtime_error("Incoming native Level travel replacement checkpoint capture is not implemented");
@@ -16187,6 +16236,7 @@ bool GetPortableRuntimeScriptStatePresent() {
 }
 
 bool GetPortableRuntimeUnsavedScriptState() {
+    if(HasPortableRuntimeMutableBrushGeometry())return true;
     if(!persistentFlagBases.empty())return true;
     if(persistentDumpSession.saved || !persistentDumpObjects.empty())return true;
     if (!persistentRuntime || !persistentRuntime->get()) return false;
@@ -16252,6 +16302,24 @@ PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& 
         throw std::invalid_argument("Native ToWorld diagnostic actor identity is invalid");
     PortableActorVmHost host;
     return host.ReadActorToWorldSnapshot(host.Object(actorPath));
+}
+
+bool HasPortableRuntimeMutableBrushGeometry() {
+    if(!persistentRuntime||!persistentRuntime->get())return false;
+    for(const auto* object:persistentRuntime->get()->exports)if(object&&object->nativeMutableModel)return true;
+    return false;
+}
+PortableBrushGeometryProbe ProbePortableRuntimeBrushSphereFilter(const PortableModelSphere& sphere,
+    std::size_t failAfterWrites,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableBrushGeometryProbe result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&){
+            return host.ProbeNativeBrushSphereFilter(sphere,failAfterWrites,result);
+        },limits);
+        result.execution.committed=false; // This diagnostic always root-rolls back.
+    }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}
+    return result;
 }
 
 PortableBrushModelCoordsSnapshot ReadPortableRuntimeBrushModelCoords(const std::string& actorPath) {

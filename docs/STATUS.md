@@ -1,5 +1,49 @@
 # Port status
 
+## Latest: Model-owned mutable geometry journal and original sphere prefilter (2026-10-30)
+
+The actual root UModel now has a private typed mutable geometry payload with
+source identity, map generation and revision, separate from the immutable source
+cache. Detached initial decode/copy-on-write staging and retained capacities join
+the existing shared state/work ledgers. A first-write owner journal roots the
+exact Model and restores the previous payload by nonallocating swap before
+object retirement. Geometry mutations participate in world-revision change
+classification; this observation API always root-rolls back instead of publishing.
+Current native queries select the live payload, and immutable authored-source
+proof borrowing explicitly refuses. Mutable geometry makes the runtime unsaved;
+checkpoint capture requires its still-missing geometry archive/rebind service.
+
+The original sphere prefilter is implemented with retained PC64 arithmetic,
+source flag-write order, strict negative-radius-first gates, Back-first overlap
+recursion and live child reacquisition. Work is borrowed once per visit/selected
+edge; bounded recursive depth is distinct from tails, shared subtrees are not
+deduplicated, and invalid selected ownership/numeric cases refuse. Empty input
+does not consume inactive sphere/callbacks. No existing caps/VR layouts changed.
+
+Independent x87/order controls pass9737 checks/3212 comparisons,35 explicit
+refusals and3 effective controls. Owned first-Training integration passes154643
+checks/325 identity refusals:25 actual mover spheres generate1994 Model-owned
+flag writes,25 successful root rollbacks and25 injected partial-write refusals.
+Current payload selection/immutable-proof separation and complete checkpoint,
+revision/slots/time/GC/source-cache/17 original source checks pass. No mutable
+payload remains installed after the observations. These tests exercise fresh
+baseline ownership, not already-published dynamic pool/tracker checkpoint restore.
+
+Full desktop, strict ARM64 and Android-native builds pass on the corrected
+snapshot. Final CTest248 executed/302 registered/54 explicit owned-data skips/
+zero failures139.59s. Final audit:1876 compiler inputs and45 originals unchanged,
+Training Music hash verified, no live jobs. Initial wrong-helper discovery builds
+remain failed gates; verified superseded compiler leaves were stopped only after
+that concrete error, then corrected with all jobs terminal and sources refrozen.
+
+Live UPolys/typed dynamic-reference GC, SetupActor links/fields, pool growth,
+recursive filtering/insertion/update/flush/teardown and active current-revision
+collision/render access remain. Raw source validation is unchanged; this source-
+node-only payload is not a free-pool validation shortcut. The original startup
+guard remains, later startup/input/render/detail services and live Training
+crates/loot/gravity remain unfinished. Other-map integration stays skipped; no
+new APK is packaged. See ORIGINAL-MUTABLE-MODEL-PREFILTER.md and tracker contracts.
+
 ## Latest: original fast brush plane split and Training source-plane checks (2026-10-30)
 
 Original FPoly.SplitInHalf and selected SplitWithPlaneFast are implemented in a
