@@ -5,6 +5,7 @@
 #include "portable_core_static_exec.h"
 #include "portable_input_reset.h"
 #include "portable_flag_base.h"
+#include "portable_music_sources.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "portable_startup_weapon_fire_probe.h"
@@ -613,6 +614,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     sources.emplace_back(root/"System"/"DefUser.ini");const auto defUserIni=sources.back().path;
     sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
     Require(scripts.size()==38u,"Startup diagnostic differs from exact Quest script package list");
+    auto musicSources=LoadPortableRuntimeMusicSources(scripts,map,ini,QuestVr::OriginalLinkerLoadProfile{false,true,true});
+    std::cout<<"MUSIC SOURCE ADMISSION packages="<<musicSources.packages.size()<<" bindings="<<musicSources.bindings.size()
+        <<" work="<<musicSources.nativeWork.used<<" retained="<<musicSources.retainedBytes<<'\n';
+    for(const auto& binding:musicSources.bindings)
+        std::cout<<"MUSIC IMPORT source="<<binding.importerSourcePath<<" ref="<<binding.importReference
+            <<" object="<<binding.objectPath<<" target="<<binding.sourcePath<<" export="<<binding.exportIndex<<'\n';
+    for(auto& source:musicSources.packages){sources.emplace_back(source.sourcePath);scripts.push_back(std::move(source));}
     const auto initialized=InitializePortableRuntime(scripts,InitialSeed,QuestVr::OriginalLinkerLoadProfile{false,true,true});
     Require(initialized.passed,"Cannot initialize original Quest source set under the actual standalone load context");
     PreparePortableRuntimeDumpLocationServices(userIni.string(),(root/"System").string());

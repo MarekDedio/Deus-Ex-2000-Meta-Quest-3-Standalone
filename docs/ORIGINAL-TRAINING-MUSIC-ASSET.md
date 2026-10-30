@@ -1,7 +1,7 @@
 # Original Training Music asset identity: next dependency (2026-10-30)
 
-Source contract, not an implemented asset-admission service or completed
-startup/audio-subsystem claim. Only the port's package tools and static native
+Source contract and implementation checkpoint, not completed startup or a
+native audio-subsystem claim. Only the port's package tools and static native
 disassembly were used. No commercial DLL/EXE is loaded or executed.
 
 ## Actual failure and source binding
@@ -79,3 +79,116 @@ correct read-only package identity and source offsets, typed Song store, whole
 startup-root rollback and untouched originals, deterministic repeated startup,
 no map-owned asset retirement/leak and invalid source/provenance refusals. Keep
 audible presentation music acceptance separate from these gameplay proofs.
+
+## Pre-map admission implementation (verification in progress)
+
+LoadPortableRuntimeMusicSources now supplies a detached additional-source bundle
+without mutating any runtime state or changing the shared38-script prefix. It
+discovers actual Music imports from those scripts and the selected map, follows
+checked Package/outer provenance, uses ordered Core.System.Paths with native
+CString String import, and resolves actual disk casing with exact extension/
+first-configured-path priority. Ambiguous case-folded files in one directory,
+missing sources/configuration, conflicting baseline Package identities, invalid
+import chains and name indices, duplicate qualified exports, wrong actual
+Engine.Music class imports and source-context exclusion explicitly refuse.
+
+The additional source files undergo header/count/range preflight before the
+existing table loader reserves storage. Conservative cumulative retained-byte
+admission covers table vectors, file-sized decoded/interned name storage,
+bounded final-name/buffer scratch, ordered INI/Paths lifetime and observations.
+Package/binding/directory-entry/source-byte/work ceilings are finite policy;
+they are not represented as original engine maxima. LoadPortableMusic validates
+each selected original lazy payload within admitted scratch, then releases the
+extra validation bytes. File length and UTC write time are checked around
+loading; originals are never opened for writing.
+
+Quest startup and the actual Training diagnostic call this shared service before
+InitializePortableRuntime. Additional tables join its normal baseline source
+linkers, native Package roots and current lookup generation. They do not cross
+the map-owned export boundary. The diagnostic fingerprints the newly admitted
+original source alongside the scripts/map/INI files. This initial supported
+Music closure is not generic lazy asset loading or full later-map admission;
+other native asset classes and campaign transitions remain required work.
+
+An owned-data test now covers actual import/export/source/Paths binding,
+invalid/truncated source controls, explicit resource limits, normal baseline
+Package/index/linker lifetime, the original ClientSetMusic four typed stores on
+an isolated Camera (not a substitute Login pawn), partial-store rollback,
+checkpoint restoration and same-map unload/reload ownership. Builds/tests are
+in progress against1864 frozen compiler inputs; no runtime pass is claimed yet.
+Android-native compilation already passes; no new APK is packaged.
+
+The first focused desktop build and strict ARM64 checks also pass. The owned
+test discovers/adopts the real Music package, then fails while inspecting its
+linker snapshot: the shared snapshot reader calls DestroyObjectFlags, which
+requires a loaded Class wrapper even for a read-only native asset export. This
+failure is NOT a passing integration gate. A native Music Class/CDO must not be
+fabricated to satisfy that diagnostic. Authenticate the actual source export/
+Class import/Core.Object header for the read-only snapshot, independently of
+the intentionally stricter ConditionalDestroy/native-destructor service.
+The actual Training discovery and full regressions remain live on this frozen
+snapshot; no compiler input may change until they finish.
+
+The first Training discovery now returns from actual ClientSetMusic, PostLogin
+and the original SpawnPlayActor tail (postTravel1/postLogin1/tailReturned1).
+It stops at the existing explicit original post-partition client/player/detail
+integration guard,266870 instructions/37932 writes,299.915s, exit2. Complete
+save/state/revision/hash/RNG/client/lookup/Actor/GC rollback and43 unchanged
+original sources are verified, with an independent cold Model generation.
+This clears the asset-object failure but does NOT complete startup/publication.
+The first full desktop/CTest run passes244 executed/297 registered/53 explicit
+owned-data skips/zero failures121.65s; the separately invoked owned source test
+above is still NOT a passing gate.
+
+After all jobs terminated, the read-only linker snapshot was separated from the
+destruction reader for actual native Music exports without serialized UClass
+wrappers. It now authenticates source export/identity, live linker, pinned
+Music->Core.Object ancestry, exact Core.Object.ObjectFlags schema, unchanged
+immutable header and absence of script overlays. It grants no mutation,
+constructor/CDO or destruction service; ConditionalDestroy remains unchanged.
+This snapshot is frozen in music-source-header-frozen-20261030.json (1864 inputs)
+and is undergoing fresh desktop/strict ARM64/Android verification.
+
+The corrected source-header snapshot passes desktop/strict ARM64/Android builds.
+The next two owned-fixture discoveries are retained as NOT passing: placing an
+isolated Camera at LevelInfo's position returned None (the correct actual
+PlayerStart permits the birth), and unloading that real spawned state correctly
+hit the existing per-map archive guard. The final fixture now restores its
+genuine pre-birth checkpoint before map retirement; it does not weaken placement
+or preservation rules. Original ClientSetMusic's four stores, checkpoint restore
+and partial-write undo then pass, along with source/header/index lifetime.
+
+Owned Music source admission now passes268 checks/19 refusals and verifies41
+original script/map/INI/Music files unchanged. It includes same-map unload/reload
+without retiring the baseline Music export and complete final GC cleanup.
+The final snapshot is music-source-final-frozen-20261030.json (1864 inputs).
+Its full desktop/CTest and actual expected-boundary Training repeat2 are running;
+no final regression or repeated-startup pass is claimed yet.
+
+## Final verification
+
+Final full desktop build and CTest pass:244 executed/297 registered/53 explicit
+owned-data skips/zero failures137.94s. Strict ARM64 and Android-native builds
+pass on unchanged native inputs; only the owned test file changed afterwards
+to use actual PlayerStart and restore its pre-birth checkpoint. The final owned
+test268/19 passes on the final snapshot.
+
+Both expected-boundary Training runs return from TravelPostAccept, PostLogin
+and the original SpawnPlayActor tail, then reach the exact existing original
+post-partition client/player/detail setup refusal at266870 instructions/
+37932 writes (284.696s and270.417296s). Full rollback/43 unchanged original
+sources and independent cold Model ownership pass. These are BOUNDARY
+DIAGNOSTICS ONLY, not successful or playable startup or publication.
+
+Final audit:1864 compiler inputs match length/UTC timestamp/SHA256;45 baseline
+originals are unchanged; the original Music UMX hash matches the value above;
+no compiler/test process remains live. Discovery and corrected-fixture failures
+are retained as NOT passing gates. No new APK is packaged, no live Quest
+crate/loot/gravity acceptance is claimed, and no other map was integrated.
+
+The next actual LoadMap continuation is documented in
+ORIGINAL-POST-PARTITION-CLIENT-SETUP.md: non-Entry brush tracker construction,
+subsystem rebind, live viewport input reset/render handling and original
+DetailChange callbacks. Never erase that guard merely because SpawnPlayActor
+now returns. Native Flag/FlagInt/archive/travel, live input/world/frame/render
+publication and full-campaign acceptance remain requirements of the full goal.

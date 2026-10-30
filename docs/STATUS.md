@@ -1,5 +1,42 @@
 # Port status
 
+## Latest: real Music source admission and original player-spawn tail return (2026-10-30)
+
+The shared pre-runtime source loader now discovers actual Music imports from
+the unchanged38 scripts and selected map, uses ordered Core.System.Paths,
+authenticates matching exports/native Class imports/load flags/lazy payloads,
+and admits additional tables through the normal baseline source linker,
+Package-root, lookup-generation and GC lifetime. There is no Training filename
+special case, decoder-side object publication or fake Music Class/CDO. Existing
+audible music and accepted VR layouts/controls are unchanged.
+
+Actual first Training now returns from ClientSetMusic, TravelPostAccept,
+PostLogin and the complete original SpawnPlayActor tail. Both expected-boundary
+runs agree at266870 instructions/37932 writes and stop at the remaining original
+post-partition client/player/detail setup guard. Full save/state/revision/hash/
+RNG/client/lookup/Actor/GC rollback,43 unchanged sources and independent cold
+Model ownership pass. This is NOT completed startup, committed player/world/
+render publication or live Quest crate/loot/gravity acceptance.
+
+Full desktop, strict ARM64 and Android-native builds pass. CTest244 executed/
+297 registered/53 explicit owned-data skips/zero failures137.94s. Owned Music
+source268 checks/19 refusals passes actual Paths/import/export admission,
+original four typed ClientSetMusic stores, partial-write undo, checkpoints and
+baseline Music index/linker/Package lifetime across same-map unload/reload.
+The immutable native Music source-header snapshot is separate from native
+destruction; no destructor/default authority was fabricated for the diagnostic.
+
+Final audit:1864 frozen compiler inputs and45 originals unchanged, Music UMX hash
+verified, no live jobs. Initial snapshot/placement/archive fixture discoveries
+remain recorded as NOT passing gates. No new APK is packaged; first Training
+remains the only immediate map integration target.
+
+Next: actual non-Entry brush tracker creation, subsystem rebind, viewport
+Input.ResetInput/render and DetailChange services, then live committing
+input/world/frame publication. Full native flag/archive/travel and campaign
+requirements remain open. See ORIGINAL-TRAINING-MUSIC-ASSET.md and
+ORIGINAL-POST-PARTITION-CLIENT-SETUP.md.
+
 ## Latest: original Window child queries and actual Training travel return (2026-10-30)
 
 Original Window GetTopChild1455/GetBottomChild1456/GetHigherSibling1457/

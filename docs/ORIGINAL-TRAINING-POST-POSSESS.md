@@ -5,6 +5,14 @@ the rollback diagnostic player or claim completed startup. Original native
 evidence uses static disassembly/package bytecode inspection only; never
 load/execute the commercial DLLs/EXEs.
 
+Current continuation2026-10-30: actual native flag construction, Window queries
+and Music source admission now permit TravelPostAccept, PostLogin and the
+captured original SpawnPlayActor tail to RETURN in both actual Training runs.
+The next refusal is the original post-partition client/player/detail integration
+guard,266870 instructions/37932 writes, with full rollback/43 unchanged sources.
+Earlier refusal locations below are historical provenance, not current blockers.
+See ORIGINAL-TRAINING-MUSIC-ASSET.md and ORIGINAL-POST-PARTITION-CLIENT-SETUP.md.
+
 The integration seam is portable_player_login.inl after SetSessionPlayer and
 observation.paired=true, now calling portable_startup_player_tail.inl. The same
 host/Execution/root and captured Login-returned pawn are preserved. Never

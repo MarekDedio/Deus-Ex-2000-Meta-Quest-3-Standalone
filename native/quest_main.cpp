@@ -42,6 +42,7 @@
 #include "portable_flag_base.h"
 #include "portable_system_services.h"
 #include "quest_runtime_script_packages.h"
+#include "portable_music_sources.h"
 #include "quest_native_client.h"
 #include "portable_quest_input_source.h"
 #include "persona_ui_canvas.h"
@@ -694,6 +695,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/") +
                     packageName + ".u"));
             }
+            const PortablePackageTables trainingMap = LoadPortablePackageTables(
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/Maps/00_Training.dx");
+            auto musicSources=LoadPortableRuntimeMusicSources(scripts,trainingMap,
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini",
+                QuestVr::OriginalLinkerLoadProfile{false,true,true});
+            ALOG("DeusExQuest: pre-map Music source admission: %zu packages/%zu actual import bindings",
+                musicSources.packages.size(),musicSources.bindings.size());
+            for(auto& source:musicSources.packages)scripts.push_back(std::move(source));
             const PortableRuntimeSummary runtime = InitializePortableRuntime(
                 scripts, static_cast<std::uint32_t>(std::time(nullptr)),
                 QuestVr::OriginalLinkerLoadProfile{false,true,true});
@@ -776,8 +785,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 conversations.speechObjects,
                 conversations.speechLines,
                 conversations.sampleSpeech.c_str());
-            const PortablePackageTables trainingMap = LoadPortablePackageTables(
-                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/Maps/00_Training.dx");
             const PortableMapRuntimeSummary mapRuntime =
                 LoadPortableRuntimeMap(trainingMap);
             if (!mapRuntime.passed) {

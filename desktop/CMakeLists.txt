@@ -102,6 +102,16 @@ add_test(NAME quest_native_window_navigation COMMAND quest_native_window_navigat
 add_test(NAME portable_window_navigation COMMAND portable_window_navigation_test)
 set_tests_properties(portable_window_navigation PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(portable_music_sources_test portable_music_sources_test.cpp)
+target_compile_features(portable_music_sources_test PRIVATE cxx_std_20)
+target_link_libraries(portable_music_sources_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_music_sources_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_music_sources_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_music_sources COMMAND portable_music_sources_test)
+set_tests_properties(portable_music_sources PROPERTIES SKIP_RETURN_CODE 77)
+
 # Observation tool, deliberately not a CTest acceptance result. Exit2 means
 # a safely rolled-back first-Training startup boundary, not a passing startup.
 add_executable(portable_training_startup_probe portable_training_startup_probe.cpp)
@@ -160,6 +170,7 @@ add_library(quest_portable_host STATIC
     "${SURREAL_ENGINE_ROOT}/Math/mat.cpp"
     "${PORT_NATIVE}/surreal_package_stream_reader.cpp"
     "${PORT_NATIVE}/surreal_portable_package_tables.cpp"
+    "${PORT_NATIVE}/portable_music_sources.cpp"
     "${PORT_NATIVE}/quest_native_font_metrics.cpp"
     "${PORT_NATIVE}/portable_unreal_runtime.cpp"
     "${PORT_NATIVE}/surreal_gc_probe.cpp"

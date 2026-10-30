@@ -21,6 +21,7 @@ add_library(surreal_portable_core STATIC
     "${SURREAL_ENGINE_ROOT}/Math/mat.cpp"
     surreal_package_stream_reader.cpp
     surreal_portable_package_tables.cpp
+    portable_music_sources.cpp
     quest_native_font_metrics.cpp
     portable_unreal_runtime.cpp
     surreal_gc_probe.cpp

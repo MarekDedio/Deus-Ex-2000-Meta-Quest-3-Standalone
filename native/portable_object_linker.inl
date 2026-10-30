@@ -13,7 +13,6 @@
         result.nativeIndex=object->nativeLinkerIndex;result.sourcePath=object->sourcePath;
         result.sourceExportIndex=object->exportIndex;result.objectIndex=object->objectIndex.Index();
         result.outerIndex=object->outer?object->outer->objectIndex.Index():0u;
-        result.flags=DestroyObjectFlags(object);
         if(result.bound)RequireNativeLinkerStorage(object);
         std::shared_ptr<RuntimeNativeLinker> source;
         const auto select=[&](const auto& linker) {
@@ -33,6 +32,27 @@
                     throw std::runtime_error("Native source export diagnostic has a different live identity");
                 result.exportObjectPath=exported->reflection.objectPath;
             }
+        }
+        if(object->cls)result.flags=DestroyObjectFlags(object);
+        else {
+            // Source-native assets need not have a serialized UClass wrapper.
+            // This READ-ONLY header diagnostic is not ConditionalDestroy and
+            // grants no constructor/default/destructor authority. Music's
+            // actual native Core.Object ancestry is independently audited.
+            const auto identity=CastObjectIdentity(object->reflection.objectPath);
+            const auto type=CastClassIdentity(identity.classPath);
+            const auto field=DescribeProperty("Core.Object.ObjectFlags");auto* metadata=Object(field.key);
+            const auto& table=Table(object->sourcePath);
+            if(!result.sourceExport||result.exportObjectPath!=object->reflection.objectPath||identity.classObject||
+                LowerAscii(type.path)!="engine.music"||LowerAscii(type.basePath)!="core.object"||
+                object->runtimeBirth||object->defaultOwner||object->classDescriptor||object->exportIndex>=table.exports.size()||
+                LowerAscii(Qualified(table,static_cast<std::int32_t>(object->exportIndex+1u)))!=LowerAscii(object->reflection.objectPath)||
+                field.zero.kind!=Kind::Int||field.arrayDimension!=1u||field.flags!=0x1002u||
+                metadata->outer!=Object("Core.Object")||!metadata->property||metadata->property->type!="IntProperty"||
+                static_cast<std::uint32_t>(table.exports[object->exportIndex].ObjFlags)!=object->reflection.flags||
+                !object->scriptValues.empty())
+                throw std::runtime_error("Native Music source header diagnostic lacks authentic immutable export/ancestry authority");
+            result.flags=object->reflection.flags;
         }
         return result;
     }

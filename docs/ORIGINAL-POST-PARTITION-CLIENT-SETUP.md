@@ -1,5 +1,14 @@
 # Original post-partition client/player setup (2026-10-22)
 
+Continuation2026-10-30: real first-Training SpawnPlayActor now returns from its
+actual Login, SetPlayer/Possess, travel callbacks, PostLogin and captured-pawn
+tail. Two expected-boundary diagnostics agree at266870 instructions/37932 writes
+and verify full rollback/43 unchanged sources. They then hit the explicit
+remaining client/player/detail guard; no startup publication is claimed. The
+nearest unfinished normal branch is now NON-ENTRY GNewBrushTracker, followed
+by subsystem/viewport reset/render/detail handling below, not player creation.
+The historical review and static source evidence are retained below.
+
 Static prerequisite research for **only the first `Maps/00_Training.dx`**.
 This is not implementation or acceptance evidence for player login, complete
 startup, Tick, original HUD ownership, crates, gravity or a new APK. No original
@@ -242,6 +251,13 @@ binding must still authenticate declaring schema/native packing, not infer
 a false/default value from an absent serialized tag.
 
 ## Nearest next integration and honest remaining boundary
+
+The historical nearest-service paragraph below is superseded by the2026-10-30
+SpawnPlayActor return. Fresh bounded static inspection confirms GNewBrushTracker
+thunk103021EE ->1037C860. Its factory allocates native size68hex at1037C88D,
+then invokes constructor thunk1030168B at1037C8A4 with the actual Level. This is
+not an authorized null tracker, opaque success or proof that moving brush/BSP
+state can be omitted. The later services below remain required in order.
 
 The nearest selected service after partition, for a real standalone Quest
 client, is the **per-live-viewport SpawnPlayActor call on the current actual
