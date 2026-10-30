@@ -1,5 +1,39 @@
 # Port status
 
+## Latest: lossless native brush polygon admission (2026-10-30)
+
+The shared native/desktop library now contains a detached v68 UPolys loader
+that retains every FPoly field, including native16-vertex storage, source
+references/names, flags, both links and signed pans. It is separate from the
+rendering triangulator, which drops fields required by the real moving-brush
+tracker. Class/root import provenance, exact body consumption, source/file
+boundaries, finite vectors and aggregate byte admission are checked before
+publication. Class comparison does not intern synthesized global identities;
+filesystem component/identity/property/decoder scratch share the caller bound.
+No cap, original asset, accepted VR layout or control was changed.
+
+Generated3054 checks/3019 refusals pass. First Training3077 checks/1030
+refusals pass exact byte round-trips of all1018 Polys exports,8553 polygons
+and32868 vertices, plus malformed provenance/cycles/tight budgets/long identity
+and many-component path controls. Owned Training bytes/stamp remain unchanged.
+Full desktop, strict ARM64 and Android-native builds pass. Final CTest245
+executed/299 registered/54 explicit owned-data skips/zero failures111.17s.
+Final audit:1867 compiler inputs and45 originals unchanged, Training Music
+hash verified, no live jobs. Earlier review snapshots were superseded for
+budget/provenance/global-name corrections; only the final snapshot is accepted.
+
+This does NOT advance original startup or install a live tracker. The existing
+post-partition guard remains. Actual mutable Model/Polys ownership, same-root
+journaling/GC, exact transforms/sphere/splitting/BSP insertion/update/teardown
+and revision-aware collision/render consumers are the next implementation.
+Original immutable-source collision proofs must not be reused for mutated
+geometry or inspect inactive native pool nodes as serialized active topology.
+Later input/render/detail services and live Training crates/loot/gravity remain
+unverified; no new APK is packaged. First Training is still the integration
+priority, with other-map work skipped. See ORIGINAL-MOVING-BRUSH-TRACKER.md,
+ORIGINAL-BRUSH-TRANSFORM.md, ORIGINAL-BRUSH-FILTER-POLY.md and
+BRUSH-TRACKER-INTEGRATION-NOTES.md.
+
 ## Latest: real Music source admission and original player-spawn tail return (2026-10-30)
 
 The shared pre-runtime source loader now discovers actual Music imports from
