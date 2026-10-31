@@ -98,6 +98,8 @@
 #include "quest_brush_sphere_prefilter.h"
 #include "portable_brush_geometry.h"
 #include "portable_brush_setup.h"
+#include "portable_brush_tracker.h"
+#include "quest_brush_bsp_insert.h"
 #include "portable_brush_polys.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
@@ -396,15 +398,26 @@ struct RuntimeNativeMutableModel {
     std::size_t sourceSurfaceCount{};
     std::uint64_t generation{},revision{};
 };
-static std::size_t NativeMutableModelBytes(const RuntimeNativeMutableModel& state) {
-    auto bytes=QuestVr::DecalStateDetail::Add(sizeof(state),state.geometry.objectPath.capacity()+1u);
+struct RuntimeNativeBrushTracker {
+    RuntimeObject *level{},*model{};
+    QuestVr::OriginalBrushTrackerPools<RuntimeObject> pools;
+    std::uint64_t generation{},revision{};
+    bool initialUpdateCompleted{};
+};
+static std::size_t NativeBrushTrackerBytes(const RuntimeNativeBrushTracker& tracker) {
+    return sizeof(tracker)-sizeof(tracker.pools)+QuestVr::OriginalBrushPoolsBytes(tracker.pools);
+}
+static std::size_t NativeModelGeometryStorageBytes(const PortableModelGeometry& g) {
+    auto bytes=g.objectPath.capacity()+1u;
     const auto array=[&](const auto& values){bytes=QuestVr::DecalStateDetail::Add(bytes,
         QuestVr::DecalStateDetail::Multiply(values.capacity(),sizeof(typename std::decay_t<decltype(values)>::value_type)));};
-    const auto& g=state.geometry;
-    array(state.dynamicSurfaceReferences);
     array(g.vectors);array(g.points);array(g.nodes);array(g.surfaces);array(g.vertices);array(g.zones);
     array(g.lightMaps);array(g.lightBits);array(g.renderBounds);array(g.leafHulls);array(g.leaves);array(g.lights);
     return bytes;
+}
+static std::size_t NativeMutableModelBytes(const RuntimeNativeMutableModel& state) {
+    return QuestVr::DecalStateDetail::Add(sizeof(state)+NativeModelGeometryStorageBytes(state.geometry),
+        QuestVr::DecalStateDetail::Multiply(state.dynamicSurfaceReferences.capacity(),sizeof(RuntimeNativePolygonReferences)));
 }
 struct RuntimeNativeLevelTickContext {
     std::int32_t parity{},inTick{};
@@ -507,6 +520,7 @@ public:
     std::unique_ptr<RuntimeNativeMutablePolys> nativeMutablePolys;
     RuntimeObject* nativeBrushPolys{}; // Authenticated native Model+54 edge.
     std::optional<std::int32_t> nativeBrushRoot; // Initialized only by actual SetupActor.
+    std::unique_ptr<RuntimeNativeBrushTracker> nativeBrushTracker; // Actual Level-owned service, not a UObject.
     // Actual freshly loaded exact native Model: its prepared native CDO zero-
     // extension initializes all64 transient timestamp Floats, not its archive.
     // No renderer write API is exposed yet; this baseline is immutable until
@@ -744,6 +758,12 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     if(nativeFlagBase)for(auto* head:nativeFlagBase->buckets)marklist=GC::MarkObject(marklist,head);
     marklist = GC::MarkObject(marklist, nativeLevelModel);
     marklist = GC::MarkObject(marklist, nativeBrushPolys);
+    if(nativeBrushTracker) {
+        marklist=GC::MarkObject(marklist,nativeBrushTracker->model);
+        for(const auto& row:nativeBrushTracker->pools.nodes)marklist=GC::MarkObject(marklist,row.owner);
+        for(auto* owner:nativeBrushTracker->pools.vertices)marklist=GC::MarkObject(marklist,owner);
+        for(const auto& row:nativeBrushTracker->pools.points)marklist=GC::MarkObject(marklist,row.owner);
+    }
     if(nativeMutablePolys)for(const auto& refs:nativeMutablePolys->references) {
         marklist=GC::MarkObject(marklist,refs.actor);marklist=GC::MarkObject(marklist,refs.texture);
     }
@@ -3547,6 +3567,7 @@ public:
     void BeginRoot(const QuestVr::Vm::Limits& limits) override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
         if(beforeMutableModel_)throw std::runtime_error("Native Model journal survived its outer root");
+        if(beforeBrushTracker_)throw std::runtime_error("Native Brush tracker journal survived its outer root");
         if(!beforeMutablePolys_.empty()||!beforeBrushModels_.empty())
             throw std::runtime_error("Native Polys/Brush binding journal survived its outer root");
         brushGeometryPreview_=false;
@@ -3654,7 +3675,7 @@ public:
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeMutableModel_.reset();
-        beforeMutablePolys_.clear();beforeBrushModels_.clear();
+        beforeMutablePolys_.clear();beforeBrushModels_.clear();beforeBrushTracker_.reset();
         if(retailCollisionRoot_) {
             if(!retailCollisionRoot_->CommitPrepared()) std::terminate();
             retailCollisionRoot_.reset();createdRetailCollision_=false;
@@ -3680,6 +3701,10 @@ public:
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        if(beforeBrushTracker_) {
+            beforeBrushTracker_->level->nativeBrushTracker.swap(beforeBrushTracker_->state);
+            beforeBrushTracker_.reset();
+        }
         for(auto& before:beforeMutablePolys_)before.polys->nativeMutablePolys.swap(before.state);
         for(auto& before:beforeBrushModels_) {
             before.model->nativeBrushPolys=before.polys.get();before.model->nativeBrushRoot=before.root;
@@ -6154,6 +6179,7 @@ public:
     }
 #include "portable_brush_geometry.inl"
 #include "portable_brush_setup.inl"
+#include "portable_brush_tracker.inl"
     const QuestVr::OriginalImmutableCollisionModel& NativeWorldCollisionSource(RuntimeObject* level) {
         if(level&&level->nativeLevelModel&&level->nativeLevelModel->nativeMutableModel)
             throw std::runtime_error("Mutable Model cannot borrow an immutable authored-source collision proof");
@@ -9298,6 +9324,21 @@ public:
                 StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.landingCommands,options.fallingCommands,options.damageCommands,options.collectDamageLoot,
                     options.collectDamageLootViaPlayer,options.physicsCohort,options.weapon,fireCommand,fireOutput,execution);
             }
+            // Original1038DF84..DFC0: compare current Level OUTER Package
+            // FName with Entry, inside the genuine Client branch. No map-name
+            // or tracking predicate and no manufactured Entry allocation.
+            auto* current=CurrentClockLevel();auto* package=current->outer;
+            if(!package||package->outer||!package->lookupName||
+                LowerAscii(CastObjectIdentity(package->reflection.objectPath).classPath)!="core.package")
+                throw std::runtime_error("Original brush constructor lacks actual Level outer Package/FName identity");
+            if(LowerAscii(package->lookupName->ToString())!="entry") {
+                result.brushTracker.attempted=true;PortableBrushTrackerProbe tracker;
+                ConstructNativeBrushTracker(0u,tracker);
+                result.brushTracker.completed=true;result.brushTracker.levelOwned=tracker.levelOwned;
+                result.brushTracker.topologyChecked=tracker.topologyChecked;result.brushTracker.movers=tracker.movers.size();
+                result.brushTracker.polygons=tracker.setup.completedPolygons;result.brushTracker.nodes=tracker.activeNodes;
+                result.brushTracker.vertices=tracker.activeVertices;result.brushTracker.points=tracker.dynamicPoints;
+            }
         }
         // Native client/player/detail providers after the original partition
         // still require their own integration. This root remains nonpublishing.
@@ -10129,6 +10170,12 @@ private:
     };
     std::vector<BeforeMutablePolys> beforeMutablePolys_;
     std::vector<BeforeBrushModel> beforeBrushModels_;
+    struct BeforeBrushTracker {
+        GCRoot<RuntimeObject> level;
+        std::unique_ptr<RuntimeNativeBrushTracker> state;
+        explicit BeforeBrushTracker(RuntimeObject* value):level(value){}
+    };
+    std::optional<BeforeBrushTracker> beforeBrushTracker_;
     bool brushGeometryPreview_{};
     struct NativePendingTick {
         GCRoot<RuntimeObject> actor;
@@ -11593,6 +11640,10 @@ private:
                 beforeMutableModel_->references.size()*sizeof(GCRootNode));
             if(beforeMutableModel_->state)defaults.Retain(NativeMutableModelBytes(*beforeMutableModel_->state));
         }
+        if(beforeBrushTracker_) {
+            defaults.Retain(sizeof(BeforeBrushTracker)+sizeof(GCRootNode));
+            if(beforeBrushTracker_->state)defaults.Retain(NativeBrushTrackerBytes(*beforeBrushTracker_->state));
+        }
         defaults.Retain(beforeMutablePolys_.capacity()*sizeof(BeforeMutablePolys)+beforeBrushModels_.capacity()*sizeof(BeforeBrushModel));
         defaults.Retain(beforeMutablePolys_.size()*sizeof(GCRootNode)+beforeBrushModels_.size()*2u*sizeof(GCRootNode));
         for(const auto& before:beforeMutablePolys_) {
@@ -11763,6 +11814,7 @@ private:
             if(object->nativeModelZoneRenderTimes)defaults.Retain(sizeof(*object->nativeModelZoneRenderTimes));
             if(object->nativeMutableModel)defaults.Retain(NativeMutableModelBytes(*object->nativeMutableModel));
             if(object->nativeMutablePolys)defaults.Retain(NativeMutablePolysBytes(*object->nativeMutablePolys));
+            if(object->nativeBrushTracker)defaults.Retain(NativeBrushTrackerBytes(*object->nativeBrushTracker));
             if(object->nativeFlagBase)defaults.Retain(sizeof(RuntimeNativeFlagBaseState));
             if(object->classDescriptor&&object->defaultObject&&object->defaultObject->nativeFlagBase)
                 defaults.Retain(sizeof(RuntimeNativeFlagBaseState));
@@ -16369,7 +16421,7 @@ PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& 
 bool HasPortableRuntimeMutableBrushGeometry() {
     if(!persistentRuntime||!persistentRuntime->get())return false;
     for(const auto* object:persistentRuntime->get()->exports)
-        if(object&&(object->nativeMutableModel||object->nativeMutablePolys||object->nativeBrushPolys||object->nativeBrushRoot))return true;
+        if(object&&(object->nativeMutableModel||object->nativeMutablePolys||object->nativeBrushPolys||object->nativeBrushRoot||object->nativeBrushTracker))return true;
     return false;
 }
 PortableBrushSetupProbe ProbePortableRuntimeBrushSetup(std::size_t failAfterPolygons,const QuestVr::Vm::Limits& limits) {
@@ -16378,6 +16430,17 @@ PortableBrushSetupProbe ProbePortableRuntimeBrushSetup(std::size_t failAfterPoly
         PortableActorVmHost host;
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&){
             return host.ProbeNativeBrushSetup(failAfterPolygons,result);
+        },limits);
+        result.execution.committed=false;
+    }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}
+    return result;
+}
+PortableBrushTrackerProbe ProbePortableRuntimeBrushTracker(std::size_t failAfterAttachments,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableBrushTrackerProbe result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&){
+            return host.ProbeNativeBrushTracker(failAfterAttachments,result);
         },limits);
         result.execution.committed=false;
     }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}

@@ -1,5 +1,79 @@
 # Port status
 
+## Latest: real fresh moving-brush tracker and startup-context BSP insertion (2026-10-31)
+
+The genuine non-Entry constructor now executes after the actual live-viewport
+player loop, inside the Client branch and after authenticating the current
+Level's real outer Package/FName. It performs native Setup, exact pool Num/Max
+growth/zeroing/shrink, reverse pending-mover order, pose/assimilation stores,
+original transforms/sphere/prefilter, recursive FilterPoly and AddPolyToBsp.
+Actual world points/vectors/surfaces/nodes/vertices and separate mover root
+chains are mutated. Original strict vertex allocation limits, typed point
+owner/free-next slots, coplanar parent/zone/mask distinctions and partial-write
+branches are retained, not replaced with boxes or empty callbacks.
+
+The actual Level owns a typed native tracker only after mandatory initial
+Update completes. Model/Polys/tracker owning journals and typed GC edges join
+the same caller; rollback restores native owners before object retirement.
+Private construction reads preserve index space, reject free/foreign dynamic
+records and check surface/vertex/point owner correspondence. Probe-only GC and
+preview disposition are separate from the real constructor. Original fresh
+-1 dependency/flush branches are taken; noninitial roots still explicitly
+require their missing providers. Accepted VR layouts/controls are unchanged.
+
+Real startup exposed an allocation-peak defect which dormant-map tests missed:
+a second raw world-Model decode exceeded its remaining working-byte budget
+while the large startup journal was live. The corrected path authenticates an
+existing immutable source cache, admits all copied array/path/identity bytes,
+and creates a SEPARATE private owning value. No const mutation, validation-proof
+borrowing or cap increase occurs. With no cache, the existing collision-only
+cold decoder is unchanged. Prepared Model/COW/edge-root bytes stay visible to
+nested admission until nonfallible publication. A real read-only FastTrace,
+not the side-effect-free snapshot API, primes the cached-path fixture.
+
+Generated filter controls pass16679 checks/11 refusals, pool controls133343/8,
+and insertion controls68/4, covering order, live mutation, strict allocation,
+coplanar stores and partial failures. Owned first-Training Setup/tracker passes
+1791 checks/9 policy or missing-source refusals. All25 Movers/150 polygons
+produce150 owned BSP nodes/600 vertices/600 dynamic points. Cold and genuinely
+cached constructors agree; full checkpoints, native-geometry absence, revision,
+GC, root chains and43 source fingerprints restore after successful and forced
+partial-attachment roots. Baseline asset roots remain: this is not isolated
+owner-edge survival after travel/source retirement. Existing owned coordinate/
+transform/split/prefilter regression passes154643 checks/325 identity refusals,
+including source flag fingerprints and immutable-proof separation.
+
+The corrected REAL first-Training startup reaches the retained later guard in
+353.268s:266870 bytecode instructions/37932 VM writes, native work14169034 below
+the unchanged16777216 opt-in limit. Its recorded tracker is attempted/completed/
+Level-owned/topology-checked, with25 Movers/150 polygons/150 nodes/600 vertices/
+600 points. Full save/state/revision/hash/RNG/client/lookup/Actor/GC rollback,
+45 unchanged sources and cold immutable-Model replacement verify. This is an
+expected-boundary diagnostic, NOT successful or playable startup.
+
+Full desktop plus final fixture builds, strict ARM64 and Android-native builds
+pass. Final CTest251 executed/306 registered/55 explicit owned-data skips/zero
+failures76.90s. The owned tests and real startup above ran separately. Focused
+synthetic Spawn regression passes13803 checks/231 rejection controls. Initial
+wrong-CSG fixture, startup decode-budget failure, snapshot-as-cache-primer
+fixture and outdated synthetic Login terminal expectation remain FAILED gates
+in their original logs; none are counted as passing. The minimal Login fixture
+now asserts the exact missing Package/FName refusal, without dummy binding or
+pretending Entry; positive tracker evidence is the actual Training run. All
+compiler/test jobs were terminal before each repair and inputs were refrozen.
+
+Final audit:1889 compiler inputs and45 protected originals unchanged, selected
+UNATCO/CoreTexMetal texture packages and Training Music unchanged, no live build/
+test jobs. No original commercial module executed and no other map loaded.
+
+Still required: authenticated current-revision public collision/render views
+for active index-preserving pools, noninitial update/dependency/flush/destructor,
+geometry archive/rebind, subsystem/viewport reset/render/detail continuation,
+committing original gameplay frames and live Training crate destruction/loot/
+gravity acceptance. The later startup guard remains. No new APK is packaged.
+See ORIGINAL-BRUSH-TRACKER-IMPLEMENTATION.md and the static follow-up
+ORIGINAL-BRUSH-DEPENDENCY-FLUSH.md; neither implies the remaining services exist.
+
 ## Latest: original SetupActor, typed Polys ownership and texture source admission (2026-10-31)
 
 The actual indexed Model now binds its source-local Engine.Polys object and

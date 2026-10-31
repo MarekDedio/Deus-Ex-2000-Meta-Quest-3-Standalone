@@ -179,8 +179,8 @@
         nativeActorOrderObservationBytes_+=sizeof(PortableBrushSetupMover)+actor->reflection.objectPath.capacity()+
             model->reflection.objectPath.capacity()+model->nativeBrushPolys->reflection.objectPath.capacity()+3u;
     }
-    Value ProbeNativeBrushSetup(std::size_t failAfterPolygons,PortableBrushSetupProbe& result) {
-        brushGeometryPreview_=true;auto* level=CurrentClockLevel();auto& world=MutableRootModel(level);
+    Value SetupNativeBrushCohort(std::size_t failAfterPolygons,PortableBrushSetupProbe& result) {
+        auto* level=CurrentClockLevel();auto& world=MutableRootModel(level);
         result.originalSurfaces=world.geometry.surfaces.size();result.originalVectors=world.geometry.vectors.size();
         result.originalPoints=world.geometry.points.size();
         for(std::size_t slot=0u;slot<persistentWorldActors.size();++slot) {
@@ -189,15 +189,18 @@
             if(!selected||!IsDerivedFromPath(actor->cls,"Engine.Brush")||NativeActorStatic(actor))continue;
             OriginalBrushSetupActor(actor,selected->object,result,failAfterPolygons);
         }
-        // Exercise the real GC visit path while the journal and source/native
-        // edges are live. No permanent diagnostic roots conceal missing edges.
-        const auto objects=GC::GetStats().numObjects;GC::Collect();
-        if(GC::GetStats().numObjects!=objects)throw std::runtime_error("SetupActor GC lost a source/native object");
-        result.gcOwnershipChecked=true;result.modelPolysEdges=true;result.textureEdges=true;result.actorEdges=true;
+        result.modelPolysEdges=true;result.textureEdges=true;result.actorEdges=true;
         for(const auto& row:result.surfaces) {
             LifecycleStep();const auto& edges=world.dynamicSurfaceReferences.at(row.surface-world.sourceSurfaceCount);
             if(!edges.actor||Object(row.moverPath)!=edges.actor||(!row.texturePath.empty()&&Object(row.texturePath)!=edges.texture))
                 throw std::runtime_error("SetupActor dynamic surface typed GC edge lost object identity");
         }
         ValidateStateBudget();return Value::Bool(true);
+    }
+    Value ProbeNativeBrushSetup(std::size_t failAfterPolygons,PortableBrushSetupProbe& result) {
+        brushGeometryPreview_=true;const auto value=SetupNativeBrushCohort(failAfterPolygons,result);
+        // Diagnostic GC is not an invented original SetupActor side effect.
+        const auto objects=GC::GetStats().numObjects;GC::Collect();
+        if(GC::GetStats().numObjects!=objects)throw std::runtime_error("SetupActor GC lost a source/native object");
+        result.gcOwnershipChecked=true;return value;
     }

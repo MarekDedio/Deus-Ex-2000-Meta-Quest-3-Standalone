@@ -2474,7 +2474,10 @@ void WorldStartupSynthetic() {
 }
 void PlayerLoginSynthetic() {
     using Phase=PortableWorldStartupPhase;
-    const std::string terminal="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back";
+    // This deliberately minimal Login fixture has no native outer Package/
+    // FName service. A completed Login(None) must now reach that exact next
+    // constructor prerequisite, not bypass real tracker creation as Entry.
+    const std::string terminal="Original brush constructor lacks actual Level outer Package/FName identity";
     for (const unsigned variant : {1u,2u,3u}) {
         Fixture fixture; const auto tables=Build(fixture,1u,0u,variant);
         const auto loginBody=LoadPortableFunctionScript(tables.classes,
@@ -2560,7 +2563,8 @@ void PlayerLoginSynthetic() {
             }
             return text;
         };
-        Require(login.loginReturned && login.error==expectedError(source) && entered.execution.error==terminal,
+        Require(login.loginReturned && login.error==expectedError(source) && entered.execution.error==terminal&&
+            !entered.brushTracker.attempted&&!entered.brushTracker.completed,
             "Login None/growing OUT copyback did not preserve exact Portal/ordered native Options before outer refusal: returned="+
             std::to_string(login.loginReturned)+" actualOutBytes="+std::to_string(login.error.size())+
             " expectedOutBytes="+std::to_string(expectedError(source).size())+" outTail="+

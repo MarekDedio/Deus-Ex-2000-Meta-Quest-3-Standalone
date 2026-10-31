@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "portable_brush_setup.h"
+#include "portable_brush_tracker.h"
 #include "portable_brush_geometry.h"
 #include "portable_brush_polys.h"
 #include "portable_brush_texture_sources.h"
@@ -119,10 +120,62 @@ void Run(const fs::path& root){
         Require(!HasPortableRuntimeMutableBrushGeometry()&&temporary.Snapshot("AfterRefusal")==before&&GetPortableRuntimeWorldRevision()==revision,
             "Partial native surface/polygon/pose/GC journal did not restore complete checkpoint");}
     const auto after=GC::GetStats();Require(after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage,"SetupActor leaked/retired GC objects across rollback");
+    QuestVr::Vm::Limits trackerLimits;trackerLimits.nativeWork=QuestVr::NativeWork::MaximumLimit;
+    const auto tracker=ProbePortableRuntimeBrushTracker(0u,trackerLimits);
+    Require(tracker.execution.status==QuestVr::Vm::Status::Returned&&!tracker.execution.committed,
+        "Actual fresh brush tracker constructor failed: "+tracker.execution.error);
+    Require(tracker.levelOwned&&tracker.gcChecked&&tracker.topologyChecked&&tracker.movers.size()==25u&&tracker.setup.completedPolygons==150u,
+        "Actual fresh tracker lost Level/GC/typed topology/Setup ownership");
+    Require(tracker.attachments>0u&&tracker.activeNodes==tracker.attachments&&tracker.activeVertices>0u&&
+        tracker.dynamicPoints==tracker.activeVertices,"Initial Update did not insert actual owned BSP nodes/vertices/points");
+    Require(tracker.finalCounts.nodes==std::min(2u*tracker.original.nodes+512u,std::size_t{65536u})&&
+        tracker.finalCounts.vertices==2u*tracker.original.vertices+512u&&tracker.finalCounts.surfaces==tracker.original.surfaces+150u&&
+        tracker.finalCounts.vectors==tracker.original.vectors+450u&&tracker.finalCounts.points==tracker.original.points+150u+tracker.dynamicPoints,
+        "Original tracker actual pool Num or Setup/Update point/vector/surface counts differ");
+    std::size_t totalNodes{},totalVertices{};
+    for(std::size_t i=0;i<tracker.movers.size();++i) {
+        Require(tracker.movers[i].actorPath==tracker.setup.movers[tracker.setup.movers.size()-1u-i].actorPath,
+            "Initial Update pending order is not reversed native Actor order");
+        Require((tracker.movers[i].root==-1)==(tracker.movers[i].nodes==0u),"Mover root and chain observation disagree");
+        totalNodes+=tracker.movers[i].nodes;totalVertices+=tracker.movers[i].vertices;
+    }
+    Require(totalNodes==tracker.activeNodes&&totalVertices==tracker.activeVertices,
+        "Active native owner records differ from actual per-Mover root chains");
+    Require(!HasPortableRuntimeMutableBrushGeometry()&&temporary.Snapshot("AfterTracker")==before&&GetPortableRuntimeWorldRevision()==revision,
+        "Fresh constructor observation published native geometry/tracker/pose changes");
+    for(const auto count:{std::size_t{1},std::size_t{7},tracker.attachments}) {
+        const auto refused=ProbePortableRuntimeBrushTracker(count,trackerLimits);
+        Require(refused.execution.status==QuestVr::Vm::Status::Unsupported&&refused.attachments==count&&
+            refused.execution.error.find("Injected brush tracker refusal")!=std::string::npos,
+            "Tracker attachment refusal occurred at another boundary: "+refused.execution.error);
+        Require(!HasPortableRuntimeMutableBrushGeometry()&&temporary.Snapshot("AfterTrackerRefusal")==before&&GetPortableRuntimeWorldRevision()==revision,
+            "Attached BSP/root/pool/Level journal failed complete rollback");
+    }
+    const auto trackerGc=GC::GetStats();Require(trackerGc.numObjects==gc.numObjects&&trackerGc.memoryUsage==gc.memoryUsage,
+        "Fresh tracker candidate/Level journal leaked GC roots across rollback");
+    const auto prime=ExecutePortableActorFunction("00_Training.LevelInfo0","Engine.Actor.FastTrace",
+        {{QuestVr::Vm::Value::Vector({0,0,0}),{}},{QuestVr::Vm::Value::Vector({0,0,0}),{}}},trackerLimits);
+    Require(prime.status==QuestVr::Vm::Status::Returned&&prime.value.kind==QuestVr::Vm::Kind::Bool&&prime.writes==0u&&
+        temporary.Snapshot("AfterReadOnlyTrace")==before&&GetPortableRuntimeWorldRevision()==revision,
+        "Genuine read-only FastTrace did not prime source cache without gameplay writes: "+prime.error);
+    const auto cachedModel=ReadPortableRuntimeNativeModel();Require(cachedModel.available&&cachedModel.cachedNodes>0u,
+        "Cannot establish genuine immutable source cache for clone-path check");
+    const auto cachedTracker=ProbePortableRuntimeBrushTracker(0u,trackerLimits);
+    Require(cachedTracker.execution.status==QuestVr::Vm::Status::Returned&&cachedTracker.activeNodes==tracker.activeNodes&&
+        cachedTracker.activeVertices==tracker.activeVertices&&cachedTracker.dynamicPoints==tracker.dynamicPoints,
+        "Authenticated cached-source clone changed fresh constructor result: "+cachedTracker.execution.error);
+    Require(!HasPortableRuntimeMutableBrushGeometry()&&temporary.Snapshot("AfterCachedTracker")==before&&GetPortableRuntimeWorldRevision()==revision,
+        "Cached-source clone published/aliased mutable world geometry");
+    const auto modelAfter=ReadPortableRuntimeNativeModel();Require(modelAfter.mapGeneration==cachedModel.mapGeneration&&
+        modelAfter.modelExportIndex==cachedModel.modelExportIndex&&modelAfter.cachedNodes==cachedModel.cachedNodes,
+        "Mutable clone changed source cache identity/counts");
     for(const auto& source:sources)source.Check();
     std::cout<<"PASS actual first Training SetupActor:25 Movers/150 polygons; typed Model->Polys, Texture/Actor GC edges, exact surface/cache/link stores, "
         "1 completed and4 partial-write root rollbacks; "<<sources.size()<<" original sources unchanged. Texture admission packages=2 bindings=2 retained="<<textures.retainedBytes
         <<" serialized="<<textures.serializedBytes<<" work="<<textures.nativeWork.used<<"\n";
+    std::cout<<"PASS actual fresh Training tracker constructor: attachments="<<tracker.attachments<<" activeVertices="<<tracker.activeVertices
+        <<" dynamicPoints="<<tracker.dynamicPoints<<" reverseMoverOrder="<<tracker.movers.size()
+        <<"; Level-owned candidate, typed selected graph and1 completed/3 partial-attachment root rollbacks; NOT committed startup/live queries/noninitial update/travel\n";
 }
 }
 int main(int argc,char** argv){try{
@@ -130,5 +183,5 @@ int main(int argc,char** argv){try{
     if(!root){if(argc!=1)throw std::runtime_error("Usage: portable_brush_setup_test [--game-root OWNED_GAME_ROOT]");std::cout<<"SKIP owned brush SetupActor source integration\n";return 77;}
     ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();Run(fs::canonical(root));ShutdownPortableRuntime();GC::Collect();
     Require(GC::GetStats().numObjects==before.numObjects&&GC::GetStats().memoryUsage==before.memoryUsage,"SetupActor shutdown left GC roots");
-    std::cout<<"PASS brush setup checks="<<checks<<" source refusals="<<refusals<<"; no pool growth/BSP insertion/tracker/startup/headset proof\n";return 0;
+    std::cout<<"PASS brush setup/tracker checks="<<checks<<" source refusals="<<refusals<<"; no committed startup/headset/noninitial-update proof\n";return 0;
 }catch(const std::exception& error){std::cerr<<"FAIL native brush setup: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}}

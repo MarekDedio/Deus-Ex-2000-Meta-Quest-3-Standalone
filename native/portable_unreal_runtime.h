@@ -587,6 +587,11 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableSpawnEncroachmentSnapshot> spawnedEncroachment;
     PortableWorldActorOrderSnapshot beforeActorOrder,afterActorOrder;
     std::vector<PortablePlayerLoginObservation> playerLogins;
+    struct BrushTrackerObservation {
+        bool attempted{},completed{},levelOwned{},topologyChecked{};
+        std::size_t movers{},polygons{},nodes{},vertices{},points{};
+        bool operator==(const BrushTrackerObservation&) const = default;
+    } brushTracker;
     std::vector<PortableDumpLocationObservation> dumpLocations;
     struct FlagBaseObservation {
         std::string path,pawnPath;

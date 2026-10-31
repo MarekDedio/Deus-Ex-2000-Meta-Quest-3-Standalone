@@ -14,20 +14,41 @@
             throw std::runtime_error("Native mutable geometry is not its actual Model export");
         std::unique_ptr<RuntimeNativeMutableModel> prepared;
         std::vector<GCRoot<RuntimeObject>> oldReferences;
+        const auto previousScratch=nativeQueryScratchBytes_;
+        struct RestoreScratch {std::size_t& value;std::size_t before;~RestoreScratch(){value=before;}}
+            restoreScratch{nativeQueryScratchBytes_,previousScratch};
+        const auto hold=[&](std::size_t bytes) {
+            nativeQueryScratchBytes_=previousScratch;ValidateStateBudget(bytes);
+            nativeQueryScratchBytes_=QuestVr::DecalStateDetail::Add(previousScratch,bytes);
+        };
+        const auto workspace=QuestVr::DecalStateDetail::Add(4u*65536u+16384u,
+            QuestVr::DecalStateDetail::Multiply(model->sourcePath.size()+1u,128u));
         if(model->nativeMutableModel) {
             const auto& source=*model->nativeMutableModel;
             if(source.generation!=level->nativeMapGeneration)
                 throw std::runtime_error("Native mutable geometry clone has a stale map generation");
             // Source capacities admit the pinned library's size-based vector
             // copies; charge overlap BEFORE copying, then verify actual bytes.
-            ValidateStateBudget(QuestVr::DecalStateDetail::Add(NativeMutableModelBytes(source),65536u));
             const auto roots=QuestVr::DecalStateDetail::Multiply(source.dynamicSurfaceReferences.size(),2u);
-            ValidateStateBudget(NativeMutableModelBytes(source)+65536u+roots*(sizeof(GCRoot<RuntimeObject>)+sizeof(GCRootNode)));
+            hold(NativeMutableModelBytes(source)+workspace+roots*(sizeof(GCRoot<RuntimeObject>)+sizeof(GCRootNode)));
+            nativeWork_.Step(NativeMutableModelBytes(source)/64u+1u);
             oldReferences.reserve(roots);
             for(const auto& refs:source.dynamicSurfaceReferences) {
                 oldReferences.emplace_back(refs.actor);oldReferences.emplace_back(refs.texture);
             }
             prepared=std::make_unique<RuntimeNativeMutableModel>(source);
+        }else if(persistentNativeModelCache) {
+            // Startup already queried/authenticated this actual const source.
+            // Clone its VALUE into a separate mutable owner: do not re-decode
+            // raw/property/body scratch while the startup undo journal is live.
+            // The existing query resolver verifies exact Level/Model/source/
+            // export/generation and actual const allocation before copying.
+            const auto& source=NativeLevelTraceModel(level);
+            const auto bytes=QuestVr::DecalStateDetail::Add(sizeof(RuntimeNativeMutableModel),NativeModelGeometryStorageBytes(source));
+            hold(QuestVr::DecalStateDetail::Add(bytes,workspace));
+            nativeWork_.Step(bytes/64u+1u);
+            prepared=std::make_unique<RuntimeNativeMutableModel>();prepared->geometry=source;
+            prepared->sourceSurfaceCount=source.surfaces.size();prepared->generation=level->nativeMapGeneration;
         }else {
             const auto& table=Table(model->sourcePath);const auto& entry=table.exports.at(model->exportIndex);
             if(entry.ObjSize<=0)throw std::runtime_error("Native mutable Model source payload is absent");
@@ -39,19 +60,22 @@
             // Decoder output and property/raw/native-body scratch may overlap.
             // They may not each borrow the full caller allowance.
             const auto decoded=available-scratch-sizeof(RuntimeNativeMutableModel);
-            ValidateStateBudget(available);
+            hold(available);
             nativeWork_.Step(static_cast<std::size_t>(entry.ObjSize)/64u+1u);
             prepared=std::make_unique<RuntimeNativeMutableModel>();
             prepared->geometry=LoadPortableCollisionModel68(table,model->exportIndex,scratch,decoded);
             prepared->sourceSurfaceCount=prepared->geometry.surfaces.size();
             prepared->generation=level->nativeMapGeneration;
         }
+        // Keep detached payload and beforeimage roots visible to every nested
+        // identity/admission call until the nonfallible owning transfer below.
+        hold(NativeMutableModelBytes(*prepared)+workspace+
+            oldReferences.capacity()*sizeof(GCRoot<RuntimeObject>)+oldReferences.size()*sizeof(GCRootNode));
         if(prepared->geometry.exportIndex!=model->exportIndex||
             LowerAscii(prepared->geometry.objectPath)!=LowerAscii(GetPortableObjectPath(Table(model->sourcePath),
                 static_cast<std::int32_t>(model->exportIndex+1u))))
             throw std::runtime_error("Native mutable Model payload/export identity differs");
-        ValidateStateBudget(QuestVr::DecalStateDetail::Add(NativeMutableModelBytes(*prepared),sizeof(BeforeMutableModel)+sizeof(GCRootNode))+
-            oldReferences.capacity()*sizeof(GCRoot<RuntimeObject>)+oldReferences.size()*sizeof(GCRootNode));
+        ValidateStateBudget(sizeof(BeforeMutableModel)+sizeof(GCRootNode));
         // No fallible operation follows ownership publication. The journal roots
         // the exact Model and retains its complete prior owning payload. Rollback
         // swaps owners before any object retirement; no source cache is mutated.

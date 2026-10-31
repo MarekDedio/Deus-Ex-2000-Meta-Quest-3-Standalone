@@ -840,6 +840,17 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         const auto usage=*world.execution.nativeWork;
         Require(usage.limit==nativeWork&&usage.used<=usage.limit,"Startup reported an invalid or different native-work allowance");
         std::cout<<"FINAL ROOT NATIVE WORK used="<<usage.used<<" limit="<<usage.limit<<" exhausted="<<usage.exhausted<<'\n';
+        const auto& brushTracker=world.brushTracker;
+        std::cout<<"BRUSH TRACKER attempted="<<brushTracker.attempted<<" completed="<<brushTracker.completed
+            <<" levelOwned="<<brushTracker.levelOwned<<" topologyChecked="<<brushTracker.topologyChecked
+            <<" movers="<<brushTracker.movers<<" polygons="<<brushTracker.polygons<<" nodes="<<brushTracker.nodes
+            <<" vertices="<<brushTracker.vertices<<" points="<<brushTracker.points
+            <<"; same original startup rollback root, NOT live query/noninitial-update/detail completion\n";
+        if(world.execution.error=="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back")
+            Require(brushTracker.attempted&&brushTracker.completed&&brushTracker.levelOwned&&brushTracker.topologyChecked&&
+                brushTracker.movers==25u&&brushTracker.polygons==150u&&brushTracker.nodes>0u&&
+                brushTracker.vertices==brushTracker.points,
+                "Post-brush startup boundary lacks genuine first-Training tracker construction/ownership");
         Require(world.execution.error!="Original model extent trace: work budget exhausted"||world.modelTraceWork.has_value(),
             "Reached extent work refusal omitted its actual Model/phase/allowance snapshot");
         if(world.modelTraceWork) {
