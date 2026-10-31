@@ -13,6 +13,7 @@
         if(selected.kind!=NativePrimitiveKind::Model)
             throw std::runtime_error("Native mutable geometry is not its actual Model export");
         std::unique_ptr<RuntimeNativeMutableModel> prepared;
+        std::vector<GCRoot<RuntimeObject>> oldReferences;
         if(model->nativeMutableModel) {
             const auto& source=*model->nativeMutableModel;
             if(source.generation!=level->nativeMapGeneration)
@@ -20,6 +21,12 @@
             // Source capacities admit the pinned library's size-based vector
             // copies; charge overlap BEFORE copying, then verify actual bytes.
             ValidateStateBudget(QuestVr::DecalStateDetail::Add(NativeMutableModelBytes(source),65536u));
+            const auto roots=QuestVr::DecalStateDetail::Multiply(source.dynamicSurfaceReferences.size(),2u);
+            ValidateStateBudget(NativeMutableModelBytes(source)+65536u+roots*(sizeof(GCRoot<RuntimeObject>)+sizeof(GCRootNode)));
+            oldReferences.reserve(roots);
+            for(const auto& refs:source.dynamicSurfaceReferences) {
+                oldReferences.emplace_back(refs.actor);oldReferences.emplace_back(refs.texture);
+            }
             prepared=std::make_unique<RuntimeNativeMutableModel>(source);
         }else {
             const auto& table=Table(model->sourcePath);const auto& entry=table.exports.at(model->exportIndex);
@@ -36,17 +43,20 @@
             nativeWork_.Step(static_cast<std::size_t>(entry.ObjSize)/64u+1u);
             prepared=std::make_unique<RuntimeNativeMutableModel>();
             prepared->geometry=LoadPortableCollisionModel68(table,model->exportIndex,scratch,decoded);
+            prepared->sourceSurfaceCount=prepared->geometry.surfaces.size();
             prepared->generation=level->nativeMapGeneration;
         }
         if(prepared->geometry.exportIndex!=model->exportIndex||
             LowerAscii(prepared->geometry.objectPath)!=LowerAscii(GetPortableObjectPath(Table(model->sourcePath),
                 static_cast<std::int32_t>(model->exportIndex+1u))))
             throw std::runtime_error("Native mutable Model payload/export identity differs");
-        ValidateStateBudget(QuestVr::DecalStateDetail::Add(NativeMutableModelBytes(*prepared),sizeof(BeforeMutableModel)));
+        ValidateStateBudget(QuestVr::DecalStateDetail::Add(NativeMutableModelBytes(*prepared),sizeof(BeforeMutableModel)+sizeof(GCRootNode))+
+            oldReferences.capacity()*sizeof(GCRoot<RuntimeObject>)+oldReferences.size()*sizeof(GCRootNode));
         // No fallible operation follows ownership publication. The journal roots
         // the exact Model and retains its complete prior owning payload. Rollback
         // swaps owners before any object retirement; no source cache is mutated.
         beforeMutableModel_.emplace(model);
+        beforeMutableModel_->references=std::move(oldReferences);
         beforeMutableModel_->state=std::move(model->nativeMutableModel);
         model->nativeMutableModel=std::move(prepared);
         return *model->nativeMutableModel;

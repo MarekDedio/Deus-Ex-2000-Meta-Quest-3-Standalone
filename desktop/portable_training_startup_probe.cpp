@@ -6,6 +6,7 @@
 #include "portable_input_reset.h"
 #include "portable_flag_base.h"
 #include "portable_music_sources.h"
+#include "portable_brush_texture_sources.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "portable_startup_weapon_fire_probe.h"
@@ -621,6 +622,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         std::cout<<"MUSIC IMPORT source="<<binding.importerSourcePath<<" ref="<<binding.importReference
             <<" object="<<binding.objectPath<<" target="<<binding.sourcePath<<" export="<<binding.exportIndex<<'\n';
     for(auto& source:musicSources.packages){sources.emplace_back(source.sourcePath);scripts.push_back(std::move(source));}
+    auto brushTextures=LoadPortableRuntimeBrushTextureSources(scripts,map,ini,QuestVr::OriginalLinkerLoadProfile{false,true,true});
+    std::cout<<"BRUSH TEXTURE SOURCE ADMISSION packages="<<brushTextures.packages.size()<<" bindings="<<brushTextures.bindings.size()
+        <<" work="<<brushTextures.nativeWork.used<<" retained="<<brushTextures.retainedBytes<<'\n';
+    for(const auto& binding:brushTextures.bindings)
+        std::cout<<"BRUSH TEXTURE IMPORT ref="<<binding.textureReference<<" object="<<binding.objectPath
+            <<" target="<<binding.sourcePath<<" export="<<binding.exportIndex<<'\n';
+    for(auto& source:brushTextures.packages){sources.emplace_back(source.sourcePath);scripts.push_back(std::move(source));}
     const auto initialized=InitializePortableRuntime(scripts,InitialSeed,QuestVr::OriginalLinkerLoadProfile{false,true,true});
     Require(initialized.passed,"Cannot initialize original Quest source set under the actual standalone load context");
     PreparePortableRuntimeDumpLocationServices(userIni.string(),(root/"System").string());

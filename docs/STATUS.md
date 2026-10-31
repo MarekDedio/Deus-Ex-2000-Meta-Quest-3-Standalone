@@ -1,5 +1,63 @@
 # Port status
 
+## Latest: original SetupActor, typed Polys ownership and texture source admission (2026-10-31)
+
+The actual indexed Model now binds its source-local Engine.Polys object and
+owns journaled mutable polygon values with typed Actor/Texture edges and real
+NameString handles. World Model surfaces retain matching native typed references.
+SetupActor follows ascending live nonstatic Brush selection with checked Mover
+casts and exact original root/OldPos/OldRot/bAssimilated, zero surface/vector/
+point, flags, pan, brushPoly and polygon-link writes. Prior payload/edge/binding
+before-images restore before object retirement; current edges are GC-visited.
+Detached preparation/COW/root vectors and identity workspace stay in the shared
+scratch ledger across nested resolution, closing the initial review budget gap.
+No existing retained/work cap or accepted VR layout/control was changed.
+
+The shared pre-runtime texture source loader resolves actual authored Mover
+Model/Polys references through original INI paths and authenticates actual
+Engine.Texture export/Class/outer/load-context identity. Quest and the desktop
+startup probe append additional sources before InitializePortableRuntime, after
+the existing Music admission. First Training discovers two packages/two bindings.
+Deployment prerequisites now explicitly require UNATCO.utx as well as
+CoreTexMetal.utx; positive data validation, absent-data reporting and deployment
+script syntax pass without device writes. The detached table/workspace policy
+does not claim to bound or roll back the shared process NameString arena.
+
+Owned first-Training SetupActor integration passes1711 checks/9 explicit policy
+or missing-source refusals:25 actual Movers/150 polygons, independently decoded
+surface/cache/link and positive-zero placeholder checks, a completed root
+rollback plus injected partial-write refusals after polygons1/7/149/150.
+Complete checkpoints, world revision, native-geometry absence and GC statistics
+restore;43 original sources are unchanged. GC collection under baseline asset
+roots verifies fresh graph consistency, not isolated edge survival after source
+retirement/travel. Refusal cases are not comprehensive malformed-source fixtures.
+The existing owned coordinate/transform/split/prefilter regression also passes
+154643 checks/325 identity refusals, including1994 real Model flag writes with
+successful and forced-failure root rollback across25 actual mover spheres.
+
+Focused/full desktop, strict ARM64 and Android-native builds pass on the frozen
+snapshot. CTest248 executed/303 registered/55 explicit owned-data skips/zero
+failures178.55s; the two owned tests above were run separately with actual data.
+Two original first-Training startup observations reach the same retained
+ClientSetup refusal with266870 instructions/37932 writes in303.598/281.951192s.
+Native work13905879/13905133 remains below the unchanged16777216 opt-in limit.
+Full save/state/revision/hash/RNG/client/lookup/Actor/GC rollback verifies and45
+owned sources remain unchanged. This is an expected-boundary diagnostic, NOT
+successful startup. Final audit:1881 compiler inputs,45 protected originals,
+the two selected texture files and Training Music unchanged; source AddPoly
+artifact authenticated and no live compiler/test jobs. No original commercial
+module executed and no other map loaded.
+
+Typed tracker pools, mandatory real Update, recursive FilterPoly/AddPolyBsp,
+active/index-preserving current-revision queries, noninitial flush/teardown,
+geometry checkpoint/rebind and later startup/input/render/detail remain.
+The startup guard is not bypassed. Training crate destruction/loot/gravity
+and headset acceptance are still unfinished; no new APK is packaged. Static
+AddPoly follow-up records distinct original/chosen parents and zone-mask
+targets, allocation partial writes and typed active-owner/free-link point slots
+for the next implementation. See ORIGINAL-BRUSH-SETUP-OWNERSHIP.md,
+TRAINING-BRUSH-SETUP-ASSETS.md and ORIGINAL-BRUSH-ADD-POLY-DETAILS.md.
+
 ## Latest: Model-owned mutable geometry journal and original sphere prefilter (2026-10-30)
 
 The actual root UModel now has a private typed mutable geometry payload with

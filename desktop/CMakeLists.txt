@@ -183,6 +183,7 @@ add_library(quest_portable_host STATIC
     "${PORT_NATIVE}/surreal_portable_package_tables.cpp"
     "${PORT_NATIVE}/portable_music_sources.cpp"
     "${PORT_NATIVE}/portable_brush_polys.cpp"
+    "${PORT_NATIVE}/portable_brush_texture_sources.cpp"
     "${PORT_NATIVE}/quest_native_font_metrics.cpp"
     "${PORT_NATIVE}/portable_unreal_runtime.cpp"
     "${PORT_NATIVE}/surreal_gc_probe.cpp"
@@ -637,6 +638,16 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME quest_brush_sphere_prefilter COMMAND quest_brush_sphere_prefilter_test)
 set_tests_properties(quest_brush_sphere_prefilter PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(portable_brush_setup_test portable_brush_setup_test.cpp)
+target_compile_features(portable_brush_setup_test PRIVATE cxx_std_20)
+target_link_libraries(portable_brush_setup_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_brush_setup_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_brush_setup_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_brush_setup COMMAND portable_brush_setup_test)
+set_tests_properties(portable_brush_setup PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(portable_native_engine_classes_test portable_native_engine_classes_test.cpp)
 target_compile_features(portable_native_engine_classes_test PRIVATE cxx_std_20)

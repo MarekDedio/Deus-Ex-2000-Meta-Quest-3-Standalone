@@ -13,6 +13,7 @@ $requiredFiles = @(
     'System\DeusExConversations.u',
     'Maps\00_Training.dx',
     'Textures\CoreTexMetal.utx',
+    'Textures\UNATCO.utx',
     'Music\Training_Music.umx'
 )
 

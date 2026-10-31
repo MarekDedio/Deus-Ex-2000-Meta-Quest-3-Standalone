@@ -43,6 +43,7 @@
 #include "portable_system_services.h"
 #include "quest_runtime_script_packages.h"
 #include "portable_music_sources.h"
+#include "portable_brush_texture_sources.h"
 #include "quest_native_client.h"
 #include "portable_quest_input_source.h"
 #include "persona_ui_canvas.h"
@@ -703,6 +704,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: pre-map Music source admission: %zu packages/%zu actual import bindings",
                 musicSources.packages.size(),musicSources.bindings.size());
             for(auto& source:musicSources.packages)scripts.push_back(std::move(source));
+            auto brushTextures=LoadPortableRuntimeBrushTextureSources(scripts,trainingMap,
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini",
+                QuestVr::OriginalLinkerLoadProfile{false,true,true});
+            ALOG("DeusExQuest: pre-map Brush Texture source admission: %zu packages/%zu actual bindings",
+                brushTextures.packages.size(),brushTextures.bindings.size());
+            for(auto& source:brushTextures.packages)scripts.push_back(std::move(source));
             const PortableRuntimeSummary runtime = InitializePortableRuntime(
                 scripts, static_cast<std::uint32_t>(std::time(nullptr)),
                 QuestVr::OriginalLinkerLoadProfile{false,true,true});

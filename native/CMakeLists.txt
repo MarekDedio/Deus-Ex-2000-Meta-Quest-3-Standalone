@@ -23,6 +23,7 @@ add_library(surreal_portable_core STATIC
     surreal_portable_package_tables.cpp
     portable_music_sources.cpp
     portable_brush_polys.cpp
+    portable_brush_texture_sources.cpp
     quest_native_font_metrics.cpp
     portable_unreal_runtime.cpp
     surreal_gc_probe.cpp

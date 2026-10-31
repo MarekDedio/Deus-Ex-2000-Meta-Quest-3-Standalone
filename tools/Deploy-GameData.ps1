@@ -69,6 +69,7 @@ try {
         "$remoteRoot/System/DeusEx.u",
         "$remoteRoot/Maps/00_Training.dx",
         "$remoteRoot/Textures/CoreTexMetal.utx",
+        "$remoteRoot/Textures/UNATCO.utx",
         "$remoteRoot/Music/Training_Music.umx"
     )
 
