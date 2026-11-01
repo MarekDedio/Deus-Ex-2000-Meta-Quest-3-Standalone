@@ -1,0 +1,44 @@
+diff --git a/Samples/SampleXrFramework/Src/XrApp.h b/Samples/SampleXrFramework/Src/XrApp.h
+--- a/Samples/SampleXrFramework/Src/XrApp.h
++++ b/Samples/SampleXrFramework/Src/XrApp.h
+@@ -403,6 +403,9 @@ class XrApp {
+     virtual bool AppInit(const xrJava* context);
+     // Called when the application shuts down
+     virtual void AppShutdown(const xrJava* context);
++    // Execution-loop lifecycle, independent of XR session/focus/tracking.
++    virtual void AppLoopStarted();
++    virtual void AppLoopStopping();
+     // Called when the application is resumed by the system.
+     virtual void AppResumed(const xrJava* contet);
+     // Called when the application is paused by the system.
+diff --git a/Samples/SampleXrFramework/Src/XrApp.cpp b/Samples/SampleXrFramework/Src/XrApp.cpp
+--- a/Samples/SampleXrFramework/Src/XrApp.cpp
++++ b/Samples/SampleXrFramework/Src/XrApp.cpp
+@@ -1433,6 +1433,10 @@ bool XrApp::AppInit(const xrJava* context) {
+ void XrApp::AppShutdown(const xrJava* context) {
+     SurfaceRender.Shutdown();
+ }
++
++void XrApp::AppLoopStarted() {}
++
++void XrApp::AppLoopStopping() {}
+ 
+ // Called when the application is resumed by the system.
+ void XrApp::AppResumed(const xrJava* contet) {}
+@@ -1525,6 +1529,10 @@ void XrApp::MainLoop(MainLoopContext& loopContext) {
+     InitSession();
++
++    // SessionInit may already have started CPU workers. This is the real
++    // execution-loop entry, not a focus/pose/session-active observation.
++    AppLoopStarted();
+ 
+     bool stageBoundsDirty = true;
+     int frameCount = -1;
+ 
+     while (!loopContext.ShouldExitMainLoop()) {
+@@ -1653,2 +1661,4 @@ void XrApp::MainLoop(MainLoopContext& loopContext) {
+-    EndSession();
++    // Stop before EndSession revokes targets and joins CPU workers.
++    AppLoopStopping();
++    EndSession();
+     Shutdown(loopContext.GetJavaContext());

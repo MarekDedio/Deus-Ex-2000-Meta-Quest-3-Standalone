@@ -10,7 +10,8 @@ $sdkRoot = Join-Path $projectRoot 'third_party\Meta-OpenXR-SDK'
 $patchNames = @(
     'meta-openxr-tinyui-font-override.patch',
     'meta-openxr-session-lifecycle.patch',
-    'meta-openxr-session-destroying.patch'
+    'meta-openxr-session-destroying.patch',
+    'meta-openxr-app-loop-lifecycle.patch'
 )
 
 if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot '.git'))) {

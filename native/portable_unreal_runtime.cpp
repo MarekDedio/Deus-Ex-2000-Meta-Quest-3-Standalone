@@ -5,6 +5,7 @@
 #include "portable_engine_collision.h"
 #include "portable_retail_collision.h"
 #include "portable_actor_point_check.h"
+#include "portable_process_loop.h"
 
 #include "GC/GC.h"
 
@@ -104,6 +105,8 @@
 #include "quest_brush_update.h"
 #include "quest_input_initialize.h"
 #include "quest_input_process.h"
+#include "quest_input_exec_lines.h"
+#include "portable_input_exec.h"
 #include "portable_brush_polys.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
@@ -939,6 +942,19 @@ std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
 // Core.GIsScriptable gate. It authorizes script ProcessEvent, not begun play,
 // player creation or successful startup. Never mutated within an Execution.
 bool persistentGameScriptsEnabled{};
+// Runtime binding is CPU-owned; only the distinct external app-loop control is
+// atomic. No HWND/XR handles or UObject pointers cross to that producer.
+struct RuntimeProcessLoopBinding {
+    std::shared_ptr<QuestVr::ProcessLoopControl> control;
+    RuntimePackage* runtime{};
+    std::uint64_t lookupGeneration{};
+};
+std::optional<RuntimeProcessLoopBinding> persistentProcessLoop;
+std::size_t persistentVmRootCount{};
+std::size_t ProcessLoopBindingBytes() noexcept {
+    return persistentProcessLoop?sizeof(RuntimeProcessLoopBinding)+QuestVr::ProcessLoopControl::RetainedBytes():0u;
+}
+const RuntimeProcessLoopBinding& RequireProcessLoopBinding();
 struct RuntimeEngineCollisionDomain final : GCObject {
     RuntimeObject *engine{},*transient{};
     // Inventory for validation/accounting only. UClasses own their defaults
@@ -1066,8 +1082,10 @@ void LoadInputDefaultConfig(const RuntimeNativeInputDomain&,RuntimeNativeInputCo
     RuntimeNativeInputValues&,std::size_t,const QuestVr::NativeConfig::OrderedIni*);
 QuestVr::NativeConfigImport::Result ImportNativeInputAlias(const RuntimeNativeInputDomain&,RuntimeNativeInputConfig&,
     RuntimeNativeInputAlias&,std::size_t,RuntimeObject*,std::u16string_view,std::uint32_t);
+using RuntimeInputCommandDispatcher=std::function<void(RuntimeObject*,std::size_t,std::string&)>;
 PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject*,const std::string&,
-    const std::function<void()>&,const std::function<void(std::size_t)>&);
+    const std::function<void()>&,const std::function<void(std::size_t)>&,
+    const RuntimeInputCommandDispatcher& = {},std::string* = nullptr);
 std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
     const InputConfigPayloads* stagedPayloads=nullptr,const RuntimeNativeInputConfig* stagedConfig=nullptr) {
     using QuestVr::DecalStateDetail::Add;
@@ -1458,6 +1476,15 @@ bool HasNativeConversationBindings() noexcept {
     return false;
 }
 std::shared_ptr<RuntimeObjectLookupControl> persistentObjectLookup;
+const RuntimeProcessLoopBinding& RequireProcessLoopBinding() {
+    if(!persistentProcessLoop||!persistentProcessLoop->control||!persistentProcessLoop->control->Alive())
+        throw std::runtime_error("Original input running authority is absent or revoked");
+    const auto& binding=*persistentProcessLoop;
+    if(!persistentRuntime||binding.runtime!=persistentRuntime->get()||!persistentObjectLookup||
+        !persistentObjectLookup->active||binding.lookupGeneration!=persistentObjectLookup->generation)
+        throw std::runtime_error("Original input running authority belongs to a stale runtime generation");
+    return binding;
+}
 std::uint64_t persistentObjectLookupGeneration{};
 std::uint64_t persistentObjectPublicationSerial{};
 RuntimeObject* persistentPublishedHead{};
@@ -3164,6 +3191,7 @@ public:
         if (persistentQualifiedObjects.size() > 1'000'000u)
             throw std::runtime_error("Portable actor VM object lookup budget exceeded");
     }
+#include "portable_process_loop.inl"
     Value ProbeObjectPropertyTeardown(const std::string& path,PortablePropertyTeardownProbeResult& result,
         QuestVr::Vm::Execution& execution) {
         propertyTeardownPreview_=true;
@@ -3615,6 +3643,9 @@ public:
     std::optional<QuestVr::NativeWork::Usage> ReadNativeWork() const noexcept override { return nativeWork_.Read(); }
     void BeginRoot(const QuestVr::Vm::Limits& limits) override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        if(persistentVmRootCount==std::numeric_limits<std::size_t>::max())
+            throw std::runtime_error("Portable VM root inventory exhausted");
+        if(processLoopControl_)throw std::runtime_error("Process loop lease survived its previous VM root");
         if(persistentLiveModelReaders)throw std::runtime_error("VM root refused during an active live Model query lease");
         if(nativeModelReaders_)throw std::runtime_error("Native Model read lease survived its root");
         if(nativeRootSerial_==std::numeric_limits<std::uint64_t>::max())throw std::runtime_error("Native Model root lease serial exhausted");
@@ -3662,8 +3693,10 @@ public:
         beforeLevelTickContext_.reset();
         RetireOriginalTickLease();
         transaction_ = true;
+        ++persistentVmRootCount;
     }
     void Commit() override {
+        ValidateProcessLoopLease();
         nativeWork_.Check();
         RequireEmptyMoveHits();
         if(activeTickLevel_||!nativePendingTicks_.empty())
@@ -3721,6 +3754,7 @@ public:
             throw std::runtime_error("Native client lifetime revoked before script publication");
         ValidateSoundClientLease();
         if(retailCollisionRoot_) retailCollisionRoot_->PrepareCommit();
+        ValidateProcessLoopLease();
         ValidateNativeInputMutationLeases();
         for(const auto& canvas:provisionalCanvases_)RequireNativeViewportCanvas(canvas.get());
         for(const auto& console:provisionalConsoles_)RequireNativeViewportConsole(console.get());
@@ -3751,6 +3785,7 @@ public:
         ClearMoveHits();nativeDurableMoved_.clear();
         std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
+        RetireProcessLoopRoot();
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
@@ -3920,6 +3955,7 @@ public:
         for(auto& root:provisionalFlagBases_)RetireRuntimeFlagBaseObject(root.get());
         provisionalFlagBases_.clear();
         beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
+        RetireProcessLoopRoot();
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -4773,14 +4809,14 @@ public:
             viewport->nativeViewportInput->nativeInputInstance->ownerViewport!=viewport)
             throw std::runtime_error("Bound PlayerPawn ConsoleCommand requires its actual constructed Input");
         const auto command=arguments.front().Load().text;
-        const auto queried=ExecuteNativeInputQuery(viewport->nativeViewportInput,command,
-            [this]{LifecycleStep();},[this](std::size_t bytes){ValidateStateBudget(bytes);});
+        const auto queried=QueryOriginalInput(viewport->nativeViewportInput,command,execution);
         if(!queried.handled)return {Value::Text(Kind::String,ViewportExecAfterInput(viewport,command,execution)),{}};
         return {Value::Text(Kind::String,queried.output),{}};
     }
 #include "portable_core_static_exec.inl"
 #include "portable_input_reset_host.inl"
 #include "portable_input_initialize_host.inl"
+#include "portable_input_exec_host.inl"
 #include "portable_string_to_name_host.inl"
 #include "portable_flag_base_host.inl"
 #include "portable_viewport_canvas_host.inl"
@@ -10273,6 +10309,9 @@ private:
     std::size_t retailCollisionOutputBytes_{};
     std::size_t nativeQueryScratchBytes_{};
     bool clientDependent_{};
+    std::shared_ptr<QuestVr::ProcessLoopControl> processLoopControl_;
+    RuntimePackage* processLoopRuntime_{};
+    std::uint64_t processLoopGeneration_{};
     std::size_t nativeToggleDepth_{};
     std::uint64_t soundClientIdentity_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
@@ -11783,6 +11822,8 @@ private:
         defaults.Retain(runtimeNameArenaCredit);
         defaults.Retain(NativePlayerSessionBytes());
         defaults.Retain(QuestInputSourceStorageBytes());
+        defaults.Retain(ProcessLoopBindingBytes());
+        if(processLoopControl_)defaults.Retain(sizeof(processLoopControl_)+sizeof(processLoopRuntime_)+sizeof(processLoopGeneration_));
         defaults.Retain(NativeCanvasInventoryBytes());
         defaults.Retain(NativeConsoleInventoryBytes());
         if(beforeConsoleInventory_)defaults.Retain(beforeConsoleInventory_->capacity()*sizeof(RuntimeObject*));
@@ -14331,7 +14372,9 @@ void ShutdownPortableRuntime() {
     // Root diagnostics must have unwound before the runtime can be destroyed.
     if(persistentRetailCollision && persistentRetailCollision->ReadUsage().depth)
         throw std::runtime_error("Runtime shutdown refused during an active retail collision root");
+    if(persistentVmRootCount)throw std::runtime_error("Runtime shutdown refused during an active VM root");
     persistentGameScriptsEnabled=false;
+    persistentProcessLoop.reset(); // Unbind before any runtime/lookup/GC retirement.
     persistentRetailCollision.reset();
     if(persistentObjectLookup) persistentObjectLookup->active=false;
     persistentObjectLookup.reset();
@@ -15081,6 +15124,39 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 #include "portable_string_to_name_api.inl"
 #include "portable_flag_base_api.inl"
 
+void BindPortableRuntimeProcessLoop(std::shared_ptr<QuestVr::ProcessLoopControl> control) {
+    if(persistentVmRootCount)throw std::runtime_error("Process loop binding cannot change during an active VM root");
+    if(!persistentRuntime||!persistentRuntime->get()||!persistentObjectLookup||!persistentObjectLookup->active||
+        !persistentObjectLookup->generation||!control||!control->Alive())
+        throw std::runtime_error("Process loop binding requires its actual runtime/lookup generation and live control");
+    if(persistentProcessLoop) {
+        const auto& bound=RequireProcessLoopBinding();
+        if(bound.control!=control)throw std::runtime_error("Process loop replacement requires runtime shutdown");
+        return;
+    }
+    PortableActorVmHost host;
+    host.ValidateAdditionalPackageBudget(sizeof(RuntimeProcessLoopBinding)+QuestVr::ProcessLoopControl::RetainedBytes());
+    persistentProcessLoop.emplace(RuntimeProcessLoopBinding{std::move(control),persistentRuntime->get(),persistentObjectLookup->generation});
+}
+PortableProcessLoopSnapshot ReadPortableRuntimeProcessLoop() {
+    const auto& binding=RequireProcessLoopBinding();const auto state=binding.control->Observe();
+    return {binding.control->Identity(),binding.lookupGeneration,state,ProcessLoopBindingBytes(),
+        state==QuestVr::ProcessLoopControl::State::Executing};
+}
+PortableProcessLoopProbeResult ProbePortableRuntimeProcessLoop(const std::function<void()>& afterFirst,
+    bool lateFailure,const QuestVr::Vm::Limits& limits,const std::function<void()>& beforeCommit) {
+    CollectBirthGarbageAtBoundary collect;PortableProcessLoopProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
+            return host.ProbeProcessLoop(afterFirst,beforeCommit,lateFailure,result);
+        },limits);
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {
     if (!persistentRuntime || !persistentRuntime->get())
@@ -15290,6 +15366,43 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
 #include "portable_viewport_canvas_api.inl"
 #include "portable_viewport_console_api.inl"
 #include "portable_quest_input_source_api.inl"
+
+PortableInputExecProbeResult ProbePortableRuntimeInputCommands(std::uint64_t viewportIdentity,
+    const std::string& command,bool lateFailure,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableInputExecProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            auto* viewport=NativeSessionViewport(viewportIdentity);
+            result.command=host.QueryOriginalInput(viewport->nativeViewportInput,command,execution);
+            result.completed=true;
+            if(lateFailure)throw std::runtime_error("Original Input commands late failure after actual native dispatch");
+            throw std::runtime_error("Original Input commands diagnostic complete; rollback required");
+            return QuestVr::Vm::Value{};
+        },limits);
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableInputExecProbeResult ProbePortableRuntimeInputQueryLease(std::uint64_t viewportIdentity,
+    const std::function<void()>& beforeCommit,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableInputExecProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            auto* viewport=NativeSessionViewport(viewportIdentity);
+            result.command=host.QueryOriginalInput(viewport->nativeViewportInput,"KEYNAME 1",execution);
+            result.completed=true;
+            if(beforeCommit)beforeCommit();
+            return QuestVr::Vm::Value::Bool(result.command.handled);
+        },limits);
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
 
 QuestVr::Vm::Result SetPortableRuntimePlayer(const std::uint64_t viewportIdentity,
     const std::string& actorPath,const QuestVr::Vm::Limits& limits) {

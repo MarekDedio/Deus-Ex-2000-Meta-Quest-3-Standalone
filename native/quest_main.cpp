@@ -35,6 +35,7 @@
 #include "Render/SurfaceRender.h"
 #include "XrApp.h"
 #include "portable_unreal_runtime.h"
+#include "portable_process_loop.h"
 #include "portable_object_lookup.h"
 #include "portable_engine_collision.h"
 #include "portable_input_schema.h"
@@ -653,6 +654,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
+    void AppLoopStarted() override {
+        processLoopControl_->EnterExecution();
+        ALOG("DeusExQuest: real application execution loop entered identity=%llu",
+            static_cast<unsigned long long>(processLoopControl_->Identity()));
+    }
+
+    void AppLoopStopping() override {
+        processLoopControl_->LeaveExecution();
+        ALOG("DeusExQuest: real application execution loop stopped identity=%llu; worker join precedes revoke",
+            static_cast<unsigned long long>(processLoopControl_->Identity()));
+    }
+
     void AppPaused(const xrJava* context) override {
         musicPlaybackActive_.store(false,std::memory_order_release);
         OVRFW::XrApp::AppPaused(context);
@@ -662,6 +675,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         musicPlaybackActive_.store(false,std::memory_order_release);
         RevokeNativeClientBinding();
         DiscardInitialPreparation();
+        // AppLoopStopping already published genuine false before EndSession.
+        // SessionEnd/Discard have joined CPU owners before irreversible revoke.
+        processLoopControl_->Revoke();
         // Defensive cleanup if no session reached SessionDestroying. AAudio
         // retains this pointer; close it before app audio state is destroyed.
         StopAmbientAudio();
@@ -686,7 +702,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     static bool ValidateInitialRuntime(
         const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
         std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport,
-        const std::shared_ptr<QuestVr::QuestInputSource>& inputSource) {
+        const std::shared_ptr<QuestVr::QuestInputSource>& inputSource,
+        const std::shared_ptr<QuestVr::ProcessLoopControl>& processLoop) {
         try {
             std::vector<PortablePackageTables> scripts;
             scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -729,6 +746,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             PreparePortableRuntimeNativePackages();
             PreparePortableRuntimeNativeInputClasses();
             PreparePortableRuntimeObjectLookup();
+            // The SessionInit worker can start before AppLoopStarted. Ready
+            // is a genuine pre-loop false observation, not missing authority.
+            BindPortableRuntimeProcessLoop(processLoop);
             const auto collisionEngine=PreparePortableRuntimeEngineCollision(
                 "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini");
             PreparePortableRuntimeInputSchema();
@@ -956,9 +976,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const std::uint64_t clientIdentity = viewport.identity;
             const auto inputSource=std::make_shared<QuestVr::QuestInputSource>(clientLifetime,clientIdentity,viewport.identity);
             nativeQuestInputSource_=inputSource;questInputPublishFailureReported_=false;
+            const auto processLoop=processLoopControl_;
             initialPreparationFuture_ = std::async(std::launch::async,
-                [clientLifetime, clientIdentity, viewport,inputSource] {
-                    return PrepareInitialRuntime(clientLifetime, clientIdentity, viewport,inputSource);
+                [clientLifetime, clientIdentity, viewport,inputSource,processLoop] {
+                    return PrepareInitialRuntime(clientLifetime, clientIdentity, viewport,inputSource,processLoop);
                 });
         } catch (const std::exception& error) {
             RevokeNativeClientBinding();
@@ -2101,10 +2122,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     static InitialPreparation PrepareInitialRuntime(
         const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
         std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport,
-        const std::shared_ptr<QuestVr::QuestInputSource>& inputSource) {
+        const std::shared_ptr<QuestVr::QuestInputSource>& inputSource,
+        const std::shared_ptr<QuestVr::ProcessLoopControl>& processLoop) {
         InitialPreparation preparation;
         try {
-            if (!ValidateInitialRuntime(clientLifetime, clientIdentity, viewport,inputSource))
+            if (!ValidateInitialRuntime(clientLifetime, clientIdentity, viewport,inputSource,processLoop))
                 throw std::runtime_error("initial portable runtime validation failed; see quest_main log");
             preparation.mapNames = ReadMapCatalog();
             if (!BuildQuestMapCache(gameRoot_, "00_Training"))
@@ -8147,6 +8169,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool initialPreparationFailed_{};
     std::uint64_t nativeClientGeneration_{};
     std::shared_ptr<QuestVr::NativeClientLifetime> nativeClientLifetime_;
+    // One control per actual application owner, not per headset session/map.
+    std::shared_ptr<QuestVr::ProcessLoopControl> processLoopControl_{
+        std::make_shared<QuestVr::ProcessLoopControl>()};
     std::shared_ptr<QuestVr::QuestInputSource> nativeQuestInputSource_;
     bool questInputPublishFailureReported_{};
     std::future<InitialPreparation> initialPreparationFuture_;

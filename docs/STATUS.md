@@ -1,5 +1,83 @@
 # Port status
 
+## Latest: actual alias command lists and explicit app-loop authority (2026-11-01)
+
+Original ParseLine256 Exact0 and ExecInputCommands now preserve UTF16 cursor,
+255 SCANNED-unit capacity, comment/quote/backslash/pipe/CRLF behavior, empty
+dispatch and long-line continuation. Running is observed once after lexical
+admission; Action is reread for every line, release OnRelease uses the real
+adjusted ParseCommand pointer, and child handled results are ignored. Generated
+parser/routing controls pass223589 checks/55 refusals. Separate typed button
+coordinators pass21663/63, including all256 bytes and exact BUTTON selective
+release/PULSE/TOGGLE-XOR80. They are NOT yet bound to actual Pawn properties;
+typed AXIS/SPEED/PC64 arithmetic remains unsupported, with explicit refusal.
+
+The real constructed Input alias route now calls this coordinator inside its
+owning VM root and existing shared recursion guard. Nested real key queries
+write the SAME ordinary FString output collector; lexical query/command/line/
+capture/output storage uses cumulative work and simultaneous scratch admission.
+Actual alias source changes refuse rather than silently continue a stale
+capture. Full viewport routing offers Input FIRST before the existing native
+renderer/viewport/Console/UPlayer route, never jumping straight to Core SET.
+Constructor-only public authentication and standalone read-only alias refusal
+remain strict; no initialized bit or Viewport back-pointer is manufactured.
+
+GIsRunning's port adaptation now has a DISTINCT ProcessLoopControl, not XR
+focus/tracking/mounting/session/client/package-ready state. Genuine optional
+framework hooks bracket the actual outer application loop after InitSession
+and before EndSession. Ready/Executing/Stopped and irreversible Revoke are
+distinct. The actual worker binds the same control to its runtime/lookup
+generation. Root publication verifies identity/lifetime, NOT unchanged Boolean
+state; shutdown unbinds before GC retirement. Generic active-VM guards reject
+binding/shutdown during a root, preserving earlier Model/retail-specific error
+precedence. Pure concurrent transition controls pass79 checks/9 refusals.
+
+The actual owned alias route passes76 checks/10 refusals. Explicit test aliases
+are imported through genuine Input/InputExt config/default/constructor services;
+the first Training map stays dormant. Actual constructor Action0 runs native
+KEYNAME queries, comments/empty lines and recursion-guard continuation. Positive
+native work is1638 with zero VM writes. Complete saved world/revision/lookup/GC/
+Input keys/Action/Delta/cursor/bindings/aliases/bytes restore. Genuine bound
+Ready/Stopped skip the list; missing/revoked running authority refuses. A fixed
+read-only KEYNAME1 publication probe verifies the additional client-dependent
+root pin: revocation AFTER an Input-handled query and BEFORE Commit refuses.
+An Input-handled route never reaches the viewport tail's normal pin, so this
+must be established at QueryOriginalInput entry.
+
+Owned process binding controls pass57 checks/15 refusals, including real lookup
+generation, live Boolean changes, after-last-read revocation at Commit, nested
+binding/shutdown refusals, rollback, runtime reinitialization and first-Training
+map replacement. These explicit producer fixtures do NOT prove Android hook
+timing. The reproducible SDK patch and isolated patch workflow pass8 cases/
+zero failures/no hardware/no actual SDK mutation. Its first patch-application
+failure exposed insufficient hunk context and remains in the failure log; the
+corrected patch applies, reverses, is idempotent and preserves conflicting edits.
+
+Strict ARM64, Android-native, focused and full desktop builds pass. Full CTest
+passes258 executed/316 registered/58 explicit owned-data skips/zero failures in
+208.63s; the relevant owned-data gates above ran separately. Existing viewport
+Input integration remains10315/24 and brush Setup/tracker/live-query/noninitial
+Update remains2643/9 with complete rollback/43 source fingerprints. All12 live
+Model ownership/lease/refusal controls retain their original shutdown boundary.
+
+Actual normal first-Training startup reaches the SAME retained later guard in
+612.456s with266870 instructions/37932 writes and14169046 native work under the
+unchanged16777216 limit. Genuine tracker counts remain25 Movers/150 polygons/
+150 nodes/600 vertices/600 points. Full save/state/revision/hash/RNG/client/
+lookup/Actor/GC rollback,45 unchanged sources and cold immutable-cache
+replacement verify. This is expected-boundary evidence, NOT playable startup
+or a headset performance measurement. Final audit confirms1918 frozen compiler
+inputs,45 protected originals, three selected texture/music assets and four
+statically inspected DLL sources unchanged, with zero live build/test jobs.
+Earlier failed patch application is retained, not relabeled passing. No
+original commercial module executes and no new APK is packaged.
+Quest event mapping/reset reconciliation, actual Root handlers and ReadInput,
+remaining audio/render/detail startup, committed frames/geometry, live Training
+crates/loot/gravity and headset acceptance remain required. Other-map integration
+stays skipped; accepted presentation HUD/body/hands/controls were not changed.
+See ORIGINAL-INPUT-EXEC-LINES.md, ORIGINAL-INPUT-RUNNING-AUTHORITY.md and
+ORIGINAL-INPUT-ACTION-COMMANDS.md.
+
 ## Latest: original Input reset prefix and live Root key-state query (2026-11-01)
 
 The next Training APK is still blocked by actual Quest input reconciliation,

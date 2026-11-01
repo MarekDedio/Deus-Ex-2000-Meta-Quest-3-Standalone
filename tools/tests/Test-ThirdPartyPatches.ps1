@@ -22,7 +22,7 @@ $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('QuestPatchTests-' + [guid]
 $fixtureSdk = Join-Path $fixtureRoot 'third_party\Meta-OpenXR-SDK'
 New-Item -ItemType Directory -Path $fixtureSdk, (Join-Path $fixtureRoot 'tools'), (Join-Path $fixtureRoot 'patches') | Out-Null
 $fixtureHelper = Join-Path $fixtureRoot 'tools\Apply-ThirdPartyPatches.ps1'
-$patchNames = @('meta-openxr-tinyui-font-override.patch', 'meta-openxr-session-lifecycle.patch', 'meta-openxr-session-destroying.patch')
+$patchNames = @('meta-openxr-tinyui-font-override.patch', 'meta-openxr-session-lifecycle.patch', 'meta-openxr-session-destroying.patch', 'meta-openxr-app-loop-lifecycle.patch')
 $passed = 0
 
 function Assert-True([bool]$Condition, [string]$Message) {
@@ -89,6 +89,34 @@ try {
     Assert-True ($xrAppHeader.Contains('virtual void SessionDestroying();') -and
         $xrApp.Contains('void XrApp::SessionDestroying() {}')) 'pre-teardown hook is optional for other SDK applications'
     Complete-Test 'native-client revocation precedes framebuffer destruction'
+
+    $loopOffset = $xrApp.IndexOf('void XrApp::MainLoop(MainLoopContext& loopContext) {', [StringComparison]::Ordinal)
+    $initSessionOffset = $xrApp.IndexOf('InitSession();', $loopOffset, [StringComparison]::Ordinal)
+    $loopStartedOffset = $xrApp.IndexOf('AppLoopStarted();', $loopOffset, [StringComparison]::Ordinal)
+    $whileOffset = $xrApp.IndexOf('while (!loopContext.ShouldExitMainLoop())', $loopOffset, [StringComparison]::Ordinal)
+    $loopStoppingOffset = $xrApp.IndexOf('AppLoopStopping();', $loopOffset, [StringComparison]::Ordinal)
+    $sessionEndOffset = $xrApp.IndexOf('EndSession();', $loopOffset, [StringComparison]::Ordinal)
+    $shutdownOffset = $xrApp.IndexOf('Shutdown(loopContext.GetJavaContext());', $loopOffset, [StringComparison]::Ordinal)
+    Assert-True ($loopOffset -ge 0 -and $initSessionOffset -gt $loopOffset -and $loopStartedOffset -gt $initSessionOffset -and
+        $whileOffset -gt $loopStartedOffset -and $loopStoppingOffset -gt $whileOffset -and $sessionEndOffset -gt $loopStoppingOffset -and
+        $shutdownOffset -gt $sessionEndOffset) 'actual execution hooks bracket the outer loop before target teardown and worker joins'
+    Assert-True ($xrAppHeader.Contains('virtual void AppLoopStarted();') -and $xrAppHeader.Contains('virtual void AppLoopStopping();') -and
+        $xrApp.Contains('void XrApp::AppLoopStarted() {}') -and $xrApp.Contains('void XrApp::AppLoopStopping() {}')) 'loop hooks remain optional for other SDK apps'
+    Complete-Test 'actual app-loop entry/stop are separate from session focus/tracking'
+
+    & $gitCommand.Source -C $fixtureSdk apply --reverse (Join-Path $fixtureRoot 'patches\meta-openxr-app-loop-lifecycle.patch')
+    Assert-True ($LASTEXITCODE -eq 0) 'fixture app-loop patch can be reversed'
+    $loopUnpatched = Get-Content -LiteralPath $xrAppPath -Raw
+    $loopUnpatched.Replace('while (!loopContext.ShouldExitMainLoop())', 'while (false && !loopContext.ShouldExitMainLoop())') |
+        Set-Content -LiteralPath $xrAppPath -NoNewline -Encoding utf8
+    $loopConflictHashes = @(Get-FixtureHashes) -join ','
+    $loopCaught = $null
+    try { & $fixtureHelper } catch { $loopCaught = $_ }
+    Assert-True ($null -ne $loopCaught -and $loopCaught.Exception.Message -match 'conflicting edits.*app-loop') 'loop hook conflict raises explicit patch error'
+    Assert-True ((@(Get-FixtureHashes) -join ',') -ceq $loopConflictHashes) 'loop hook conflict preserves all fixture source bytes'
+    Complete-Test 'app-loop lifecycle patch conflicts preserve local edits'
+    $loopUnpatched | Set-Content -LiteralPath $xrAppPath -NoNewline -Encoding utf8
+    & $fixtureHelper
 
     & $gitCommand.Source -C $fixtureSdk apply --reverse (Join-Path $fixtureRoot 'patches\meta-openxr-session-destroying.patch')
     Assert-True ($LASTEXITCODE -eq 0) 'fixture pre-teardown hook patch can be reversed'
