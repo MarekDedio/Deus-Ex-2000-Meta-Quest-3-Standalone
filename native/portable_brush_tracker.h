@@ -45,3 +45,17 @@ struct PortableLiveModelQueryProbe {
 // observed under one caller root then completely rolled back. Not committed
 // collision gameplay, noninitial mover update, renderer or headset acceptance.
 PortableLiveModelQueryProbe ProbePortableRuntimeLiveModelQueries(const QuestVr::Vm::Limits& limits={});
+
+struct PortableBrushUpdateProbe {
+    QuestVr::Vm::Result execution;
+    PortableBrushTrackerProbe initial,rebuilt;
+    std::size_t pending{},pass1Movers{},flushedMovers{},releasedNodes{},releasedPoints{};
+    std::size_t repeatedUpdates{},repeatedReleasedNodes{},repeatedAttachments{};
+    std::uint64_t beforeModelRevision{},afterModelRevision{},beforeTrackerRevision{},afterTrackerRevision{};
+    bool unchangedSkipped{},assimilatedSkipped{},emptySkipped{},topologyChecked{},releasedReadRefused{},currentQueryObserved{};
+};
+// Actual first-Training constructor then noninitial Update in ONE outer root,
+// always rolled back. Does not manufacture a committed startup solely to test
+// first-write COW of a preexisting tracker; that separate acceptance stays open.
+PortableBrushUpdateProbe ProbePortableRuntimeBrushUpdate(bool fullUpdate=false,std::size_t failureStage=0u,
+    const QuestVr::Vm::Limits& limits={});

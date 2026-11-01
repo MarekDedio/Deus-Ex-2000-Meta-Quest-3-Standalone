@@ -1,5 +1,74 @@
 # Port status
 
+## Latest: real noninitial moving-brush dependency/removal/rebuild (2026-11-01)
+
+The host now provides actual noninitial Update against the completed current
+Level/Model/tracker. It uses rooted stable pending indices, exact assimilation/
+pose-cache writes, Front/Back/Plane postorder dependency discovery and the
+original three-pass schedule. Pass1 captures its head once; newly prepended
+entries participate in passes2/3, not an invented fixed-point outer worklist.
+Single unchanged/already-assimilated and empty/all-assimilated full selections
+skip before Model/tracker COW, avoiding false world-revision publication.
+
+Ordered flush clears only the first matching Front-else-Back-else-Plane parent
+edge, frees points ascending into the LIFO chain, clears vertex owners then
+node owner/parent, and reads actual node+30 AFTER release. A private same-pass
+released bitmap authenticates partial reads and parents released earlier in
+the pass; it grants no free-record query access. Geometry is not zeroed, arrays
+not shrunk, cursors not reset and masks/children not globally repaired. Rebuild
+retains original transforms, sphere/prefilter/surface/filter/insertion behavior,
+clears visited flags on new root chains and checks revision overflow.
+
+Actual Brush roots reuse their earliest before-model journal without copying
+unchanged Polys. Tracker beforeimages now explicitly root old Model/node/vertex/
+point owners and account root/capacity/copy overlap. Mutation exclusion covers
+all passes; rollback restores tracker/Brush/Polys/Model before object retirement.
+IMPORTANT: the owned positive gate constructs and updates in ONE outer root.
+It proves genuine old dynamic-geometry mutation and same-root journal reuse,
+NOT first-write COW of a tracker committed by an earlier root or isolated old-
+edge survival after retirement. Those acceptance gaps remain explicit; no
+journal is cleared and no partial startup is committed to manufacture proof.
+
+Generated dependency/flush controls pass101 checks/18 refusals. Real first-
+Training Setup/tracker/query/update integration passes2643 checks/9 source-policy
+or missing-source refusals, with full checkpoint/revision/native-absence/GC/
+source-cache restoration and43 unchanged sources. Single Update observes1
+pending/1 pass1/1 flush,6 released nodes/24 points and5 attachments. Full Update
+observes25 pending/25 pass1/25 flushes,150 released nodes/600 points and149
+attachments. Both observe149 active nodes at the changed pose, then perform two
+further real same-mover/another-mover/full updates, current dynamic FastTrace
+reads and retired-root refusal. Four injected roots verify restoration after
+dependency/cache writes, ordered flush, actual reattachment and partial point
+free. These are observed component counts, NOT visual or solid-hit acceptance.
+Existing owned coordinate regression passes154643 checks/325 identity refusals.
+
+Strict ARM64, Android-native, focused and full desktop builds pass. Full CTest
+passes253 tests/308 registered/55 explicit owned-data skips/zero failures in
+135.92s. The relevant owned gates above ran separately. Real first-Training
+startup reaches the SAME retained later guard in311.069s, with266870 bytecode
+instructions/37932 writes and native work14169034 under16777216. Its actual
+initial tracker remains completed/Level-owned/topology-checked with25 Movers/
+150 polygons/150 nodes/600 vertices/600 points. Complete save/state/revision/
+hash/RNG/client/lookup/Actor/GC rollback,45 unchanged sources and cold immutable
+cache replacement verify. This is expected-boundary evidence, NOT successful
+startup or a headset performance result. Final audit verifies1895 frozen
+compiler inputs,45 protected originals, three selected texture/music assets
+and the statically inspected Render.dll unchanged, with zero live build/test
+jobs. No failed gate was relabeled passing.
+
+Static original Render.dll inspection identifies the real runtime consumer:
+URender::SetupDynamics conditionally calls tracker virtual+04(Update) for the
+selected mover at10B230D5..10B230E5. The complete MoveActor coordinator has no
+such callback; no guessed post-MoveActor operation was added. The Quest renderer
+consumer is NOT wired by this service. Original DLLs remain read-only file data;
+no original commercial module executes. Accepted VR UI/body/hands/controls are
+unchanged, no other map is integrated and no new APK is packaged.
+
+Still required: genuine renderer consumption, earlier-root COW acceptance,
+destructor/travel/geometry checkpoint/rebind, actual audio/Input/reset/render/
+detail startup services and committing original frames/first-Training crates,
+loot, gravity and headset acceptance. See ORIGINAL-BRUSH-NONINITIAL-UPDATE.md.
+
 ## Latest: authenticated current-world Model collision queries (2026-11-01)
 
 FastTrace, world point/extent MultiLineCheck, zero/box PointCheck, PointRegion,

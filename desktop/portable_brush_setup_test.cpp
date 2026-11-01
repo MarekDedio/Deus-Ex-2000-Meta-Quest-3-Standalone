@@ -199,6 +199,47 @@ void Run(const fs::path& root){
         queryModel.modelExportIndex==cachedModel.modelExportIndex&&queryModel.mapGeneration==cachedModel.mapGeneration,
         "Live mutable query changed original immutable cache");
     for(const auto& source:sources)source.Check();
+    const auto checkUpdateRollback=[&] {
+        Require(!HasPortableRuntimeMutableBrushGeometry()&&temporary.Snapshot("AfterNoninitialUpdate")==before&&GetPortableRuntimeWorldRevision()==revision,
+            "Noninitial brush root failed complete native/reflected checkpoint/revision rollback");
+        const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Noninitial brush root retained GC owner/journal roots");
+        const auto afterModel=ReadPortableRuntimeNativeModel();Require(afterModel.cachedNodes==cachedModel.cachedNodes&&
+            afterModel.modelExportIndex==cachedModel.modelExportIndex&&afterModel.mapGeneration==cachedModel.mapGeneration,
+            "Noninitial brush root replaced the original immutable source cache");
+        for(const auto& source:sources)source.Check();
+    };
+    for(const bool full:{false,true}) {
+        const auto update=ProbePortableRuntimeBrushUpdate(full,0u,trackerLimits);
+        Require(update.execution.status==QuestVr::Vm::Status::Returned&&!update.execution.committed,
+            "Actual noninitial brush Update failed: "+update.execution.error);
+        Require(update.unchangedSkipped&&update.assimilatedSkipped&&update.emptySkipped&&update.pending>0u&&update.pass1Movers>0u&&
+            update.pass1Movers<=update.pending&&update.flushedMovers==update.pending&&update.rebuilt.movers.size()==update.pending&&
+            update.releasedNodes>0u&&update.releasedPoints>0u&&update.rebuilt.attachments>0u&&update.rebuilt.activeNodes>0u&&
+            update.topologyChecked&&update.releasedReadRefused&&update.currentQueryObserved,
+            "Actual noninitial Update omitted old-root dependency/flush/rebuild/live-view or no-op behavior");
+        Require(update.afterModelRevision-update.beforeModelRevision==update.pending&&
+            update.afterTrackerRevision-update.beforeTrackerRevision==update.pending,
+            "Noninitial Update did not advance each independent revision once per rebuilt mover");
+        Require(update.repeatedUpdates==2u&&update.repeatedReleasedNodes>0u&&update.repeatedAttachments>0u,
+            "Same/other-mover repeated updates did not exercise actual pool reuse and current live queries");
+        if(full)Require(update.pending==25u&&update.pass1Movers==25u,"Full Update skipped unchanged Training movers");
+        checkUpdateRollback();
+        std::cout<<"PASS actual noninitial Training Update full="<<full<<" pending="<<update.pending<<" pass1="<<update.pass1Movers
+            <<" flushed="<<update.flushedMovers<<" releasedNodes="<<update.releasedNodes<<" releasedPoints="<<update.releasedPoints
+            <<" attachments="<<update.rebuilt.attachments<<" activeNodes="<<update.rebuilt.activeNodes<<" repeats="<<update.repeatedUpdates
+            <<"; same-root constructor/update rollback, NOT earlier-root COW/gameplay/render/headset\n";
+    }
+    for(const auto stage:{1u,2u,3u,4u}) {
+        const auto failed=ProbePortableRuntimeBrushUpdate(false,stage,trackerLimits);
+        Require(failed.execution.status==QuestVr::Vm::Status::Unsupported&&
+            failed.execution.error.find(stage==3u?"Injected brush tracker refusal":"Injected noninitial brush failure")!=std::string::npos,
+            "Noninitial Update failed before its selected injected partial-write stage: "+failed.execution.error);
+        Require(failed.pending>0u&&failed.pass1Movers>0u,"Noninitial fault did not reach actual old-root dependency writes");
+        if(stage==2u)Require(failed.flushedMovers==1u&&failed.releasedNodes>0u,"Ordered flush fault preceded release");
+        if(stage==3u)Require(failed.rebuilt.attachments==1u,"Reattachment fault preceded actual BSP attachment");
+        checkUpdateRollback();
+    }
     std::cout<<"PASS actual first Training SetupActor:25 Movers/150 polygons; typed Model->Polys, Texture/Actor GC edges, exact surface/cache/link stores, "
         "1 completed and4 partial-write root rollbacks; "<<sources.size()<<" original sources unchanged. Texture admission packages=2 bindings=2 retained="<<textures.retainedBytes
         <<" serialized="<<textures.serializedBytes<<" work="<<textures.nativeWork.used<<"\n";
@@ -216,5 +257,5 @@ int main(int argc,char** argv){try{
     if(!root){if(argc!=1)throw std::runtime_error("Usage: portable_brush_setup_test [--game-root OWNED_GAME_ROOT]");std::cout<<"SKIP owned brush SetupActor source integration\n";return 77;}
     ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();Run(fs::canonical(root));ShutdownPortableRuntime();GC::Collect();
     Require(GC::GetStats().numObjects==before.numObjects&&GC::GetStats().memoryUsage==before.memoryUsage,"SetupActor shutdown left GC roots");
-    std::cout<<"PASS brush setup/tracker checks="<<checks<<" source refusals="<<refusals<<"; no committed startup/headset/noninitial-update proof\n";return 0;
+    std::cout<<"PASS brush setup/tracker checks="<<checks<<" source refusals="<<refusals<<"; no earlier-root COW/committed startup/headset proof\n";return 0;
 }catch(const std::exception& error){std::cerr<<"FAIL native brush setup: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}}

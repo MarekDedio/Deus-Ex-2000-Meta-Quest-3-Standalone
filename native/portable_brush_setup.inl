@@ -11,6 +11,16 @@
             throw std::runtime_error("Native polygon reference lacks its actual indexed source object/linker");
         return target;
     }
+    void TouchNativeBrushModel(RuntimeObject* model) {
+        RequireNativeModelWritable();
+        if(!transaction_||!model)throw std::runtime_error("Native Brush root journal requires its owning VM root");
+        if(std::none_of(beforeBrushModels_.begin(),beforeBrushModels_.end(),[&](const auto& row){return row.model.get()==model;})) {
+            if(beforeBrushModels_.size()>=4096u)throw std::runtime_error("Native Brush model journal count exceeded");
+            ValidateStateBudget((beforeBrushModels_.size()+1u)*sizeof(BeforeBrushModel)+2u*sizeof(GCRootNode));
+            beforeBrushModels_.reserve(beforeBrushModels_.size()+1u);
+            beforeBrushModels_.emplace_back(model);
+        }
+    }
     RuntimeNativeMutablePolys& MutableBrushPolys(RuntimeObject* model,RuntimeObject* level) {
         RequireNativeModelWritable();
         if(!transaction_||level!=CurrentClockLevel()||model->sourcePath!=level->sourcePath||model->runtimeBirth)
@@ -28,12 +38,7 @@
             throw std::runtime_error("Native Polys source/export/class/linker identity is unavailable");
         if(model->nativeBrushPolys&&model->nativeBrushPolys!=polys)
             throw std::runtime_error("Native Brush Model.Polys binding changed from its authored object");
-        if(std::none_of(beforeBrushModels_.begin(),beforeBrushModels_.end(),[&](const auto& row){return row.model.get()==model;})) {
-            if(beforeBrushModels_.size()>=4096u)throw std::runtime_error("Native Brush model journal count exceeded");
-            ValidateStateBudget((beforeBrushModels_.size()+1u)*sizeof(BeforeBrushModel)+2u*sizeof(GCRootNode));
-            beforeBrushModels_.reserve(beforeBrushModels_.size()+1u);
-            beforeBrushModels_.emplace_back(model);
-        }
+        TouchNativeBrushModel(model);
         if(std::any_of(beforeMutablePolys_.begin(),beforeMutablePolys_.end(),[&](const auto& row){return row.polys.get()==polys;})) {
             if(!polys->nativeMutablePolys||polys->nativeMutablePolys->generation!=level->nativeMapGeneration)
                 throw std::runtime_error("Native Polys journal lost its current mutable payload");

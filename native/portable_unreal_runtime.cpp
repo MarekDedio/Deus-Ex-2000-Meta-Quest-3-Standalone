@@ -100,6 +100,7 @@
 #include "portable_brush_setup.h"
 #include "portable_brush_tracker.h"
 #include "quest_brush_bsp_insert.h"
+#include "quest_brush_update.h"
 #include "portable_brush_polys.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
@@ -6223,6 +6224,7 @@ public:
 #include "portable_brush_geometry.inl"
 #include "portable_brush_setup.inl"
 #include "portable_brush_tracker.inl"
+#include "portable_brush_update.inl"
 #include "portable_live_model_queries.inl"
     const QuestVr::OriginalImmutableCollisionModel& NativeWorldCollisionSource(RuntimeObject* level) {
         if(level&&level->nativeLevelModel&&level->nativeLevelModel->nativeMutableModel)
@@ -10219,6 +10221,7 @@ private:
     struct BeforeBrushTracker {
         GCRoot<RuntimeObject> level;
         std::unique_ptr<RuntimeNativeBrushTracker> state;
+        std::vector<GCRoot<RuntimeObject>> references;
         explicit BeforeBrushTracker(RuntimeObject* value):level(value){}
     };
     std::optional<BeforeBrushTracker> beforeBrushTracker_;
@@ -11691,6 +11694,8 @@ private:
         }
         if(beforeBrushTracker_) {
             defaults.Retain(sizeof(BeforeBrushTracker)+sizeof(GCRootNode));
+            defaults.Retain(beforeBrushTracker_->references.capacity()*sizeof(GCRoot<RuntimeObject>)+
+                beforeBrushTracker_->references.size()*sizeof(GCRootNode));
             if(beforeBrushTracker_->state)defaults.Retain(NativeBrushTrackerBytes(*beforeBrushTracker_->state));
         }
         defaults.Retain(beforeMutablePolys_.capacity()*sizeof(BeforeMutablePolys)+beforeBrushModels_.capacity()*sizeof(BeforeBrushModel));
@@ -16492,6 +16497,17 @@ PortableBrushTrackerProbe ProbePortableRuntimeBrushTracker(std::size_t failAfter
         PortableActorVmHost host;
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&){
             return host.ProbeNativeBrushTracker(failAfterAttachments,result);
+        },limits);
+        result.execution.committed=false;
+    }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}
+    return result;
+}
+PortableBrushUpdateProbe ProbePortableRuntimeBrushUpdate(bool fullUpdate,std::size_t failureStage,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableBrushUpdateProbe result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&){
+            return host.ProbeNativeBrushUpdate(fullUpdate,failureStage,result);
         },limits);
         result.execution.committed=false;
     }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}

@@ -1,5 +1,11 @@
 # Original brush dependency and flush helpers (2026-10-31)
 
+Continuation2026-11-01: typed helpers and the actual host noninitial Update
+provider now pass generated and first-Training same-root rollback gates; see
+ORIGINAL-BRUSH-NONINITIAL-UPDATE.md. The static contract below is retained as
+source evidence. Renderer consumption, earlier-root COW, startup publication,
+destructor/travel/archive and crates/loot/gravity remain unproven.
+
 Read-only static follow-up while the fresh-constructor regression runs. This
 document is not implementation, a passed update test, travel/destructor proof,
 startup completion, crates or an APK. No original DLL/EXE was loaded/executed.
