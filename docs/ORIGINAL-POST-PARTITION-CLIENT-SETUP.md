@@ -1,5 +1,19 @@
 # Original post-partition client/player setup (2026-10-22)
 
+Continuation2026-11-01: the genuine non-Entry moving-brush constructor now
+completes in real first-Training startup, after the actual SpawnPlayActor loop.
+The retained aggregate guard is AFTER that construction, not before player
+creation or the tracker. Current-world collision query integration also passes
+its separate owned-data rollback gate; neither result publishes gameplay.
+Remaining selected startup services retain their original order: actual
+Engine.Audio callbacks, viewport Input.ResetInput, conditional render-device
+operation, then Level.DetailChange. Existing Quest music/dialogue or stereo
+targets alone do not supply authenticated native audio/render capabilities.
+Input.Init/ResetInput and reconciliation with the already-bound Quest input
+source are a concrete next service; native544 ResetConfig is NOT ResetInput.
+ReadInput during original Player Tick remains separately unsupported. See
+ORIGINAL-LIVE-MODEL-QUERIES.md and STATUS.md for exact gate scope.
+
 Continuation2026-10-30: real first-Training SpawnPlayActor now returns from its
 actual Login, SetPlayer/Possess, travel callbacks, PostLogin and captured-pawn
 tail. Two expected-boundary diagnostics agree at266870 instructions/37932 writes
@@ -212,8 +226,9 @@ The original Extension XInputExt UObject vtable is `1005C3EC`; its `+68`
 entry (`1005C454`) is thunk `10054642`, which jumps through IAT `100592D8`.
 The static IAT value points at import-name record RVA`786D8`, named
 `UInput::ResetInput`. Thus this configured InputExt inherits the real reset
-operation here, not an unproven empty override. Input construction/registration
-and its rollback still need a genuine port-owned service.
+operation here, not an unproven empty override. Initialized Input/reset behavior
+and its rollback still need a genuine port-owned service; native constructor/
+configured-instance ownership alone does not implement Init or ResetInput.
 
 Viewport `+64`'s conditional virtual `+68(1)` follows the reset. The earlier
 detail selection directly tests that object's `+64` HighDetailActors storage.

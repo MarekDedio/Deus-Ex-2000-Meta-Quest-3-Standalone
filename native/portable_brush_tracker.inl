@@ -10,6 +10,11 @@
             if(offset>=pool.nodes.size()||!pool.nodes[offset].owner)
                 throw std::runtime_error("Live brush traversal selected a free dynamic node");
             const auto* owner=pool.nodes[offset].owner;const auto& n=g.nodes[i];
+            if(owner->nativeXLevel!=level||!owner->active||owner->worldRemoved||owner->worldActorIndex<0||
+                static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size()||
+                persistentWorldActors[static_cast<std::size_t>(owner->worldActorIndex)]!=owner||
+                !owner->nativeLinker||!owner->nativeLinker->active)
+                throw std::runtime_error("Live brush node owner is not a current native Level Actor");
             if(n.surface<0||static_cast<std::size_t>(n.surface)<live.sourceSurfaceCount||
                 static_cast<std::size_t>(n.surface)-live.sourceSurfaceCount>=live.dynamicSurfaceReferences.size()||
                 live.dynamicSurfaceReferences[static_cast<std::size_t>(n.surface)-live.sourceSurfaceCount].actor!=owner||
@@ -30,6 +35,7 @@
         return g.nodes[i];
     }
     Value ConstructNativeBrushTracker(std::size_t failAfterAttachments,PortableBrushTrackerProbe& result) {
+        RequireNativeModelWritable();
         auto* level=CurrentClockLevel();auto* model=level->nativeLevelModel;
         if(level->nativeBrushTracker||beforeBrushTracker_)
             throw std::runtime_error("Original fresh brush constructor requires an absent prior tracker");

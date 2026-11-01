@@ -1,6 +1,7 @@
 #pragma once
 
 #include "portable_model_geometry.h"
+#include "quest_model_node_access.h"
 
 #include <algorithm>
 #include <cmath>
@@ -43,8 +44,9 @@ inline void Step(std::size_t& value, const std::size_t limit) {
 inline bool Finite(const PortableModelVec3& point) {
     return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
 }
-inline void Validate(const PortableModelGeometry& model, const ModelPointTraceLimits& limits,
+template<class Model> inline void Validate(const Model& model, const ModelPointTraceLimits& limits,
     ModelPointTraceStats& stats) {
+    ModelNodeAccessDetail::Check(model);
     const ModelPointTraceLimits maximum;
     if (!limits.nodes || limits.nodes > maximum.nodes || !limits.validationSteps ||
         limits.validationSteps > maximum.validationSteps || !limits.querySteps || limits.querySteps > maximum.querySteps)
@@ -52,13 +54,18 @@ inline void Validate(const PortableModelGeometry& model, const ModelPointTraceLi
     if (model.version != 68u || model.licenseeMode != 0u) Fail("unsupported Model layout");
     if (model.nodes.size() > limits.nodes) Fail("node budget exceeded");
     if (model.rootOutside != 0 && model.rootOutside != 1) Fail("invalid root-outside value");
-    for (const auto& node : model.nodes) {
+    for (std::size_t index=0;index<model.nodes.size();++index) {
+        if(!ModelNodeAccessDetail::Active(model,index))continue;
+        const auto& node=model.nodes[index];
         Step(stats.validationSteps, limits.validationSteps);
         if (!std::isfinite(node.planeX) || !std::isfinite(node.planeY) ||
             !std::isfinite(node.planeZ) || !std::isfinite(node.planeW)) Fail("nonfinite BSP plane");
-        for (const auto child : {node.front, node.back})
+        for (const auto child : {node.front, node.back}) {
             if (child != -1 && (child < 0 || static_cast<std::size_t>(child) >= model.nodes.size()))
                 Fail("invalid BSP child index");
+            if(child!=-1&&!ModelNodeAccessDetail::Active(model,static_cast<std::size_t>(child)))
+                Fail("active BSP child selects a free dynamic slot");
+        }
     }
     // Validate even pruned/unreachable components. Shared children are legal;
     // cycles are not, and their repeated query visits still consume one budget.
@@ -66,6 +73,7 @@ inline void Validate(const PortableModelGeometry& model, const ModelPointTraceLi
     std::vector<std::uint8_t> colors(model.nodes.size());
     std::vector<Frame> stack;
     for (std::size_t root = 0; root < model.nodes.size(); ++root) {
+        if(!ModelNodeAccessDetail::Active(model,root))continue;
         if (colors[root]) continue;
         colors[root] = 1u; stack.push_back({root, 0u});
         while (!stack.empty()) {
@@ -80,6 +88,7 @@ inline void Validate(const PortableModelGeometry& model, const ModelPointTraceLi
             if (!colors[index]) { colors[index] = 1u; stack.push_back({index, 0u}); }
         }
     }
+    ModelNodeAccessDetail::Check(model);
 }
 inline float Distance(const PortableModelVec3& point, const PortableModelNode& node) {
     // The original null-coordinate recursion stores its x87 dot product in a

@@ -14,8 +14,10 @@ inline void Limits(const ModelPointOverlapLimits& limits) {
         limits.querySteps>maximum.querySteps||!limits.pending||limits.pending>maximum.pending)
         Fail("callers may only tighten fixed positive limits");
 }
-inline void Validate(const PortableModelGeometry& model,const ModelPointOverlapLimits& limits,
+template<class Model>
+inline void Validate(const Model& model,const ModelPointOverlapLimits& limits,
     ModelPointOverlapStats& stats,bool box,bool owned) {
+    ModelNodeAccessDetail::Check(model);
     if(model.version!=68u||model.licenseeMode!=0u) Fail("unsupported serialized Model layout");
     if(model.rootOutside!=0&&model.rootOutside!=1) Fail("invalid root-outside value");
     if(model.nodes.size()>limits.nodes||model.leafHulls.size()>limits.hullWords) Fail("Model array budget exceeded");
@@ -27,21 +29,27 @@ inline void Validate(const PortableModelGeometry& model,const ModelPointOverlapL
         // Structural/finite-source admission only, NOT an extent sweep. Owned
         // hull bound words are structurally copied but numerically inactive.
         ModelExtentTraceDetail::Validate(model,admitted,checked,owned);
-        stats.validationSteps=checked.validationSteps;return;
+        stats.validationSteps=checked.validationSteps;ModelNodeAccessDetail::Check(model);return;
     }
     // Zero occupancy never reads collisionBound or leaf hulls. Validate all
     // node graph components, including pruned ones, without inventing an
     // inactive hull/packed-bound numerical dependency.
-    for(const auto& node:model.nodes) {
+    for(std::size_t index=0u;index<model.nodes.size();++index) {
+        if(!ModelNodeAccessDetail::Active(model,index))continue;
+        const auto& node=model.nodes[index];
         Step(stats.validationSteps,limits.validationSteps);
         static_cast<void>(Load(node.planeX));static_cast<void>(Load(node.planeY));
         static_cast<void>(Load(node.planeZ));static_cast<void>(Load(node.planeW));
-        for(const auto child:{node.front,node.back})
+        for(const auto child:{node.front,node.back}) {
             if(child!=-1&&(child<0||static_cast<std::size_t>(child)>=model.nodes.size())) Fail("invalid BSP child index");
+            if(child!=-1&&!ModelNodeAccessDetail::Active(model,static_cast<std::size_t>(child)))
+                Fail("active BSP child selects a free dynamic pool record");
+        }
     }
     struct Frame {std::size_t node;unsigned next;};
     std::vector<unsigned char> colors(model.nodes.size());std::vector<Frame> stack;
     for(std::size_t root=0u;root<model.nodes.size();++root) {
+        if(!ModelNodeAccessDetail::Active(model,root))continue;
         if(colors[root])continue;
         colors[root]=1u;stack.push_back({root,0u});
         while(!stack.empty()) {
@@ -54,6 +62,7 @@ inline void Validate(const PortableModelGeometry& model,const ModelPointOverlapL
             if(!colors[index]) {colors[index]=1u;stack.push_back({index,0u});}
         }
     }
+    ModelNodeAccessDetail::Check(model);
 }
 inline bool ZeroOrUnordered(float value) {return value==0.0f||std::isnan(value);}
 inline Dyadic Product(float a,float b) {return Multiply64(Load(a),Load(b));}
@@ -74,7 +83,8 @@ inline Dyadic ZeroDistance(const PortableModelVec3& point,const PortableModelNod
     const auto w=Sub(Load(node.planeW),dot);
     return Sub(ModelOwnerCoordsDetail::TraversalDot(point,transformed),w);
 }
-inline bool Zero(Context& context,const OriginalModelCoords& coords) {
+template<class Model>
+inline bool Zero(BasicContext<Model>& context,const OriginalModelCoords& coords) {
     std::int32_t current=0;bool outside=context.model.rootOutside!=0;
     for(;;) {
         Step(context.stats.querySteps,context.limits.querySteps);++context.stats.nodeVisits;
@@ -102,7 +112,8 @@ inline float BoxRadius(const PortableModelVec3& extent,const OriginalExtentPlane
     return Store32(Add64(Add64(Magnitude(Product(inflated.z,plane.z)),Magnitude(Product(inflated.y,plane.y))),
         Magnitude(Product(inflated.x,plane.x))));
 }
-inline bool Box(Context& context,std::uint32_t flags) {
+template<class Model>
+inline bool Box(BasicContext<Model>& context,std::uint32_t flags) {
     struct Visit {std::int32_t node,parent;bool outside;};
     Visit current{0,0,context.model.rootOutside!=0};std::vector<Visit> pending;
     pending.reserve(std::min<std::size_t>({context.model.nodes.size(),context.limits.pending,64u}));
@@ -135,18 +146,19 @@ inline bool Box(Context& context,std::uint32_t flags) {
 } // namespace ModelPointOverlapDetail
 
 namespace ModelPointOverlapDetail {
-template<class Capture>
-bool Query(OriginalActorLineHit& caller,const PortableModelGeometry& model,
+template<class Model,class Capture>
+bool Query(OriginalActorLineHit& caller,const Model& model,
     std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& location,
     const PortableModelVec3& extent,std::uint32_t flags,Capture&& capture,
     const ModelPointOverlapLimits& limits,ModelPointOverlapStats completed,bool box,ModelPointOverlapStats* stats) {
+    ModelNodeAccessDetail::Check(model);
     auto prepared=caller;prepared.actor=ownerIdentity;prepared.primitive=modelIdentity;
     prepared.location=location;prepared.normal={};prepared.time=0.0f;
     bool clear=model.rootOutside!=0;
     if(!model.nodes.empty()) {
         std::optional<OriginalModelCoords> coords;
-        if(ownerIdentity)coords=capture();
-        Context context{model,modelIdentity,ownerIdentity,location,extent,coords?&*coords:nullptr,prepared,100000.0f,limits,completed};
+        if(ownerIdentity){coords=capture();ModelNodeAccessDetail::Check(model);}
+        BasicContext<Model> context{model,modelIdentity,ownerIdentity,location,extent,coords?&*coords:nullptr,prepared,100000.0f,limits,completed};
         if(box) {
             static_cast<void>(Load(extent.x));static_cast<void>(Load(extent.y));static_cast<void>(Load(extent.z));
             clear=Box(context,flags);
@@ -155,7 +167,18 @@ bool Query(OriginalActorLineHit& caller,const PortableModelGeometry& model,
             clear=Zero(context,coords?*coords:identity);
         }
     }
+    ModelNodeAccessDetail::Check(model);
     caller=prepared;if(stats)*stats=completed;return clear;
+}
+template<class Model,class Capture>
+bool Check(OriginalActorLineHit& caller,const Model& model,
+    std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& location,
+    const PortableModelVec3& extent,std::uint32_t flags,Capture&& capture,
+    const ModelPointOverlapLimits& limits={},ModelPointOverlapStats* stats=nullptr) {
+    Limits(limits);ModelNodeAccessDetail::Check(model);if(!modelIdentity)Fail("actual Model identity is null");
+    const bool box=!model.nodes.empty()&&!(ZeroOrUnordered(extent.x)&&ZeroOrUnordered(extent.y)&&ZeroOrUnordered(extent.z));
+    ModelPointOverlapStats completed;Validate(model,limits,completed,box,ownerIdentity!=0u);
+    return Query(caller,model,modelIdentity,ownerIdentity,location,extent,flags,std::forward<Capture>(capture),limits,completed,box,stats);
 }
 } // namespace ModelPointOverlapDetail
 
@@ -167,11 +190,8 @@ bool CheckOriginalModelPointOverlap(OriginalActorLineHit& caller,const PortableM
     std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& location,
     const PortableModelVec3& extent,std::uint32_t flags,Capture&& capture,
     const ModelPointOverlapLimits& limits={},ModelPointOverlapStats* stats=nullptr) {
-    using namespace ModelPointOverlapDetail;
-    Limits(limits);if(!modelIdentity)Fail("actual Model identity is null");
-    const bool box=!model.nodes.empty()&&!(ZeroOrUnordered(extent.x)&&ZeroOrUnordered(extent.y)&&ZeroOrUnordered(extent.z));
-    ModelPointOverlapStats completed;Validate(model,limits,completed,box,ownerIdentity!=0u);
-    return Query(caller,model,modelIdentity,ownerIdentity,location,extent,flags,std::forward<Capture>(capture),limits,completed,box,stats);
+    return ModelPointOverlapDetail::Check(caller,model,modelIdentity,ownerIdentity,location,extent,flags,
+        std::forward<Capture>(capture),limits,stats);
 }
 template<class Capture>
 bool CheckOriginalModelPointOverlap(OriginalActorLineHit& caller,const OriginalImmutableCollisionModel& source,

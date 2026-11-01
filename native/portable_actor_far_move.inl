@@ -6,7 +6,7 @@
             info!=persistentWorldActors.front() || !info || info->nativeXLevel!=level || !IsDerivedFromPath(info->cls,"Engine.LevelInfo"))
             throw std::runtime_error("Original world PointCheck lacks actual Level/slot-zero LevelInfo");
         const auto& model=NativeTraceModel(info);auto* nativeModel=level->nativeLevelModel;
-        const auto& collisionSource=NativeWorldCollisionSource(level);
+        const auto* collisionSource=nativeModel&&nativeModel->nativeMutableModel?nullptr:&NativeWorldCollisionSource(level);
         if(!nativeModel)throw std::runtime_error("Original world PointCheck native Model disappeared");
         struct ValidationFrame {std::size_t node;unsigned next;};
         struct Visit {std::int32_t node,parent;bool outside;};
@@ -16,17 +16,22 @@
         const bool box=!model.nodes.empty()&&!(QuestVr::ModelPointOverlapDetail::ZeroOrUnordered(extent.x)&&
             QuestVr::ModelPointOverlapDetail::ZeroOrUnordered(extent.y)&&QuestVr::ModelPointOverlapDetail::ZeroOrUnordered(extent.z));
         if((fastTraceValidationWork_>=MaximumNativeModelValidationWork&&
-            (!box||!collisionSource.HasNullHullValidation()))||fastTraceQueryWork_>=MaximumNativeModelQueryWork)
+            (!box||!collisionSource||!collisionSource->HasNullHullValidation()))||fastTraceQueryWork_>=MaximumNativeModelQueryWork)
             throw std::runtime_error("Original world PointCheck shared Model work exhausted");
         QuestVr::ModelPointOverlapLimits limits;
         limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
         limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
         QuestVr::ModelPointOverlapStats stats;QuestVr::OriginalWorldLineReply reply;
         try {
-            reply.clear=QuestVr::CheckOriginalModelPointOverlap(reply.hit,collisionSource,reinterpret_cast<std::uintptr_t>(nativeModel),
-                0u,location,extent,0u,[]()->QuestVr::OriginalModelCoords {
-                    throw std::runtime_error("Null-owner world PointCheck unexpectedly requested Owner.ToWorld");
-                },limits,&stats);
+            const auto capture=[]()->QuestVr::OriginalModelCoords {
+                throw std::runtime_error("Null-owner world PointCheck unexpectedly requested Owner.ToWorld");
+            };
+            if(collisionSource)reply.clear=QuestVr::CheckOriginalModelPointOverlap(reply.hit,*collisionSource,
+                reinterpret_cast<std::uintptr_t>(nativeModel),0u,location,extent,0u,capture,limits,&stats);
+            else reply.clear=WithNativeWorldModelQuery(level,[&](const auto& current) {
+                return QuestVr::ModelPointOverlapDetail::Check(reply.hit,current,reinterpret_cast<std::uintptr_t>(nativeModel),
+                    0u,location,extent,0u,capture,limits,&stats);
+            });
             fastTraceValidationWork_+=stats.validationSteps;fastTraceQueryWork_+=stats.querySteps;
         }catch(...) {
             fastTraceValidationWork_=MaximumNativeModelValidationWork;fastTraceQueryWork_=MaximumNativeModelQueryWork;throw;

@@ -35,8 +35,9 @@ inline Dyadic Load(float value) {
     return Decode(value);
 }
 inline Dyadic Sub(const Dyadic& a,const Dyadic& b) {return Add64(a,Negate(b));}
-struct Context {
-    const PortableModelGeometry& model;
+template<class Model>
+struct BasicContext {
+    const Model& model;
     std::uintptr_t modelIdentity{},ownerIdentity{};
     PortableModelVec3 point{},extent{};
     const OriginalModelCoords* coords{};
@@ -45,5 +46,6 @@ struct Context {
     const ModelPointOverlapLimits& limits;
     ModelPointOverlapStats& stats;
 };
+using Context=BasicContext<PortableModelGeometry>;
 } // namespace ModelPointOverlapDetail
 } // namespace QuestVr

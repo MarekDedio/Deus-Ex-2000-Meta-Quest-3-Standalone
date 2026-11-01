@@ -12,6 +12,7 @@
         return target;
     }
     RuntimeNativeMutablePolys& MutableBrushPolys(RuntimeObject* model,RuntimeObject* level) {
+        RequireNativeModelWritable();
         if(!transaction_||level!=CurrentClockLevel()||model->sourcePath!=level->sourcePath||model->runtimeBirth)
             throw std::runtime_error("Native Polys mutation lacks current source Model/Level ownership");
         const auto selected=NativePrimitiveAsset(model);
@@ -117,6 +118,7 @@
     }
     void OriginalBrushSetupActor(RuntimeObject* actor,RuntimeObject* model,PortableBrushSetupProbe& result,
         std::size_t failAfterPolygons) {
+        RequireNativeModelWritable();
         if(!IsDerivedFromPath(actor->cls,"Engine.Mover"))
             throw std::runtime_error("Original dynamic Brush checked-cast to Mover failed");
         auto* level=CurrentClockLevel();

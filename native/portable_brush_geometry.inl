@@ -1,4 +1,5 @@
     RuntimeNativeMutableModel& MutableRootModel(RuntimeObject* level) {
+        RequireNativeModelWritable();
         if(!transaction_)throw std::runtime_error("Native Model mutation requires its outer VM root");
         auto* model=level?level->nativeLevelModel:nullptr;
         ValidateNativeLevelModel(level,model);

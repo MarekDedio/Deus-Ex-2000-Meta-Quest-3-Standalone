@@ -37,19 +37,18 @@ inline bool Front(const PortableModelVec3& point,const PortableModelNode& node) 
     const auto distance=NativeWindowClipDetail::Add64(xyz,NativeWindowClipDetail::Negate(Load(node.planeW)));
     return NativeWindowClipDetail::Compare64(distance,ActorTimerDetail::Decode(0.0f))>=0;
 }
-} // namespace ModelPointRegionDetail
-
 // Original body 103f5db0..103f5f38, with explicit portable active-path bounds.
 // The native outside/CSG bookkeeping does not affect any returned field.
 // Leaves are returned as raw signed words; the native query never reads a
 // Leaves array. Only -1 terminates a child path. The work hook joins the
 // caller's shared root ledger; it is never reset by this query.
-inline OriginalModelPointRegion QueryOriginalModelPointRegion(const PortableModelGeometry& model,
+template<class Model> inline OriginalModelPointRegion Query(const Model& model,
     const PortableModelVec3& point,std::size_t maximumVisits=65'536u,
     const std::function<void()>& work={}) {
+    ModelNodeAccessDetail::Check(model);
     OriginalModelPointRegion result;
     // Empty BSP does not read the point, rootOutside, planes or zone table.
-    if(model.nodes.empty())return result;
+    if(model.nodes.empty()) {ModelNodeAccessDetail::Check(model);return result;}
     std::int32_t current{};
     for(;;) {
         if(result.nodeVisits>=maximumVisits)
@@ -74,7 +73,15 @@ inline OriginalModelPointRegion QueryOriginalModelPointRegion(const PortableMode
         result.zoneNumber=static_cast<std::uint8_t>(zone);
         if(static_cast<std::size_t>(zone)<model.zones.size())
             result.zoneActorReference=model.zones[static_cast<std::size_t>(zone)].actorReference;
+        ModelNodeAccessDetail::Check(model);
         return result;
     }
+}
+} // namespace ModelPointRegionDetail
+
+inline OriginalModelPointRegion QueryOriginalModelPointRegion(const PortableModelGeometry& model,
+    const PortableModelVec3& point,std::size_t maximumVisits=65'536u,
+    const std::function<void()>& work={}) {
+    return ModelPointRegionDetail::Query(model,point,maximumVisits,work);
 }
 } // namespace QuestVr

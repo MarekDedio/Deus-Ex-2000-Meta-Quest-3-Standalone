@@ -22,3 +22,26 @@ struct PortableBrushTrackerProbe {
 // travel teardown, query proof, committed startup or playable APK acceptance.
 PortableBrushTrackerProbe ProbePortableRuntimeBrushTracker(std::size_t failAfterAttachments=0u,
     const QuestVr::Vm::Limits& limits={});
+
+struct PortableLiveModelQuerySample {
+    PortableModelVec3 start,end,extent;
+    bool fastClear{},pointClear{},extentClear{},zeroClear{},boxClear{};
+    std::int32_t pointNode{-1},leaf{-1};
+    std::uint8_t zone{};
+    float pointTime{},extentTime{};
+    std::size_t fastVisits{},pointVisits{},extentVisits{},zeroVisits{},boxVisits{},regionVisits{};
+};
+struct PortableLiveModelQueryProbe {
+    QuestVr::Vm::Result execution;
+    PortableBrushTrackerProbe tracker;
+    std::vector<PortableLiveModelQuerySample> samples;
+    std::size_t freeNodes{},originalNodes{},dynamicNodeReads{},allNodeReads{};
+    std::uint64_t modelRevision{},trackerRevision{};
+    bool mutationRefused{},freeReadRefused{},modelRevisionRefused{},trackerRevisionRefused{},
+        payloadReplacementRefused{},mutatingTrackerRefused{},expiredAfterRollback{},sourceProofRefused{},
+        independentRootRefused{},shutdownRefused{},unloadRefused{},mapLoadRefused{};
+};
+// Real Training tracker/current-world capability and kernel integration,
+// observed under one caller root then completely rolled back. Not committed
+// collision gameplay, noninitial mover update, renderer or headset acceptance.
+PortableLiveModelQueryProbe ProbePortableRuntimeLiveModelQueries(const QuestVr::Vm::Limits& limits={});

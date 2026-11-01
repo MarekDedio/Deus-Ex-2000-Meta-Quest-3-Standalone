@@ -1,5 +1,67 @@
 # Port status
 
+## Latest: authenticated current-world Model collision queries (2026-11-01)
+
+FastTrace, world point/extent MultiLineCheck, zero/box PointCheck, PointRegion,
+SetActorZone and reflected Region reads now select the actual mutable world
+Model after completed tracker construction. Brush-local primitive queries keep
+their distinct source-plus-owner-coordinates contract. Shared internal kernels
+retain the concrete public raw/immutable APIs and original packet/arithmetic/
+work behavior. All original nodes and all owned dynamic nodes are validated,
+including unreachable components. ONLY free dynamic reserve is skipped without
+reading its numeric bytes, rewriting it, compacting indices or pruning links.
+Active children/hull references into free records explicitly refuse.
+
+The runtime-private lexical view pins actual Level/Model owners and checks a
+dead-control-first lifetime, current VM root serial, map generation, exact
+payload/tracker/storage identity and INDEPENDENT Model/tracker revisions.
+Dynamic reads authenticate current Actor, typed surface, vertex and point
+owners. Selected traversal/hull/terminal-parent/hit-normal reads and final
+packet/statistics publication check that same scope. Its serialized-owner
+barrier rejects mutation, another host's VM root, map load/unload and runtime
+shutdown before retirement begins. This is reentrancy/lifetime exclusion,
+NOT a cross-thread renderer snapshot or public mutable validation proof.
+
+Generated kernel controls pass113 checks/45 refusals using an explicitly
+test-only proxy, not RuntimeObject authority. Hardened owned first-Training
+Setup/tracker/query integration passes1820 checks/9 source-policy or missing-
+source refusals:25 Movers/150 polygons produce150 nodes/600 vertices/600 points.
+Eight distinct-mover samples exercise FastLine, point/extent, zero/box occupancy
+and Region against9524 original nodes plus9886 free slots. They perform1459608
+actual node reads, including18191 owned dynamic reads. All12 lifetime/revision/
+ownership/free-slot/proof/mutation controls pass, including dead access after
+host/root/payload retirement and the four cross-host/teardown barriers. Complete
+checkpoint/revision/GC/source-cache/native-absence restoration and43 unchanged
+sources verify. Five point samples block, but NONE reports a dynamic point hit
+under flags6: this proves selected live ownership/read integration, not solid
+moving-door or crate collision acceptance. Existing owned coordinate regression
+passes154643 checks/325 identity refusals, including1994 source-prefilter writes.
+
+Real first-Training startup reaches the SAME retained later guard in392.369s,
+with266870 instructions/37932 writes and native work14169034 under the unchanged
+16777216 opt-in ceiling. Actual tracker attempted/completed/Level-owned/topology-
+checked counts remain25 Movers/150 polygons/150 nodes/600 vertices/600 points.
+Full save/state/revision/hash/RNG/client/lookup/Actor/GC rollback,45 unchanged
+sources and cold immutable-cache replacement verify. This is expected-boundary
+diagnostic evidence, NOT completed startup or gameplay; wall time under parallel
+build/tests is not a headset performance measurement.
+
+Full desktop, strict ARM64 and Android-native builds pass. Final CTest252 passed/
+307 registered/55 explicit owned-data skips/zero failures in135.76s. The owned
+Setup/query/coordinate tests and real startup above ran separately. Final audit
+verifies1892 frozen compiler inputs,45 protected originals and selected UNATCO/
+CoreTexMetal/Music assets unchanged, with zero live compiler/test jobs. No
+original commercial module executed, no other map loaded, and accepted Quest
+HUD, hands/body layouts and controls were not changed. No new APK is packaged.
+
+Still required: noninitial dependency/update/ordered flush/destructor, current
+renderer geometry and geometry checkpoint/rebind, actual audio/Input/reset/
+render/detail startup services, original gameplay frames and first-Training
+crate destruction/loot/gravity/headset acceptance. Static Update scheduling now
+records that dependency-prepended entries join passes2/3 but NOT pass1's captured
+outer traversal; it is not yet a runtime provider. See ORIGINAL-LIVE-MODEL-QUERIES.md,
+ORIGINAL-BRUSH-DEPENDENCY-FLUSH.md and ORIGINAL-POST-PARTITION-CLIENT-SETUP.md.
+
 ## Latest: real fresh moving-brush tracker and startup-context BSP insertion (2026-10-31)
 
 The genuine non-Entry constructor now executes after the actual live-viewport

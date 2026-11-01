@@ -1,5 +1,11 @@
 # Fresh original brush tracker implementation (2026-10-31)
 
+Continuation2026-11-01: current-world collision queries now use a separate
+authenticated lexical active-node view; see ORIGINAL-LIVE-MODEL-QUERIES.md.
+The construction-only boundary described below is the historical first batch,
+not the current query status. Noninitial update/render/archive/startup and
+crate/loot/gravity acceptance remain unfinished; no new APK is packaged.
+
 This increment implements the real fresh-constructor mutation path selected
 after first Training player setup, under a diagnostic root which always rolls
 back. It is not a completed original LoadMap, noninitial moving-object update,

@@ -76,12 +76,12 @@ inline void Finish(Result& result,const PortableModelVec3& start,const PortableM
     if(!owned && Compare64(TraversalDot({-delta.x,-delta.y,-delta.z},result.normal),Load(0.0f))<0)
         result.normal={-result.normal.x,-result.normal.y,-result.normal.z};
 }
-inline Result Trace(const PortableModelGeometry& model,const PortableModelVec3& start,
+template<class Model> inline Result Trace(const Model& model,const PortableModelVec3& start,
     const PortableModelVec3& end,std::uint32_t flags,const OriginalModelCoords* coords,
     const ModelPointTraceLimits& limits) {
     Result result;ModelPointTraceDetail::Validate(model,limits,result.stats);
     result.clear=model.rootOutside!=0;
-    if(model.nodes.empty()) return result;
+    if(model.nodes.empty()) {ModelNodeAccessDetail::Check(model);return result;}
     Finite(start);Finite(end);
     struct Segment {std::int32_t node{},last{};PortableModelVec3 start,end;bool outside{};};
     Segment current{0,0,start,end,result.clear};
@@ -97,10 +97,11 @@ inline Result Trace(const PortableModelGeometry& model,const PortableModelVec3& 
             if(!current.outside && (beenOutside || (flags&0x10u)==0u)) {
                 result.clear=false;result.hit=true;result.node=current.last;result.location=current.start;
                 const auto& plane=model.nodes.at(static_cast<std::size_t>(result.node));
-                result.normal={plane.planeX,plane.planeY,plane.planeZ};Finish(result,start,end,coords!=nullptr);return result;
+                result.normal={plane.planeX,plane.planeY,plane.planeZ};Finish(result,start,end,coords!=nullptr);
+                ModelNodeAccessDetail::Check(model);return result;
             }
             if(current.outside) beenOutside=true;
-            if(!pendingCount) {result.clear=true;return result;}
+            if(!pendingCount) {ModelNodeAccessDetail::Check(model);result.clear=true;return result;}
             current=pending[--pendingCount];continue;
         }
         ++result.stats.nodeVisits;const auto& node=model.nodes.at(static_cast<std::size_t>(current.node));
@@ -120,26 +121,27 @@ inline Result Trace(const PortableModelGeometry& model,const PortableModelVec3& 
         }
     }
 }
-} // namespace ModelPointLineDetail
-
 // Capture supplies actual Owner.ToWorld on demand: once for a nonempty owner
 // query, again ONLY on a hit for its final normal. Empty Models never call it
 // or inspect endpoints. Clear queries leave the ENTIRE caller packet intact;
 // hits preserve Next, write Actor/Primitive/Item/Time/Location/Normal. Publish
 // stats and packet only after all supported-domain work/captures succeed.
-template<class Capture>
-bool CheckOriginalModelPoint(OriginalActorLineHit& caller,const PortableModelGeometry& model,
+template<class Model,class Capture>
+bool Check(OriginalActorLineHit& caller,const Model& model,
     std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& end,
     const PortableModelVec3& start,std::uint32_t flags,Capture&& capture,
     const ModelPointTraceLimits& limits={},ModelPointTraceStats* stats=nullptr) {
+    ModelNodeAccessDetail::Check(model);
     if(model.nodes.empty()) {
         const auto result=ModelPointLineDetail::Trace(model,start,end,flags,nullptr,limits);
+        ModelNodeAccessDetail::Check(model);
         if(stats)*stats=result.stats;
         return result.clear;
     }
     if(!modelIdentity) throw std::invalid_argument("Original Model point adapter requires actual Model identity");
     std::optional<OriginalModelCoords> coords;
     if(ownerIdentity) coords=capture();
+    ModelNodeAccessDetail::Check(model);
     auto result=ModelPointLineDetail::Trace(model,start,end,flags,coords?&*coords:nullptr,limits);
     auto prepared=caller;
     if(result.hit) {
@@ -147,7 +149,18 @@ bool CheckOriginalModelPoint(OriginalActorLineHit& caller,const PortableModelGeo
         prepared.actor=ownerIdentity;prepared.primitive=modelIdentity;prepared.item=result.node;
         prepared.location=result.location;prepared.normal=result.normal;prepared.time=result.time;
     }
+    ModelNodeAccessDetail::Check(model);
     caller=prepared;if(stats)*stats=result.stats;return result.clear;
+}
+} // namespace ModelPointLineDetail
+
+template<class Capture>
+bool CheckOriginalModelPoint(OriginalActorLineHit& caller,const PortableModelGeometry& model,
+    std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& end,
+    const PortableModelVec3& start,std::uint32_t flags,Capture&& capture,
+    const ModelPointTraceLimits& limits={},ModelPointTraceStats* stats=nullptr) {
+    return ModelPointLineDetail::Check(caller,model,modelIdentity,ownerIdentity,end,start,flags,
+        std::forward<Capture>(capture),limits,stats);
 }
 
 } // namespace QuestVr

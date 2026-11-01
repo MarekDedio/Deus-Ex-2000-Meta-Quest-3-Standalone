@@ -38,11 +38,41 @@ index authority. It is not permission to subtract originalNodes from a static
 or free node and index arbitrary memory. A portable corrupt-topology refusal
 must restore flag/assimilation/pose/pending writes under the same caller root.
 
-This bounded body establishes the helper itself. The full noninitial Update
-pending-iteration behavior (including how newly prepended entries interact
-with its pass1 traversal) still needs explicit transcription and tests from
-the Update body. Do not claim that final scheduling contract from this helper
-alone, and do not substitute the fresh -1-root short path for it.
+## Full Update pending scheduling (static continuation 2026-11-01)
+
+A separate bounded read of Update establishes its pass scheduling. At
+`1037A613`, pass1 captures the current pending head once. For each entry it
+walks that mover's OLD root chain using node+30 and invokes dependency on each
+node (`1037A61A..A648`). It advances the original entry's next pointer at
+`1037A64D`, not the possibly changed tracker head. Entries prepended during
+dependency are therefore NOT revisited by pass1's outer pending traversal.
+The recursion itself discovers the selected node descendants; do not invent
+a fixed-point worklist or scan newly queued movers' disconnected roots.
+
+Pass2 reloads the expanded head at `1037A652`, flushes each pending mover and
+advances entry.next (`1037A659..A666`). Pass3 reloads that SAME final head at
+`1037A668` and rebuilds each mover. Its saved current entry.next is read at
+`1037A9F6`; it does not restart from tracker head. For initial list A->E,
+dependency discoveries B,C,D while processing A prepend D->C->B->A->E.
+Pass1 next visits E. If E discovers F, passes2 and3 both run F,D,C,B,A,E.
+
+The full/null Update walks live Actor slots ascending and enqueues selected
+nonnull Brush/ABrush/nonstatic actors without filtering unchanged poses.
+Update's selection does not repeat Setup's checked Mover cast. The supplied-
+Mover path compares Location against OldPos x/y/z (`1037A53A..A571`), then
+Rotation against OldRot (`1037A573..A5A1`), BEFORE the bAssimilated check. An
+unchanged supplied mover is skipped; a changed already-assimilated one is
+also skipped. Original x87 comparisons inspect C3 equality, so ordinary C++
+float != is not identical for unordered NaN. Retain finite-value admission.
+
+Each enqueue sets assimilation, allocates a stable pending entry, prepends it,
+then copies Location/Rotation to OldPos/OldRot. The outer stack marker retains
+entries through all three passes; per-mover transformation/filter scratch has
+its own marker. Stable typed indices/links must survive pending-storage growth.
+Final bit0x20 clearing walks only each mover's NEW rebuilt root chain; old freed
+node flags/geometry remain untouched. This is static evidence, not implemented
+noninitial Update or passing runtime/rollback tests. The fresh -1-root short
+path must not substitute for any of these selected operations.
 
 ## Flush:10303F03 ->1037C6D0
 
@@ -81,7 +111,7 @@ truncated pointer bookkeeping or permanently retained historical owners.
 
 Current fresh-constructor code legitimately reaches only the two helpers'
 empty old-root cases. Implementing later updates requires actual typed
-dependency recursion/visited flags, pending stack scheduling, ordered unlink/
+dependency recursion/visited flags, the exact pending scheduling above, ordered unlink/
 free transitions, Model/Polys/tracker copy-on-write and beforeimage edge roots,
 cache writes and same-root rollback. A freed dynamic record must stop being
 readable through the active view even though its old geometry bytes remain.

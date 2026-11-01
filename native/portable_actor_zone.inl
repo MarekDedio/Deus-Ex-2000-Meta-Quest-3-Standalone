@@ -152,8 +152,9 @@
         q.eyeHeight=[this,actor](std::uintptr_t a){return NoiseField(actor(a),"Engine.Pawn.EyeHeight",Kind::Float,0x20u).floating;};
         q.pointRegion=[this,actor](std::uintptr_t l,std::uintptr_t fallback,PortableModelVec3 point){
             auto* actual=ZoneLevel(l);auto* zone=actor(fallback);
-            const auto& model=NativeLevelTraceModel(actual);
-            const auto found=QuestVr::QueryOriginalModelPointRegion(model,point,std::min<std::size_t>(model.nodes.size(),65'536u),[this]{LifecycleStep();});
+            const auto found=WithNativeWorldModelQuery(actual,[&](const auto& model) {
+                return QuestVr::ModelPointRegionDetail::Query(model,point,std::min<std::size_t>(model.nodes.size(),65'536u),[this]{LifecycleStep();});
+            });
             if(found.zoneActorReference) {
                 const auto path=ContextValuePath(Qualified(Table(actual->nativeLevelModel->sourcePath),found.zoneActorReference));
                 if(!path.empty())zone=Object(path);

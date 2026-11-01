@@ -78,16 +78,15 @@ inline PortableModelVec3 Middle(const PortableModelVec3& start,const PortableMod
 inline bool Outside(const bool front,const bool previous,const std::uint8_t flags) {
     return (flags&1u)?previous:front;
 }
-} // namespace ModelFastLineDetail
-
-inline ModelFastLineCheckResult CheckOriginalModelFastLine(const PortableModelGeometry& model,
+template<class Model> inline ModelFastLineCheckResult Check(const Model& model,
     const PortableModelVec3& end,const PortableModelVec3& start,const ModelFastLineCheckLimits& limits={}) {
-    using namespace ModelFastLineDetail;
+    ModelNodeAccessDetail::Check(model);
     if (!ModelPointTraceDetail::Finite(start) || !ModelPointTraceDetail::Finite(end)) Fail("nonfinite endpoint refused");
     ModelFastLineCheckResult result;
     ModelPointTraceDetail::Validate(model,limits,result.stats);
+    const auto finish=[&](bool clear) {ModelNodeAccessDetail::Check(model);result.clear=clear;return result;};
     result.clear=model.rootOutside!=0;
-    if (model.nodes.empty()) return result;
+    if (model.nodes.empty()) return finish(result.clear);
     struct Segment {
         std::int32_t node;
         PortableModelVec3 end,start;
@@ -100,8 +99,8 @@ inline ModelFastLineCheckResult CheckOriginalModelFastLine(const PortableModelGe
         ModelPointTraceDetail::Step(result.stats.querySteps,limits.querySteps);
         if (current.node==-1) {
             ++result.stats.leafVisits;
-            if (!current.outside) {result.clear=false;return result;}
-            if (pending.empty()) {result.clear=true;return result;}
+            if (!current.outside) return finish(false);
+            if (pending.empty()) return finish(true);
             current=pending.back();pending.pop_back();continue;
         }
         ++result.stats.nodeVisits;
@@ -123,5 +122,11 @@ inline ModelFastLineCheckResult CheckOriginalModelFastLine(const PortableModelGe
                 Outside(endFront,current.outside,node.nodeFlags)};
         }
     }
+}
+} // namespace ModelFastLineDetail
+
+inline ModelFastLineCheckResult CheckOriginalModelFastLine(const PortableModelGeometry& model,
+    const PortableModelVec3& end,const PortableModelVec3& start,const ModelFastLineCheckLimits& limits={}) {
+    return ModelFastLineDetail::Check(model,end,start,limits);
 }
 } // namespace QuestVr

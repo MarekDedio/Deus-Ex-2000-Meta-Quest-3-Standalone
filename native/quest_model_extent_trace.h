@@ -4,6 +4,7 @@
 #include "quest_model_owner_coords.h"
 #include "quest_model_line_scratch.h"
 #include "quest_immutable_collision_model.h"
+#include "quest_model_node_access.h"
 
 #include <memory>
 #include <vector>
@@ -71,7 +72,8 @@ struct Hull {
     std::size_t count{};
     PortableModelVec3 minimum{},maximum{};
 };
-inline Hull ReadHull(const PortableModelGeometry& model,std::int32_t offset,std::size_t& used,std::size_t maximum,
+template<class Model>
+inline Hull ReadHull(const Model& model,std::int32_t offset,std::size_t& used,std::size_t maximum,
     bool owned=false,const OriginalModelCoords* coords=nullptr) {
     if(offset<0||static_cast<std::size_t>(offset)>=model.leafHulls.size()) Fail("invalid collision-bound offset");
     Hull hull;auto cursor=static_cast<std::size_t>(offset);
@@ -103,15 +105,22 @@ inline Hull ReadHull(const PortableModelGeometry& model,std::int32_t offset,std:
         Fail("reversed leaf-hull bounds");
     return hull;
 }
-inline void ValidateGeometry(const PortableModelGeometry& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
+template<class Model>
+inline void ValidateGeometry(const Model& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
     bool owned) {
+    ModelNodeAccessDetail::Check(model);
     if(model.version!=68u||model.licenseeMode!=0u) Fail("unsupported serialized Model layout");
     if(model.rootOutside!=0&&model.rootOutside!=1) Fail("invalid root-outside value");
     if(model.nodes.size()>limits.nodes||model.leafHulls.size()>limits.hullWords) Fail("Model array budget exceeded");
-    for(const auto& node:model.nodes) {
+    for(std::size_t index=0u;index<model.nodes.size();++index) {
+        if(!ModelNodeAccessDetail::Active(model,index))continue;
+        const auto& node=model.nodes[index];
         Step(stats.validationSteps,limits.validationSteps);
         Finite(node.planeX);Finite(node.planeY);Finite(node.planeZ);Finite(node.planeW);
         Index(node.front,model.nodes.size());Index(node.back,model.nodes.size());
+        for(const auto child:{node.front,node.back})
+            if(child!=-1&&!ModelNodeAccessDetail::Active(model,static_cast<std::size_t>(child)))
+                Fail("active BSP child selects a free dynamic pool record");
         if(node.collisionBound!=-1) static_cast<void>(ReadHull(model,node.collisionBound,stats.validationSteps,limits.validationSteps,owned));
     }
     // Validate ALL components, including unreachable/pruned ones. Shared DAG
@@ -127,6 +136,7 @@ inline void ValidateGeometry(const PortableModelGeometry& model,const ModelExten
         stack[depth++]=static_cast<std::uint32_t>(node)<<2u;
     };
     for(std::size_t root=0;root<model.nodes.size();++root) {
+        if(!ModelNodeAccessDetail::Active(model,root))continue;
         if(colors[root]) continue;
         colors[root]=1;push(root);
         while(depth) {
@@ -142,8 +152,10 @@ inline void ValidateGeometry(const PortableModelGeometry& model,const ModelExten
             if(!colors[childIndex]) {colors[childIndex]=1;push(childIndex);}
         }
     }
+    ModelNodeAccessDetail::Check(model);
 }
-inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
+template<class Model>
+inline void Validate(const Model& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
     bool owned=false) {
     // Also used by box occupancy validation, outside Trace. Tag at this
     // shared entry so that route cannot mislabel validation as traversal.
@@ -196,13 +208,15 @@ inline void Finalize(ModelExtentTraceResult& result,const PortableModelVec3& sta
     result.location={component(start.x,delta.x),component(start.y,delta.y),component(start.z,delta.z)};
     result.clear=result.time==1.0f;
 }
-inline ModelExtentTraceResult Query(const PortableModelGeometry& model,
+template<class Model>
+inline ModelExtentTraceResult Query(const Model& model,
     const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,
     const ModelExtentTraceLimits& limits,const OriginalModelCoords* coords,ModelExtentTraceResult result) {
     // Empty UModel returns RootOutside before it reads endpoints, Extent,
     // Owner or coordinates. The result Time1 is an abstract default, NOT a
     // native Hit write; a caller-packet adapter must preserve that packet.
-    if(model.nodes.empty()) {result.clear=model.rootOutside!=0;return result;}
+    ModelNodeAccessDetail::Check(model);
+    if(model.nodes.empty()) {result.clear=model.rootOutside!=0;ModelNodeAccessDetail::Check(model);return result;}
     Finite(start);Finite(end);Finite(extent);
     if(extent.x<0||extent.y<0||extent.z<0) Fail("negative collision extents");
     if(extent.x==0&&extent.y==0&&extent.z==0) Fail("zero extents require the separate point-trace branch");
@@ -262,9 +276,11 @@ inline ModelExtentTraceResult Query(const PortableModelGeometry& model,
         }
     }
     if(result.hit) Finalize(result,start,delta,size);
+    ModelNodeAccessDetail::Check(model);
     return result;
 }
-inline ModelExtentTraceResult Trace(const PortableModelGeometry& model,
+template<class Model>
+inline ModelExtentTraceResult Trace(const Model& model,
     const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,
     const ModelExtentTraceLimits& limits,const OriginalModelCoords* coords) {
     Limits(limits);ModelExtentTraceResult result;Validate(model,limits,result.stats,coords!=nullptr);

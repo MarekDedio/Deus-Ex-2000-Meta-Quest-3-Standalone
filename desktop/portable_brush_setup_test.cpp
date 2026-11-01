@@ -13,6 +13,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -169,6 +170,34 @@ void Run(const fs::path& root){
     const auto modelAfter=ReadPortableRuntimeNativeModel();Require(modelAfter.mapGeneration==cachedModel.mapGeneration&&
         modelAfter.modelExportIndex==cachedModel.modelExportIndex&&modelAfter.cachedNodes==cachedModel.cachedNodes,
         "Mutable clone changed source cache identity/counts");
+    const auto queries=ProbePortableRuntimeLiveModelQueries(trackerLimits);
+    Require(queries.execution.status==QuestVr::Vm::Status::Returned&&!queries.execution.committed,
+        "Actual tracker live query root failed: "+queries.execution.error);
+    Require(queries.samples.size()==8u&&queries.tracker.activeNodes==150u&&queries.tracker.activeVertices==600u&&
+        queries.originalNodes==tracker.original.nodes&&queries.freeNodes>0u&&queries.dynamicNodeReads>0u&&
+        queries.allNodeReads>queries.dynamicNodeReads&&queries.modelRevision!=queries.trackerRevision,
+        "Live current Model query did not observe actual active/index-preserving ownership/revisions");
+    Require(queries.mutationRefused&&queries.freeReadRefused&&queries.modelRevisionRefused&&queries.trackerRevisionRefused&&
+        queries.payloadReplacementRefused&&queries.mutatingTrackerRefused&&queries.expiredAfterRollback&&queries.sourceProofRefused&&
+        queries.independentRootRefused&&queries.shutdownRefused&&queries.unloadRefused&&queries.mapLoadRefused,
+        "Native current-Model capability accepted invalid lifetime/revision/free-slot/proof/mutation");
+    std::size_t blockedPoints{},dynamicHits{};
+    for(const auto& sample:queries.samples) {
+        Require(sample.fastVisits&&sample.pointVisits&&sample.extentVisits&&sample.zeroVisits&&sample.boxVisits&&sample.regionVisits,
+            "A live query branch substituted an unvisited source/empty result");
+        Require(sample.zone<64u&&std::isfinite(sample.pointTime)&&std::isfinite(sample.extentTime),
+            "Live queries returned nonfinite hit/invalid zone data");
+        if(!sample.pointClear){++blockedPoints;Require(sample.pointNode>=0&&static_cast<std::size_t>(sample.pointNode)<queries.tracker.finalCounts.nodes,
+            "Live point Item lost original native node index space");
+            if(static_cast<std::size_t>(sample.pointNode)>=queries.originalNodes)++dynamicHits;}
+    }
+    Require(!HasPortableRuntimeMutableBrushGeometry()&&temporary.Snapshot("AfterLiveQueries")==before&&GetPortableRuntimeWorldRevision()==revision,
+        "Native live query root published tracker/geometry/callback changes");
+    const auto queryGc=GC::GetStats();Require(queryGc.numObjects==gc.numObjects&&queryGc.memoryUsage==gc.memoryUsage,
+        "Live query capability retained Level/Model/owner roots after rollback");
+    const auto queryModel=ReadPortableRuntimeNativeModel();Require(queryModel.cachedNodes==cachedModel.cachedNodes&&
+        queryModel.modelExportIndex==cachedModel.modelExportIndex&&queryModel.mapGeneration==cachedModel.mapGeneration,
+        "Live mutable query changed original immutable cache");
     for(const auto& source:sources)source.Check();
     std::cout<<"PASS actual first Training SetupActor:25 Movers/150 polygons; typed Model->Polys, Texture/Actor GC edges, exact surface/cache/link stores, "
         "1 completed and4 partial-write root rollbacks; "<<sources.size()<<" original sources unchanged. Texture admission packages=2 bindings=2 retained="<<textures.retainedBytes
@@ -176,6 +205,10 @@ void Run(const fs::path& root){
     std::cout<<"PASS actual fresh Training tracker constructor: attachments="<<tracker.attachments<<" activeVertices="<<tracker.activeVertices
         <<" dynamicPoints="<<tracker.dynamicPoints<<" reverseMoverOrder="<<tracker.movers.size()
         <<"; Level-owned candidate, typed selected graph and1 completed/3 partial-attachment root rollbacks; NOT committed startup/live queries/noninitial update/travel\n";
+    std::cout<<"PASS actual Training live Model queries: samples="<<queries.samples.size()<<" originalNodes="<<queries.originalNodes
+        <<" freeNodes="<<queries.freeNodes<<" allNodeReads="<<queries.allNodeReads<<" dynamicNodeReads="<<queries.dynamicNodeReads
+        <<" blockedPoints="<<blockedPoints<<" dynamicPointHits="<<dynamicHits
+        <<"; FastLine/point/extent/zero+box occupancy/Region and12 ownership/lease/refusal controls; complete root rollback, NOT committed gameplay/render/headset\n";
 }
 }
 int main(int argc,char** argv){try{

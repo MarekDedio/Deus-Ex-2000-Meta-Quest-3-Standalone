@@ -76,7 +76,8 @@
                 level!=RetailCollisionLevel())
                 throw std::runtime_error("Retail MultiLineCheck supplied native world identity changed");
             const auto& model=NativeTraceModel(suppliedLevelInfo);
-            const auto& collisionSource=NativeWorldCollisionSource(level);
+            const auto* collisionSource=level->nativeLevelModel&&level->nativeLevelModel->nativeMutableModel?
+                nullptr:&NativeWorldCollisionSource(level);
             auto* nativeModel=level->nativeLevelModel;
             if(!nativeModel)
                 throw std::runtime_error("Retail MultiLineCheck native Level.Model disappeared");
@@ -91,7 +92,7 @@
             QuestVr::NativeScratchScope workspaceReservation(nativeQueryScratchBytes_,workspace,
                 [this](std::size_t extra){ValidateStateBudget(extra);});
             if((fastTraceValidationWork_>=MaximumNativeModelValidationWork &&
-                (point||!collisionSource.HasNullHullValidation())) || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
+                (point||!collisionSource||!collisionSource->HasNullHullValidation())) || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
                 throw std::runtime_error("Retail MultiLineCheck shared Model query budget exhausted");
             QuestVr::OriginalWorldLineReply reply;
             // This deterministic initialization is a portable undefined-field
@@ -104,10 +105,12 @@
                     limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
                     limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
                     QuestVr::ModelPointTraceStats stats;
-                    reply.clear=QuestVr::CheckOriginalModelPoint(reply.hit,model,reinterpret_cast<std::uintptr_t>(nativeModel),
-                        0u,worldEnd,worldStart,flags,[]()->QuestVr::OriginalModelCoords {
-                            throw std::runtime_error("Null-owner world Model unexpectedly requested Owner.ToWorld");
-                        },limits,&stats);
+                    reply.clear=WithNativeWorldModelQuery(level,[&](const auto& current) {
+                        return QuestVr::ModelPointLineDetail::Check(reply.hit,current,reinterpret_cast<std::uintptr_t>(nativeModel),
+                            0u,worldEnd,worldStart,flags,[]()->QuestVr::OriginalModelCoords {
+                                throw std::runtime_error("Null-owner world Model unexpectedly requested Owner.ToWorld");
+                            },limits,&stats);
+                    });
                     fastTraceValidationWork_+=stats.validationSteps;fastTraceQueryWork_+=stats.querySteps;
                 }else {
                     QuestVr::ModelExtentTraceLimits limits;
@@ -115,8 +118,12 @@
                     limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
                     QuestVr::ModelExtentTraceStats stats;
                     try {
-                        reply.clear=QuestVr::CheckOriginalModelExtent(reply.hit,collisionSource,reinterpret_cast<std::uintptr_t>(nativeModel),
-                            worldEnd,worldStart,worldExtent,limits,&stats);
+                        if(collisionSource)reply.clear=QuestVr::CheckOriginalModelExtent(reply.hit,*collisionSource,
+                            reinterpret_cast<std::uintptr_t>(nativeModel),worldEnd,worldStart,worldExtent,limits,&stats);
+                        else reply.clear=WithNativeWorldModelQuery(level,[&](const auto& current) {
+                            return QuestVr::ModelExtentTraceDetail::Check(reply.hit,current,reinterpret_cast<std::uintptr_t>(nativeModel),
+                                0u,nullptr,worldEnd,worldStart,worldExtent,limits,&stats);
+                        });
                     }catch(const QuestVr::ModelExtentTraceWorkExhausted& fault) {
                         ObserveModelExtentWork(nativeModel,nullptr,limits,fault);throw;
                     }

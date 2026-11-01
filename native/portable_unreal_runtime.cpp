@@ -183,6 +183,44 @@
 namespace {
 
 class RuntimeObject;
+class PortableActorVmHost;
+// Existing runtime access is serialized on its game/script owner. This shared
+// lexical barrier additionally rejects reentrant roots/teardown through other
+// hosts while a current-world view is borrowed; it is NOT a thread-safe epoch.
+std::size_t persistentLiveModelReaders{};
+// Runtime-private current-world query shape. It grants no public raw-source
+// proof or factory. Every node/mask/metadata boundary checks its local lease
+// before following even a previously captured owning payload pointer.
+class RuntimeLiveModelNodes {
+    friend class PortableActorVmHost;
+    const std::vector<PortableModelNode>* records_{};
+    std::function<void()> check_;
+    std::function<bool(std::size_t)> active_;
+    std::function<void(std::size_t)> admit_;
+    RuntimeLiveModelNodes(const std::vector<PortableModelNode>& records,std::function<void()> check,
+        std::function<bool(std::size_t)> active,std::function<void(std::size_t)> admit)
+        :records_(&records),check_(std::move(check)),active_(std::move(active)),admit_(std::move(admit)){}
+public:
+    void check()const {check_();}
+    std::size_t size()const {check();return records_->size();}
+    bool empty()const {return size()==0u;}
+    bool active(std::size_t index)const {
+        check();if(index>=records_->size())throw std::runtime_error("Live Model active index outside current pool");
+        return active_(index);
+    }
+    const PortableModelNode& operator[](std::size_t index)const {
+        if(!active(index))throw std::runtime_error("Live Model query selected a free dynamic node");
+        admit_(index);check();return (*records_)[index];
+    }
+    const PortableModelNode& at(std::size_t index)const {return (*this)[index];}
+};
+struct RuntimeLiveModelView {
+    RuntimeLiveModelNodes nodes;
+    std::uint16_t version{},licenseeMode{};
+    std::int32_t rootOutside{};
+    const std::vector<std::int32_t>& leafHulls;
+    const std::vector<PortableModelZone>& zones;
+};
 void RetireRuntimeDumpObject(RuntimeObject*) noexcept;
 struct RuntimeNativeDumpState {
     QuestVr::DumpLocation::ConstructorData data;
@@ -403,6 +441,7 @@ struct RuntimeNativeBrushTracker {
     QuestVr::OriginalBrushTrackerPools<RuntimeObject> pools;
     std::uint64_t generation{},revision{};
     bool initialUpdateCompleted{};
+    bool mutating{};
 };
 static std::size_t NativeBrushTrackerBytes(const RuntimeNativeBrushTracker& tracker) {
     return sizeof(tracker)-sizeof(tracker.pools)+QuestVr::OriginalBrushPoolsBytes(tracker.pools);
@@ -3566,6 +3605,10 @@ public:
     std::optional<QuestVr::NativeWork::Usage> ReadNativeWork() const noexcept override { return nativeWork_.Read(); }
     void BeginRoot(const QuestVr::Vm::Limits& limits) override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        if(persistentLiveModelReaders)throw std::runtime_error("VM root refused during an active live Model query lease");
+        if(nativeModelReaders_)throw std::runtime_error("Native Model read lease survived its root");
+        if(nativeRootSerial_==std::numeric_limits<std::uint64_t>::max())throw std::runtime_error("Native Model root lease serial exhausted");
+        ++nativeRootSerial_;
         if(beforeMutableModel_)throw std::runtime_error("Native Model journal survived its outer root");
         if(beforeBrushTracker_)throw std::runtime_error("Native Brush tracker journal survived its outer root");
         if(!beforeMutablePolys_.empty()||!beforeBrushModels_.empty())
@@ -6180,6 +6223,7 @@ public:
 #include "portable_brush_geometry.inl"
 #include "portable_brush_setup.inl"
 #include "portable_brush_tracker.inl"
+#include "portable_live_model_queries.inl"
     const QuestVr::OriginalImmutableCollisionModel& NativeWorldCollisionSource(RuntimeObject* level) {
         if(level&&level->nativeLevelModel&&level->nativeLevelModel->nativeMutableModel)
             throw std::runtime_error("Mutable Model cannot borrow an immutable authored-source collision proof");
@@ -6205,7 +6249,6 @@ public:
             {start.vector[0u],start.vector[1u],start.vector[2u]})),{}};
     }
     bool NativeFastLine(RuntimeObject* actor,const PortableModelVec3& end,const PortableModelVec3& start) {
-        const auto& model=NativeTraceModel(actor);
         QuestVr::ModelFastLineCheckLimits limits;
         if (fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
             throw std::runtime_error("FastTrace shared native query budget exhausted");
@@ -6214,7 +6257,10 @@ public:
         // Const source geometry may be retained across calls. Full per-kernel
         // validation remains mandatory and charged to this same VM root; no
         // mutable Model can acquire a public "already validated" escape hatch.
-        const auto result=QuestVr::CheckOriginalModelFastLine(model,end,start,limits);
+        static_cast<void>(NativeLevelInfo(actor));
+        const auto result=WithNativeWorldModelQuery(actor->nativeXLevel,[&](const auto& model) {
+            return QuestVr::ModelFastLineDetail::Check(model,end,start,limits);
+        });
         fastTraceValidationWork_+=result.stats.validationSteps;
         fastTraceQueryWork_+=result.stats.querySteps;
         return result.clear;
@@ -10176,6 +10222,9 @@ private:
         explicit BeforeBrushTracker(RuntimeObject* value):level(value){}
     };
     std::optional<BeforeBrushTracker> beforeBrushTracker_;
+    std::uint64_t nativeRootSerial_{};
+    std::size_t nativeModelReaders_{};
+    std::size_t nativeLiveModelNodeReads_{},nativeLiveModelDynamicReads_{};
     bool brushGeometryPreview_{};
     struct NativePendingTick {
         GCRoot<RuntimeObject> actor;
@@ -12170,16 +12219,17 @@ private:
             result.fields.at("zonenumber") = Value::Byte(0u);
             return result;
         }
-        // Use the loader's native XLevel.Model and its generation-checked
-        // immutable cache, not a separately selected render/root Model.
-        const auto& model=NativeTraceModel(object);
+        // Use actual current XLevel.Model, including its authenticated live
+        // tracker topology, never a separately selected render/root Model.
         // The same qualified Core.Vector layout admission as FastTrace's
         // default prevents a subclass's leaf-name Location from taking over.
         auto location = FastTraceStartSeed(object);
         location.vector[2] += verticalOffset;
-        const auto region=QuestVr::QueryOriginalModelPointRegion(model,
-            {location.vector[0u],location.vector[1u],location.vector[2u]},
-            std::min<std::size_t>(model.nodes.size(),65'536u),[this]{LifecycleStep();});
+        const auto region=WithNativeWorldModelQuery(object->nativeXLevel,[&](const auto& model) {
+            return QuestVr::ModelPointRegionDetail::Query(model,
+                {location.vector[0u],location.vector[1u],location.vector[2u]},
+                std::min<std::size_t>(model.nodes.size(),65'536u),[this]{LifecycleStep();});
+        });
         RuntimeObject* zoneObject{};
         if (region.zoneActorReference != 0) {
             const auto path=ContextValuePath(Qualified(Table(object->nativeXLevel->nativeLevelModel->sourcePath),region.zoneActorReference));
@@ -14244,6 +14294,7 @@ void PreparePortableRuntimeDumpLocationServices(const std::string& userIniPath,c
 }
 
 void ShutdownPortableRuntime() {
+    if(persistentLiveModelReaders)throw std::runtime_error("Runtime shutdown refused during an active live Model query lease");
     // CPU-owner shutdown, not a map-travel hash retirement implementation.
     // Root diagnostics must have unwound before the runtime can be destroyed.
     if(persistentRetailCollision && persistentRetailCollision->ReadUsage().depth)
@@ -16446,6 +16497,24 @@ PortableBrushTrackerProbe ProbePortableRuntimeBrushTracker(std::size_t failAfter
     }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}
     return result;
 }
+PortableLiveModelQueryProbe ProbePortableRuntimeLiveModelQueries(const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableLiveModelQueryProbe result;std::function<void()> expired;
+    try {
+        {
+            PortableActorVmHost host;
+            result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&){
+                return host.ProbeNativeLiveModelQueries(result,expired);
+            },limits);
+            result.execution.committed=false;
+        }
+        // The host, owning native payload and root are now retired. The dead
+        // local control must reject BEFORE touching captured dangling addresses.
+        if(expired)try{expired();}catch(const std::exception& error){
+            result.expiredAfterRollback=std::string(error.what())=="Native Model query lease is expired";
+        }
+    }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}
+    return result;
+}
 PortableBrushGeometryProbe ProbePortableRuntimeBrushSphereFilter(const PortableModelSphere& sphere,
     std::size_t failAfterWrites,const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;PortableBrushGeometryProbe result;
@@ -16674,6 +16743,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
 
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package,const PortableMapTravelSource* travelSource) {
+    if(persistentLiveModelReaders)throw std::runtime_error("Map load refused during an active live Model query lease");
     CollectBirthGarbageAtBoundary collect;
     if (!persistentRuntime || !persistentRuntime->get()) {
         throw std::runtime_error("Cannot load a map without an initialized runtime");
@@ -16863,6 +16933,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 }
 
 std::size_t UnloadPortableRuntimeMap() {
+    if(persistentLiveModelReaders)throw std::runtime_error("Map unload refused during an active live Model query lease");
     if(!persistentFlagBases.empty())throw std::runtime_error("Live FlagBase map travel requires its original purge/archive service");
     if(!persistentDumpObjects.empty())throw std::runtime_error("Map travel requires live DumpLocation ownership retirement");
     if(HasNativeDeferredOwnership())

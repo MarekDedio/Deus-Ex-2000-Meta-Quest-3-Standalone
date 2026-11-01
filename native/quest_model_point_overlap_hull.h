@@ -31,7 +31,8 @@ inline Dyadic HullDistance(const PortableModelVec3& point,const OriginalExtentPl
     return Sub(Add64(Add64(HullProduct(point.z,plane.z),HullProduct(point.y,plane.y)),
         HullProduct(point.x,plane.x)),Load(plane.w));
 }
-inline void HullPacket(Context& context,const OriginalExtentPlane& plane,std::int32_t item,
+template<class Model>
+inline void HullPacket(BasicContext<Model>& context,const OriginalExtentPlane& plane,std::int32_t item,
     const PortableModelVec3& location) {
     context.hit.location=location;
     context.hit.normal={plane.x,plane.y,plane.z};
@@ -39,7 +40,8 @@ inline void HullPacket(Context& context,const OriginalExtentPlane& plane,std::in
     context.hit.item=item;context.hit.time=0.0f;
     // Original Next is never written by these Model helpers.
 }
-inline bool CheckHullPrimary(Context& context,const OriginalExtentPlane& plane,std::int32_t item) {
+template<class Model>
+inline bool CheckHullPrimary(BasicContext<Model>& context,const OriginalExtentPlane& plane,std::int32_t item) {
     Step(context.stats.querySteps,context.limits.querySteps);++context.stats.planeTests;
     const float radius=Store32(HullRadius(context.extent,plane));
     const auto retainedDistance=HullDistance(context.point,plane);
@@ -65,7 +67,8 @@ inline bool CheckHullPrimary(Context& context,const OriginalExtentPlane& plane,s
     // separates: native PointCheck also mutates its packet on a clear return.
     return distance>=radius;
 }
-inline bool CheckHullBevel(Context& context,const OriginalExtentPlane& plane) {
+template<class Model>
+inline bool CheckHullBevel(BasicContext<Model>& context,const OriginalExtentPlane& plane) {
     Step(context.stats.querySteps,context.limits.querySteps);++context.stats.planeTests;
     // Engine103F3050..3205 retains BOTH values through every comparison.
     const auto radius=HullRadius(context.extent,plane);
@@ -86,7 +89,8 @@ inline bool CheckHullBevel(Context& context,const OriginalExtentPlane& plane) {
     return Compare64(distance,radius)>=0;
 }
 
-inline bool CheckHull(Context& context,std::int32_t parent) {
+template<class Model>
+inline bool CheckHull(BasicContext<Model>& context,std::int32_t parent) {
     Step(context.stats.querySteps,context.limits.querySteps);
     if(parent<0 || static_cast<std::size_t>(parent)>=context.model.nodes.size())
         Fail("solid leaf has no actual parent BSP node");

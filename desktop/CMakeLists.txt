@@ -650,6 +650,15 @@ foreach(BRUSH_TARGET quest_brush_poly_filter quest_brush_tracker_pools quest_bru
     add_test(NAME ${BRUSH_TARGET} COMMAND ${BRUSH_TARGET}_test)
 endforeach()
 
+add_executable(quest_active_model_kernel_test quest_active_model_kernel_test.cpp)
+target_compile_features(quest_active_model_kernel_test PRIVATE cxx_std_20)
+target_include_directories(quest_active_model_kernel_test PRIVATE "${PORT_NATIVE}")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_active_model_kernel_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_active_model_kernel_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_active_model_kernel COMMAND quest_active_model_kernel_test)
+
 add_executable(portable_brush_setup_test portable_brush_setup_test.cpp)
 target_compile_features(portable_brush_setup_test PRIVATE cxx_std_20)
 target_link_libraries(portable_brush_setup_test PRIVATE quest_portable_host)
