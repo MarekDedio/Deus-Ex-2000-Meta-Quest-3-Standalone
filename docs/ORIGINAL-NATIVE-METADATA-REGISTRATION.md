@@ -12,6 +12,11 @@ Owned Engine.dll SHA256:
 
 ## Core registration closure
 
+2026-11-01 follow-up: Core.Const is appended as record16 for the real inherited
+Input property iterator's non-property IsA checks. Earlier15 indices stay fixed.
+See ORIGINAL-CONST-REGISTRATION.md for the source registration and failed-run
+evidence. Class metadata alone is not initialized input or playable startup.
+
 2026-11-01: Core.ByteProperty is appended as the15th closed record, with genuine
 native size0x60 and Property/Field Super/Within. Earlier14 indices are retained.
 The owned integration checks820 source ByteProperty exports and13 Pawn input

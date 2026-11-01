@@ -678,7 +678,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME quest_brush_update COMMAND quest_brush_update_test)
 
-foreach(INPUT_PROTOCOL IN ITEMS quest_input_initialize quest_input_process quest_input_exec_lines quest_input_button_commands quest_process_loop)
+foreach(INPUT_PROTOCOL IN ITEMS quest_input_initialize quest_input_process quest_input_exec_lines quest_input_button_commands quest_input_axis_command quest_process_loop)
     add_executable(${INPUT_PROTOCOL}_test ${INPUT_PROTOCOL}_test.cpp)
     target_compile_features(${INPUT_PROTOCOL}_test PRIVATE cxx_std_20)
     target_include_directories(${INPUT_PROTOCOL}_test PRIVATE "${PORT_NATIVE}")

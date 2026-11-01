@@ -48,13 +48,14 @@
         return QuestVr::DecalStateDetail::Add(sizeof(input),NativeInputValuesBytes(*input.input));
     }
     void RequireEmptyNativeInputJournal() const {
-        if(!nativeInputCellReferences_.empty()||!beforeNativeInputInstances_.empty()||!beforeNativeInputDefaults_.empty()||beforeNativeInputConfig_||nativeInputReferenceBytes_||
+        if(!inputPropertyCache_.empty()||lexicalCommandInput_||lexicalCommandCheck_||
+            !nativeInputCellReferences_.empty()||!beforeNativeInputInstances_.empty()||!beforeNativeInputDefaults_.empty()||beforeNativeInputConfig_||nativeInputReferenceBytes_||
             nativeConfigExpected_||!nativeConfigBytes_.empty()||nativeConfigFlushPending_||nativeInputResetSourceUsed_||nativeCoreExecResult_||nativeViewportCoreResult_)
             throw std::runtime_error("Native Input journal survived its previous root transaction");
     }
     std::size_t NativeInputJournalBytes() const {
         using QuestVr::DecalStateDetail::Add;using QuestVr::DecalStateDetail::Multiply;
-        auto bytes=Add(nativeInputReferenceBytes_,Multiply(beforeNativeInputInstances_.capacity(),sizeof(NativeInputInstanceBefore)));
+        auto bytes=Add(InputPropertyCacheBytes(),Add(nativeInputReferenceBytes_,Multiply(beforeNativeInputInstances_.capacity(),sizeof(NativeInputInstanceBefore))));
         bytes=Add(bytes,Multiply(nativeInputCellReferences_.capacity(),sizeof(NativeInputCellReference)));
         bytes=Add(bytes,Multiply(beforeNativeInputDefaults_.capacity(),sizeof(NativeInputDefaultBefore)));
         for(const auto& entry:beforeNativeInputInstances_) {
@@ -131,6 +132,8 @@
         // Host rollback reaches here only AFTER Machine reference undo; commit
         // has finished all fallible writes. Drop cached closures before the
         // COW beforeimages release their now-unneeded payload ownership.
+        std::vector<InputPropertyCacheEntry>{}.swap(inputPropertyCache_);
+        lexicalCommandInput_=nullptr;lexicalCommandCheck_=nullptr;
         std::vector<NativeInputCellReference>{}.swap(nativeInputCellReferences_);
         beforeNativeInputInstances_.clear();beforeNativeInputDefaults_.clear();beforeNativeInputConfig_.reset();
         nativeInputReferenceBytes_=0u;

@@ -1,5 +1,65 @@
 # Port status
 
+## Latest: actual player action fields and Const metadata (verified2026-11-02)
+
+The native Input entry now offers BUTTON/PULSE/TOGGLE/AXIS before key queries
+and aliases. Actual inherited INPUT properties are found by current FName and
+Byte/Float ancestry, with wrong-type same-name declarations skipped. Selected
+Actor/declaration pairs use qualified VM references and normal undo, not input
+value mirrors. Both lookups share one root-owned, GC-rooted all-INPUT-property
+cache. Command/token/output/cache construction and nested AXIS storage borrow
+the same root work and simultaneous byte ledgers. Public constructor-only Input
+authentication is unchanged; the real Init-prefix diagnostic lends only a
+private lexical COW/Viewport/Pawn lease, never invented initialized state.
+
+AXIS preserves the source SPEED substring search,1023-unit ANSI conversion,
+ordinary decimal prefix behavior, exact decimal-to-Double-to-Float conversion
+and masked nearest-even PC64 arithmetic. Textual special/hex/legacy MSVCRT
+numeric domains remain explicit unsupported cases, not silently modern libc
+behavior. Generated AXIS controls pass1173 checks/233 refusals; existing button
+and command-list controls remain21663/63 and223589/55.
+
+The first real startup/action attempt failed at465.489s because the full
+inherited field iterator encountered genuine player constants with no indexed
+Core.Const Class. Static owned Core evidence establishes size40, Field Super,
+Struct Within, constructor flags12/object04084004. Const is appended as record16
+without changing earlier indices. The metadata suite now passes23470 checks/
+149 refusals, verifying131 original constants (27 on DeusExPlayer), exact16
+classes/+17 GC graph and whole map/session/lookup/save lifetime. Earlier failed
+field/fixture runs remain failures. The independent source class inspector now
+supports actual ObjClass0 headers and confirms28 INPUT declarations.
+
+The fast real JCDentonMale Class-cache/alias gate passes80/10, including28
+properties/13 Byte/15 Float,3816 cache work and full checkpoint/GC/lookup/Input
+rollback with zero writes. Native Input and config class gates pass10512/38
+and10001/48; schema passes34394/1357. Desktop focused and Android-native builds
+pass. Actual Training payload teardown passes1164/33. Final current-source
+viewport Input and brush regressions pass10315/24 and2643/9 respectively;
+all12 live Model ownership/refusal controls pass and43 original sources stay
+unchanged. Strict ARM64 syntax/warnings and the full desktop build pass,
+including the complete music decoder. Full CTest passes259 executed/317
+registered/58 explicit owned-data skips/zero failures in152.16s; the relevant
+owned gates above ran separately. Final audit verifies1921 frozen compiler
+inputs,45 protected originals, three selected assets and four statically read
+DLL sources unchanged, with zero live build/test jobs. Earlier interrupted
+builds, field/fixture failures and the wrong teardown CLI invocation remain
+documented failures/interruption, not passing gates.
+
+The opt-in real startup check passes in552.592s with19 action commands/10 actual
+player-field stores, one shared28-property cache and native KEYNAME1 output,
+then the SAME unsupported Quest reconciliation boundary and complete rollback.
+It executes266870 instructions/37970 writes with13952529 native work under the
+unchanged16777216 limit; all45 protected source files remain unchanged and
+immutable cache replacement starts cold. It is not a
+physical controller test, initialized Input, committed gameplay or device
+performance evidence. Quest event/reset/release reconciliation, actual Root
+handlers/navigation and ReadInput, remaining audio/render/detail startup,
+committed frames and live Training crates/loot/gravity remain required.
+No new APK is packaged; other-map integration stays skipped. Accepted HUD,
+hands/body/NPC presentation and controls were not changed. See
+ORIGINAL-INPUT-RUNTIME-ACTIONS.md, ORIGINAL-INPUT-AXIS.md,
+ORIGINAL-CONST-REGISTRATION.md and ORIGINAL-QUEST-INPUT-CONTINUATION.md.
+
 ## Latest: actual alias command lists and explicit app-loop authority (2026-11-01)
 
 Original ParseLine256 Exact0 and ExecInputCommands now preserve UTF16 cursor,

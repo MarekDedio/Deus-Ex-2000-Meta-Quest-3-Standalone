@@ -84,6 +84,7 @@ struct NativeInputQueryOperations {
     const std::function<void()>& charge;
     PortableInputQueryResult result;
     const RuntimeInputCommandDispatcher& dispatcher;
+    const std::function<void()>& commandValidator;
     std::string* outputDevice{};
     std::string& Output(){return outputDevice?*outputDevice:result.output;}
     bool& AliasGuard() {
@@ -108,6 +109,7 @@ struct NativeInputQueryOperations {
     const std::function<void(std::size_t)>& admit;
     std::size_t scratchBytes{};
     void Validate() const {
+        if(commandValidator){commandValidator();return;}
         if(!ActualNativeInputInstanceValid(object))throw std::runtime_error("Native Input query ownership was revoked or replaced");
     }
     void Step() {
@@ -148,10 +150,11 @@ struct NativeInputQueryOperations {
 };
 PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject* input,const std::string& command,
     const std::function<void()>& charge,const std::function<void(std::size_t)>& admit,
-    const RuntimeInputCommandDispatcher& dispatcher,std::string* outputDevice) {
+    const RuntimeInputCommandDispatcher& dispatcher,std::string* outputDevice,const std::function<void()>& commandValidator) {
     if(command.size()>QuestVr::NativeInputKeyQueries::MaximumCommandUnits*3u)
         throw std::runtime_error("Native Input command transport exceeds bound");
-    if(!ActualNativeInputInstanceValid(input))throw std::runtime_error("Native Input key query requires a constructed current instance");
+    if(commandValidator)commandValidator();
+    else if(!ActualNativeInputInstanceValid(input))throw std::runtime_error("Native Input key query requires a constructed current instance");
     // Meter concrete command/Enum/binding storage, not a fixed worst-case
     //112KiB reservation. Supported bundled GNU/libc++ strings grow by at most
     //2x: include transient old+new Decode buffers (6xcommand bytes), both
@@ -173,7 +176,7 @@ PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject* input,const std:
     const auto units=QuestVr::UnrealString::Decode(command);
     if(units.size()>QuestVr::NativeInputKeyQueries::MaximumCommandUnits)
         throw std::runtime_error("Native Input command unit limit exceeded");
-    NativeInputQueryOperations operations{input,charge,{},dispatcher,outputDevice,admit,scratch};
+    NativeInputQueryOperations operations{input,charge,{},dispatcher,commandValidator,outputDevice,admit,scratch};
     for(std::size_t i=0u;i<units.size();++i)operations.Step();
     operations.result.handled=QuestVr::NativeInputKeyQueries::Exec(operations,units);
     if(!operations.result.handled) {

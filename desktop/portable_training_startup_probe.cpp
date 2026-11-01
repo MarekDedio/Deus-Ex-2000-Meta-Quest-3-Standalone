@@ -853,13 +853,16 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             const auto& row=world.inputResetPrefix;
             std::cout<<"INPUT INITIAL RESET PREFIX observed attempted="<<row.attempted<<" viewport="<<row.viewportStored
                 <<" keys="<<row.keysCleared<<" bytes="<<row.byteProperties<<" floats="<<row.floatProperties
-                <<" platform="<<row.platformReached<<" source="<<row.sourceObserved<<'\n';
+                <<" platform="<<row.platformReached<<" source="<<row.sourceObserved
+                <<" actions="<<row.actionCommands<<" stores="<<row.actionStores<<" inputProperties="<<row.cachedInputProperties
+                <<" keyQuery="<<row.actionKeyQuery<<" actionsCompleted="<<row.actionsCompleted<<'\n';
             // Independent owned Engine.u inventory: thirteen Pawn input Byte
             // declarations and fifteen PlayerPawn input Float declarations.
             // Reaching UpdateInput alone must not hide an unresolved Class
             // that silently filtered out an entire actual property category.
             Require(row.attempted&&row.viewportStored&&row.keysCleared==255u&&row.byteProperties==13u&&row.floatProperties==15u&&
-                row.platformReached&&row.sourceObserved&&
+                row.platformReached&&row.sourceObserved&&row.actionsCompleted&&row.actionKeyQuery&&
+                row.actionCommands==19u&&row.actionStores==10u&&row.cachedInputProperties==28u&&
                 world.execution.error=="Original Quest viewport UpdateInput dispatch/reconciliation is not prepared",
                 "Initial Input diagnostic failed before authentic reset prefix/platform boundary");
             const auto restoredInput=ReadPortableRuntimeViewportInput(Viewport);

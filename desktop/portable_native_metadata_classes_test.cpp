@@ -109,19 +109,19 @@ struct Temporary {
 // ORIGINAL-STRUCT-PROPERTY-REGISTRATION.md, ORIGINAL-INPUT-ENUM-IDENTITY.md and
 // ORIGINAL-BYTE-PROPERTY-REGISTRATION.md,
 // not a copy of a production registration table or a path-hash pseudo-index.
-constexpr std::array<const char*,15u> Paths{
+constexpr std::array<const char*,16u> Paths{
     "Core.Field","Core.Struct","Core.State","Core.Class","Core.Property","Core.ObjectProperty",
-    "Core.ClassProperty","Core.IntProperty","Core.BoolProperty","Core.StrProperty","Core.ArrayProperty","Core.StructProperty","Core.Enum","Core.Function","Core.ByteProperty"};
-constexpr std::array<const char*,15u> Bases{
+    "Core.ClassProperty","Core.IntProperty","Core.BoolProperty","Core.StrProperty","Core.ArrayProperty","Core.StructProperty","Core.Enum","Core.Function","Core.ByteProperty","Core.Const"};
+constexpr std::array<const char*,16u> Bases{
     "Core.Object","Core.Field","Core.Struct","Core.State","Core.Field","Core.Property",
-    "Core.ObjectProperty","Core.Property","Core.Property","Core.Property","Core.Property","Core.Property","Core.Field","Core.Struct","Core.Property"};
-constexpr std::array<const char*,15u> Withins{
+    "Core.ObjectProperty","Core.Property","Core.Property","Core.Property","Core.Property","Core.Property","Core.Field","Core.Struct","Core.Property","Core.Field"};
+constexpr std::array<const char*,16u> Withins{
     "Core.Object","Core.Object","Core.Object","Core.Package","Core.Field","Core.Field",
-    "Core.Field","Core.Field","Core.Field","Core.Field","Core.Field","Core.Field","Core.Struct","Core.State","Core.Field"};
-constexpr std::array<std::uint32_t,15u> Sizes{0x34u,0x6cu,0x484u,0x4f4u,0x5cu,0x64u,0x68u,0x5cu,0x60u,0x5cu,0x60u,0x64u,0x40u,0x80u,0x60u};
-constexpr std::array<std::uint32_t,15u> Flags{0x13u,0x12u,0x12u,0x12u,0x13u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u};
+    "Core.Field","Core.Field","Core.Field","Core.Field","Core.Field","Core.Field","Core.Struct","Core.State","Core.Field","Core.Struct"};
+constexpr std::array<std::uint32_t,16u> Sizes{0x34u,0x6cu,0x484u,0x4f4u,0x5cu,0x64u,0x68u,0x5cu,0x60u,0x5cu,0x60u,0x64u,0x40u,0x80u,0x60u,0x40u};
+constexpr std::array<std::uint32_t,16u> Flags{0x13u,0x12u,0x12u,0x12u,0x13u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u};
 void SnapshotIs(const PortableNativeMetadataClassesSnapshot& value,bool prepared,std::size_t serialized=0u) {
-    Require(value.prepared==prepared&&value.classes.size()==(prepared?Paths.size():0u),"Metadata preparation state/count differs from fifteen-class contract");
+    Require(value.prepared==prepared&&value.classes.size()==(prepared?Paths.size():0u),"Metadata preparation state/count differs from sixteen-class contract");
     Require(value.boundSerializedClasses==(prepared?serialized:0u),"Metadata binding count differs from actual loaded serialized UClasses");
     if(!prepared)return;
     std::set<std::uint32_t> indices;
@@ -137,10 +137,10 @@ void SnapshotIs(const PortableNativeMetadataClassesSnapshot& value,bool prepared
     const auto object=value.classes[0u].baseClassIndex,package=value.classes[3u].withinClassIndex;
     Require(object!=package&&indices.count(object)==0u&&indices.count(package)==0u,
         "Original Object/Package dependencies alias metadata class allocation slots");
-    constexpr std::array<int,15u> baseSlots{-1,0,1,2,0,4,5,4,4,4,4,4,0,1,4};
+    constexpr std::array<int,16u> baseSlots{-1,0,1,2,0,4,5,4,4,4,4,4,0,1,4,0};
     for(std::size_t i=0u;i<Paths.size();++i) {
         const auto base=baseSlots[i]<0?object:value.classes[static_cast<std::size_t>(baseSlots[i])].objectIndex;
-        const auto within=i<3u?object:i==3u?package:i==12u?value.classes[1u].objectIndex:
+        const auto within=i<3u?object:i==3u?package:(i==12u||i==15u)?value.classes[1u].objectIndex:
             i==13u?value.classes[2u].objectIndex:value.classes[0u].objectIndex;
         Require(value.classes[i].baseClassIndex==base&&value.classes[i].withinClassIndex==within,
             "Metadata Super/Within uses matching names but not actual shared indexed identities");
@@ -331,6 +331,29 @@ void ByteProperties(const std::vector<PortablePackageTables>& packages,const Por
     std::cout<<"OWNED UBYTEPROPERTY sourceProperties="<<count<<" pawnInputBytes="<<pawnInputBytes
         <<"; actual source Class references and registered Class indices, NOT Input reset or native default construction\n";
 }
+void Constants(const std::vector<PortablePackageTables>& packages,const PortableNativeMetadataClassesSnapshot& metadata) {
+    const auto& registered=metadata.classes[15u];std::size_t count{},playerConstants{};
+    Require(registered.classPath=="Core.Const"&&registered.baseClassPath=="Core.Field"&&
+        registered.withinClassPath=="Core.Struct"&&registered.nativeSize==0x40u,
+        "UConst authority differs from independent original static registration");
+    for(const auto& package:packages)for(std::size_t index=0u;index<package.exports.size();++index) {
+        const auto reference=package.exports[index].ObjClass;if(!reference)continue;
+        auto cls=GetPortableObjectPath(package,reference);
+        if(reference>0)cls=fs::path(package.sourcePath).stem().string()+'.'+cls;
+        if(Fold(cls)!="core.const")continue;
+        const auto path=fs::path(package.sourcePath).stem().string()+'.'+GetPortableObjectPath(package,static_cast<std::int32_t>(index+1u));
+        const auto actual=ReadPortableRuntimeObjectOwnership(path);
+        Require(actual.objectPath==path&&actual.classPath=="Core.Const"&&actual.classIndex==registered.objectIndex&&
+            actual.objectIndex&&actual.objectIndex!=actual.classIndex&&!actual.outerPath.empty(),
+            "Actual original Const export did not bind its real indexed Class");
+        static_cast<void>(LoadPortableFieldLinks(package,index));
+        if(Fold(actual.outerPath)=="deusex.deusexplayer")++playerConstants;
+        ++count;
+    }
+    Require(count>0u&&playerConstants>0u,"Const binding omitted real player inherited iterator declarations");
+    std::cout<<"OWNED UCONST sourceConstants="<<count<<" playerConstants="<<playerConstants
+        <<"; actual Class/index binding and linked non-property declarations\n";
+}
 PortablePackageTables WithGeneratedMapEnum(PortablePackageTables map,Temporary& temporary) {
     const auto backing=temporary.Track(temporary.directory/"00_Training.dx");
     Require(fs::file_size(map.sourcePath)<512u*1024u*1024u&&fs::copy_file(map.sourcePath,backing),
@@ -386,12 +409,13 @@ void Original(const std::vector<PortablePackageTables>& packages,const PortableP
     std::vector<PortableStateDescriptor> states;
     for(const auto* path:originalPaths)states.push_back(ReadPortableRuntimeAuthoredStateDescriptor(path));
     const auto prepared=PreparePortableRuntimeNativeMetadataClasses();SnapshotIs(prepared,true,serialized);
-    const auto preparedGc=GC::GetStats();Require(preparedGc.numObjects==gc.numObjects+16u&&preparedGc.memoryUsage>gc.memoryUsage,
-        "Metadata phase did not allocate exactly fifteen UClasses plus one owning domain (no defaults/instances)");
+    const auto preparedGc=GC::GetStats();Require(preparedGc.numObjects==gc.numObjects+17u&&preparedGc.memoryUsage>gc.memoryUsage,
+        "Metadata phase did not allocate exactly sixteen UClasses plus one owning domain (no defaults/instances)");
     Headers(packages[0u],packages[1u]);
     Enums(packages,prepared);
     Functions(packages,prepared);
     ByteProperties(packages,prepared);
+    Constants(packages,prepared);
     const auto inputEnum=ReadPortableRuntimeEnum("Engine.Actor.EInputKey");
     for(unsigned repeat=0u;repeat<4u;++repeat) {
         SameSnapshot(prepared,PreparePortableRuntimeNativeMetadataClasses());SameSnapshot(prepared,ReadPortableRuntimeNativeMetadataClasses());
@@ -420,7 +444,7 @@ void Original(const std::vector<PortablePackageTables>& packages,const PortableP
     Require(UnloadPortableRuntimeMap()>0u&&WorldPaths().empty(),"Cannot unload metadata Training fixture");GC::Collect();
     SameSnapshot(prepared,PreparePortableRuntimeNativeMetadataClasses());
     Require(ReadPortableRuntimeEnum(inputEnum.objectPath)==inputEnum,"Map unload/GC retired the static input Enum");
-    Require(GC::GetStats().numObjects==scriptGc.numObjects+16u,"Map unload did not retain exactly the static metadata registration domain");
+    Require(GC::GetStats().numObjects==scriptGc.numObjects+17u,"Map unload did not retain exactly the sixteen classes plus metadata domain");
     Require(LoadPortableRuntimeMap(map).passed,"Cannot reload Training with existing indexed metadata classes");
     const auto reloadGc=GC::GetStats();SameSnapshot(prepared,ReadPortableRuntimeNativeMetadataClasses());
     SameSnapshot(prepared,PreparePortableRuntimeNativeMetadataClasses());GC::Collect();SameGc(reloadGc,"Map reload lost/duplicated static metadata roots");
@@ -528,7 +552,7 @@ void RefusalFixtures(const fs::path& root,const std::vector<PortablePackageTable
     // Add a tables-only ordinary Object under the LAST native metadata name.
     // Its payload is never read; all original package bytes remain untouched.
     ExportTableEntry extra{};extra.ObjName=static_cast<std::int32_t>(core.names.size());
-    core.names.push_back({NameString("ByteProperty"),0u});
+    core.names.push_back({NameString("Const"),0u});
     extra.ObjClass=ExportClass(core,"Core.Object");core.exports.push_back(extra);
     Require(InitializePortableRuntime(std::vector<PortablePackageTables>{core,packages[1u]}).passed,"Cannot initialize late metadata-name collision fixture");
     Require(PreparePortableRuntimeNativeEngineClasses().prepared,"Late metadata collision prevents unrelated prerequisite Engine class phase");
@@ -538,7 +562,7 @@ void RefusalFixtures(const fs::path& root,const std::vector<PortablePackageTable
     Require(ReadPortableRuntimeNativeEngineClasses().prepared&&ReadPortableRuntimeNativeEngineClasses().classes.size()==5u,
         "Failed metadata phase removed/changed its preexisting Engine registration dependency");
     for(std::size_t i=0u;i+1u<Paths.size();++i)Unavailable([&] {(void)ReadPortableRuntimeAuthoredStateDescriptor(Paths[i]);},Paths[i]);
-    Refused([&] {(void)ReadPortableRuntimeAuthoredStateDescriptor("Core.ByteProperty");},"Existing ordinary collision object acquired authored UClass metadata");
+    Refused([&] {(void)ReadPortableRuntimeAuthoredStateDescriptor("Core.Const");},"Existing ordinary collision object acquired authored UClass metadata");
     Require(temporary.Snapshot("CollisionAfter")==collisionBefore&&GetPortableRuntimeWorldRevision()==revision&&WorldPaths().empty(),
         "Late metadata-name refusal published partial gameplay/index/checkpoint state");
     copy.Unchanged();ShutdownPortableRuntime();
@@ -568,7 +592,7 @@ int main(int argc,char** argv) {
         GC::Collect();SameGc(baseline,"No-runtime metadata preparation leaked native objects");
         for(const auto& source:sources)source.Unchanged();
         std::cout<<"PASS owned native metadata-class integration: "<<checks<<" checks, "<<refusals
-            <<" refusals; exact fifteen registration records/+16 GC graph, real distinct object-index/Super/Within/self-metaclass relationships, "
+            <<" refusals; exact sixteen registration records/+17 GC graph, real distinct object-index/Super/Within/self-metaclass relationships, "
               "serialized-UClass binding count including later map Class without descriptor, native session classes before/after preparation, "
               "dormant whole checkpoints/default/state/model preservation, warm restore/map/GC/shutdown lifetime, "
               "missing-phase/dependency and late-name atomic refusal. Not defaults, Engine/Cylinder instances, startup, physics or VR rendering.\n";

@@ -28,6 +28,14 @@
                 protocol.lookupGeneration!=persistentObjectLookup->generation)
                 throw std::runtime_error("Initial Input private root/payload lease changed");
         };
+        if(lexicalCommandInput_||lexicalCommandCheck_)
+            throw std::runtime_error("Initial Input command lease cannot nest another initialization");
+        const std::function<void()> commandCheck=check;
+        lexicalCommandInput_=input;lexicalCommandCheck_=&commandCheck;
+        struct EndCommandLease {
+            RuntimeObject*& input;const std::function<void()>*& check;
+            ~EndCommandLease(){input=nullptr;check=nullptr;}
+        } endCommandLease{lexicalCommandInput_,lexicalCommandCheck_};
         const auto native=[&](std::uintptr_t identity)->RuntimeObject* {
             check();if(!identity)throw std::runtime_error("Original input native receiver is None");
             return reinterpret_cast<RuntimeObject*>(identity);
@@ -119,6 +127,9 @@
             if(std::any_of(protocol.keys.begin(),protocol.keys.end(),[](auto value){return value!=0u;})||
                 protocol.action||std::bit_cast<std::uint32_t>(protocol.delta)!=0u)
                 throw std::runtime_error("Original Input platform reset reached before native key/accumulator clearing");
+            // Explicit primitive checks at the real Init-prefix authority.
+            // They do not replace UpdateInput or consume a physical event.
+            ProbeOriginalInputActionCells(input,observed,execution);
             QuestVr::NativeScratchScope batchStorage(nativeQueryScratchBytes_,sizeof(QuestVr::QuestInputSource::Batch),
                 [this](std::size_t bytes){ValidateStateBudget(bytes);});
             const auto& source=CurrentQuestInputSource(protocol.viewportIdentity);const auto batch=source->Stage(protocol.sourceCursor,true);

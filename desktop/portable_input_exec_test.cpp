@@ -68,6 +68,13 @@ void Original(const fs::path& root,Temporary& temp) {
             "Input alias diagnostic changed complete save/lookup/GC/native protocol state");};
     const auto run=[&](const char* command,bool late=false,const QuestVr::Vm::Limits& limits=Limits()) {
         auto result=ProbePortableRuntimeInputCommands(Viewport,command,late,limits);unchanged();return result;};
+    const auto properties=ProbePortableRuntimeInputProperties("DeusEx.JCDentonMale",Limits());unchanged();
+    Require(properties.completed&&!properties.execution.committed&&properties.properties==28u&&
+        properties.bytes==13u&&properties.floats==15u&&properties.execution.writes==0u&&
+        properties.execution.error=="Original Input property metadata diagnostic complete; rollback required",
+        "Actual player inherited Input cache failed before native actions: "+properties.execution.error);
+    std::cout<<"Actual inherited player Input cache properties="<<properties.properties<<" bytes="<<properties.bytes
+        <<" floats="<<properties.floats<<" work="<<properties.execution.nativeWork->used<<"; no fabricated Pawn/Init\n";
     const auto missing=run("QuestLineProbe");
     Require(!missing.completed&&!missing.execution.passed()&&!missing.execution.error.empty(),"Absent running capability became genuine false/success");++refusals;
     auto loop=std::make_shared<QuestVr::ProcessLoopControl>();BindPortableRuntimeProcessLoop(loop);

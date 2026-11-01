@@ -6,19 +6,23 @@
         // An Input-handled query never reaches ViewportExecAfterInput, whose
         // normal client lease pin therefore cannot protect this root for us.
         clientDependent_=true;
+        const auto action=QueryOriginalInputActions(input,command,execution,output);
+        if(action.handled)return action;
         const auto previous=nativeQueryScratchBytes_;
         struct Restore {std::size_t& ledger;std::size_t before;~Restore(){ledger=before;}} restore{nativeQueryScratchBytes_,previous};
         const RuntimeInputCommandDispatcher dispatch=[&](RuntimeObject* selected,std::size_t slot,std::string& device) {
             ExecuteOriginalInputAlias(selected,slot,device,execution);
         };
-        return ExecuteNativeInputQuery(input,command,[this]{LifecycleStep();},[&](std::size_t bytes) {
+        auto result=ExecuteNativeInputQuery(input,command,[this]{LifecycleStep();},[&](std::size_t bytes) {
             nativeQueryScratchBytes_=previous;ValidateStateBudget(bytes);
             nativeQueryScratchBytes_=QuestVr::DecalStateDetail::Add(previous,bytes);
-        },dispatch,output);
+        },dispatch,output,[&]{RequireOriginalCommandInput(input);});
+        result.work=QuestVr::DecalStateDetail::Add(result.work,action.work);return result;
     }
     void ExecuteOriginalInputAlias(RuntimeObject* input,std::size_t slot,std::string& output,
         QuestVr::Vm::Execution& execution) {
-        if(!transaction_||!ActualNativeInputInstanceValid(input)||slot>=40u)
+        RequireOriginalCommandInput(input);
+        if(slot>=40u)
             throw std::runtime_error("Original Input alias dispatcher lacks its current native Input/root");
         const auto& command=input->nativeInputInstance->values.aliases[slot].command;
         if(command.size()>3u*QuestVr::NativeInputKeyQueries::MaximumCommandUnits)
@@ -32,8 +36,8 @@
             throw std::runtime_error("Original alias command exceeds admitted UTF16 storage");
         const auto inputId=reinterpret_cast<std::uintptr_t>(input),outputId=reinterpret_cast<std::uintptr_t>(&output);
         const auto validate=[&] {
-            if(!transaction_||!ActualNativeInputInstanceValid(input)||
-                input->nativeInputInstance->values.aliases[slot].command!=captured)
+            RequireOriginalCommandInput(input);
+            if(input->nativeInputInstance->values.aliases[slot].command!=captured)
                 throw std::runtime_error("Original Input alias native owner/source changed during dispatch");
         };
         const auto identities=[&](std::uintptr_t receiver,std::uintptr_t device) {

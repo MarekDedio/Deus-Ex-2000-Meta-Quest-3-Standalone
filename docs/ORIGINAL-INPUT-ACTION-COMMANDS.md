@@ -4,12 +4,16 @@ Read-only static source audit for the next native input service. No compiler
 input is changed, no original commercial DLL/EXE is loaded or executed, and
 no action-command/runtime/Quest/startup/APK acceptance is claimed here.
 
-Implementation follow-up2026-11-01: quest_input_button_commands.h now implements
-the typed BUTTON/PULSE/TOGGLE coordinator with generated callback controls
-(21663 checks/63 refusals in the recorded run). Actual FindButtonName/native
-property-journal binding and typed AXIS remain missing. The runtime alias/line
-connection is verified separately; it does not turn these generated cells into
-real Pawn input properties. See STATUS.md for the complete frozen batch gates.
+Implementation follow-up2026-11-02: the typed BUTTON/PULSE/TOGGLE coordinator
+passes21663 checks/63 refusals; typed AXIS passes1173/233. Actual native
+FindButtonName/FindAxisName and qualified property-journal binding now share
+the real inherited metadata cache, including appended Core.Const authority.
+The genuine Training Init-prefix executes19 commands/10 actual player stores,
+then verifies full rollback at the unchanged missing Quest event boundary.
+Public constructor-only authentication is unchanged; this is not completed
+Input.Init, ReadInput or physical controller delivery. Full historical CRT
+numeric domains remain incomplete. See ORIGINAL-INPUT-RUNTIME-ACTIONS.md,
+ORIGINAL-INPUT-AXIS.md and STATUS.md for the exact final frozen gates.
 
 Owned SHA256:
 

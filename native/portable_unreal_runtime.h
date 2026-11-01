@@ -595,6 +595,8 @@ struct PortableWorldStartupProbeResult {
     struct InputResetPrefixObservation {
         bool attempted{},viewportStored{},platformReached{},sourceObserved{};
         std::size_t keysCleared{},byteProperties{},floatProperties{};
+        bool actionsCompleted{},actionKeyQuery{};
+        std::size_t actionCommands{},actionStores{},cachedInputProperties{};
         bool operator==(const InputResetPrefixObservation&) const = default;
     } inputResetPrefix;
     struct BrushTrackerObservation {

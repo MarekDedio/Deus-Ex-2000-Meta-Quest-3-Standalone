@@ -106,6 +106,8 @@
 #include "quest_input_initialize.h"
 #include "quest_input_process.h"
 #include "quest_input_exec_lines.h"
+#include "quest_input_button_commands.h"
+#include "quest_input_axis_command.h"
 #include "portable_input_exec.h"
 #include "portable_brush_polys.h"
 #include "quest_original_sine_table.h"
@@ -1085,7 +1087,7 @@ QuestVr::NativeConfigImport::Result ImportNativeInputAlias(const RuntimeNativeIn
 using RuntimeInputCommandDispatcher=std::function<void(RuntimeObject*,std::size_t,std::string&)>;
 PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject*,const std::string&,
     const std::function<void()>&,const std::function<void(std::size_t)>&,
-    const RuntimeInputCommandDispatcher& = {},std::string* = nullptr);
+    const RuntimeInputCommandDispatcher& = {},std::string* = nullptr,const std::function<void()>& = {});
 std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
     const InputConfigPayloads* stagedPayloads=nullptr,const RuntimeNativeInputConfig* stagedConfig=nullptr) {
     using QuestVr::DecalStateDetail::Add;
@@ -4815,6 +4817,7 @@ public:
     }
 #include "portable_core_static_exec.inl"
 #include "portable_input_reset_host.inl"
+#include "portable_input_action_host.inl"
 #include "portable_input_initialize_host.inl"
 #include "portable_input_exec_host.inl"
 #include "portable_string_to_name_host.inl"
@@ -15366,6 +15369,22 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
 #include "portable_viewport_canvas_api.inl"
 #include "portable_viewport_console_api.inl"
 #include "portable_quest_input_source_api.inl"
+
+PortableInputPropertyProbeResult ProbePortableRuntimeInputProperties(const std::string& classPath,
+    const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableInputPropertyProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
+            host.ObserveInputPropertyCache(classPath,result);
+            throw std::runtime_error("Original Input property metadata diagnostic complete; rollback required");
+            return QuestVr::Vm::Value{};
+        },limits);
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
 
 PortableInputExecProbeResult ProbePortableRuntimeInputCommands(std::uint64_t viewportIdentity,
     const std::string& command,bool lateFailure,const QuestVr::Vm::Limits& limits) {

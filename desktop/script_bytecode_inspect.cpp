@@ -242,7 +242,12 @@ int main(int argc, char** argv) {
                 continue;
             }
             PortableScriptBody script;
-            if (scriptClass == "State") {
+            if (package.exports[index].ObjClass == 0) {
+                const auto descriptor=LoadPortableClassDescriptor(package,index);
+                std::cout << "\nCLASS " << requested << " base=" << GetPortableObjectPath(package,descriptor.state.baseField) << '\n';
+                Parameters(package,index);
+                continue;
+            } else if (scriptClass == "State") {
                 const auto state = LoadPortableStateDescriptor(package, index);
                 script.objectPath = state.objectPath; script.logicalSize = state.logicalSize;
                 script.bytecode = state.bytecode;
