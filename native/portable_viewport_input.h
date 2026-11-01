@@ -16,6 +16,10 @@ struct PortableViewportInputSnapshot {
     std::array<std::string,255u> bindings;
     std::array<std::string,52u> extensionNames;
     std::array<int,52u> extensionNameIndices{};
+    std::array<std::uint8_t,255u> keys{};
+    std::int32_t action{};
+    float delta{};
+    std::uint64_t sourceIdentity{},sourceSequence{},sourceRejections{};
 };
 struct PortableInputQueryResult {bool handled{};std::string output;std::size_t work{};};
 

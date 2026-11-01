@@ -49,6 +49,8 @@ PortableViewportInputSnapshot NativeInputSnapshot(RuntimeObject* object,const Ru
         const auto& alias=values.aliases[i];result.aliases[i]={alias.alias.ToString(),alias.command,alias.alias.GetCompareIndex()};
     }
     result.bindings=values.bindings;
+    result.keys=input.keys;result.action=input.action;result.delta=input.delta;
+    result.sourceIdentity=input.sourceCursor.source;result.sourceSequence=input.sourceCursor.sequence;result.sourceRejections=input.sourceCursor.rejections;
     const auto* names=stagedNames?stagedNames:persistentInputSchema->get()->extensionNames.get();
     if(object->cls==persistentInputSchema->get()->inputExtClass) {
         if(!names||input.configReloads!=2u||input.configPasses!=4u)

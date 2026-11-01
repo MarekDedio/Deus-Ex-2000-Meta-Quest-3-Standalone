@@ -60,6 +60,7 @@
 #include "quest_native_window_toggle.h"
 #include "quest_native_window_navigation.h"
 #include "portable_window_navigation.h"
+#include "portable_window_key_state.h"
 #include "quest_native_text_window_setters.h"
 #include "quest_native_text_content.h"
 #include "quest_native_text_log_storage.h"
@@ -101,6 +102,8 @@
 #include "portable_brush_tracker.h"
 #include "quest_brush_bsp_insert.h"
 #include "quest_brush_update.h"
+#include "quest_input_initialize.h"
+#include "quest_input_process.h"
 #include "portable_brush_polys.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
@@ -247,6 +250,11 @@ struct RuntimeNativeInputInstance {
     PortableInputLoggingProfile logging{PortableInputLoggingProfile::Ordinary};
     std::size_t configReloads{},configPasses{},configImports{},configFailures{},configWarnings{},configWork{};
     bool initialized{},retired{};
+    // Actual instance protocol, never config/default/actor-save storage.
+    std::array<std::uint8_t,255u> keys{};
+    std::int32_t action{};
+    float delta{};
+    QuestVr::QuestInputCursor sourceCursor;
 };
 struct RuntimeNativeStruct {
     NameString friendlyName{"None"};
@@ -1171,6 +1179,7 @@ std::vector<RuntimeObject*> persistentNativeCanvases;
 std::vector<RuntimeObject*> persistentNativeConsoles;
 struct RuntimeQuestInputBinding {std::uint64_t viewport{};std::shared_ptr<QuestVr::QuestInputSource> source;};
 std::vector<RuntimeQuestInputBinding> persistentQuestInputSources;
+const std::shared_ptr<QuestVr::QuestInputSource>& CurrentQuestInputSource(std::uint64_t identity);
 std::size_t QuestInputSourceStorageBytes() {
     using QuestVr::DecalStateDetail::Add;
     auto bytes=persistentQuestInputSources.capacity()*sizeof(RuntimeQuestInputBinding);
@@ -4544,6 +4553,7 @@ public:
         if(index==1410u) return NewChildWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
+        if(index==1470u) return WindowKeyDownNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
         if(index>=1455u && index<=1458u)
             return WindowRelativeQueryNative(index,Object(receiver),arguments,declaration);
@@ -4770,6 +4780,7 @@ public:
     }
 #include "portable_core_static_exec.inl"
 #include "portable_input_reset_host.inl"
+#include "portable_input_initialize_host.inl"
 #include "portable_string_to_name_host.inl"
 #include "portable_flag_base_host.inl"
 #include "portable_viewport_canvas_host.inl"
@@ -4817,6 +4828,9 @@ public:
             parameters={{"newWidth",Kind::Float,0x80u,"FloatProperty",""}};break;
         case 1425u:path="Extension.Window.GetRootWindow";
             parameters={{"ReturnValue",Kind::Object,0x580u,"ObjectProperty","Extension.RootWindow"}};break;
+        case 1470u:path="Extension.Window.IsKeyDown";
+            parameters={{"Key",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EInputKey"},
+                {"ReturnValue",Kind::Bool,0x580u,"BoolProperty",""}};break;
         case 1416u:path="Extension.Window.SetSensitivity";
             parameters={{"newSensitivity",Kind::Bool,0x80u,"BoolProperty",""}};break;
         case 1467u:path="Extension.Window.SetChildVisibility";
@@ -4885,7 +4899,7 @@ public:
             if(LowerAscii(function.path)!=LowerAscii(path) || function.nativeIndex!=index || function.flags!=0x401u ||
                 function.variables.size()!=parameters.size())
                 throw std::runtime_error("Native window function does not match its original declaration");
-            if((index>=1455u&&index<=1458u)||index==1487u) {
+            if((index>=1455u&&index<=1458u)||index==1487u||index==1470u) {
                 auto* method=Object(path);
                 if(!method->script||method->outer!=Object("Extension.Window")||method->script->baseField||
                     method->script->logicalSize!=5u||method->script->bytecode.size()!=5u||
@@ -6282,6 +6296,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==1470u) {
+            RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
+            if(slot)throw std::runtime_error("IsKeyDown input exceeds its original single Byte slot");
+            return Value::Byte(0u); // exec100535F8 initializes the Step destination.
+        }
         if((index>=1455u&&index<=1458u)||index==1487u) {
             RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
             if(slot)throw std::runtime_error("Window navigation input exceeds its original single slot");
@@ -6502,6 +6521,11 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==1470u) {
+            RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
+            if(slot)throw std::runtime_error("IsKeyDown omission exceeds its original single Byte slot");
+            return true; // Explicit Nothing preserves the initialized Byte0 temporary.
+        }
         if((index>=1455u&&index<=1458u)||index==1487u) {
             RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
             if(slot)throw std::runtime_error("Window navigation omission exceeds its original input slot");
@@ -8349,6 +8373,7 @@ public:
 #include "portable_gc_text_natives.inl"
 #include "portable_window_axis_probe.inl"
 #include "portable_window_navigation.inl"
+#include "portable_window_key_state.inl"
 #include "portable_window_tile_layout.inl"
 #include "portable_window_tile_probe.inl"
     void InitializeChildRadioBox(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
@@ -9371,6 +9396,8 @@ public:
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
                 StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.landingCommands,options.fallingCommands,options.damageCommands,options.collectDamageLoot,
                     options.collectDamageLootViaPlayer,options.physicsCohort,options.weapon,fireCommand,fireOutput,execution);
+                if(options.observeInitialInputResetPrefix)
+                    ProbeInitialInputResetPrefix(NativeSessionViewport(login.viewportIdentity),result.inputResetPrefix,execution);
             }
             // Original1038DF84..DFC0: compare current Level OUTER Package
             // FName with Entry, inside the genuine Client branch. No map-name
@@ -15627,6 +15654,20 @@ PortableWindowNavigationProbeResult ProbePortableNativeWindowNavigation(const st
         PortableActorVmHost host;
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
             return host.ProbeNativeWindowNavigation(actualOuterPath,mode,result,execution);
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableWindowKeyStateProbeResult ProbePortableNativeWindowKeyState(const std::string& levelInfoPath,
+    PortableWindowKeyStateProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableWindowKeyStateProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeWindowKeyState(levelInfoPath,mode,result,execution);
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();

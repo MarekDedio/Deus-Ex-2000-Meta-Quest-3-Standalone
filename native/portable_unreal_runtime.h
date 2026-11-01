@@ -461,6 +461,11 @@ struct PortableWorldStartupProbeOptions {
     // Omission refuses that missing configuration rather than using DefaultGame.
     std::string defaultServerGameClass{};
     std::optional<PortablePlayerLoginSource> playerLogin{};
+    // Explicit rollback-only INITIAL GameEngine Input.Init diagnostic after
+    // genuine SpawnPlayActor, NOT an Init inserted at later LoadMap.ResetInput.
+    // The still-missing concrete platform dispatcher must refuse, not succeed
+    // from a staged cursor alone. Normal startup leaves this false.
+    bool observeInitialInputResetPrefix{};
     // At most eight commands, single actual viewport only. Empty is normal
     // startup. The entire startup still rolls back at its genuine later gap.
     std::vector<PortableStartupDamageCommand> damageCommands{};
@@ -587,6 +592,11 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableSpawnEncroachmentSnapshot> spawnedEncroachment;
     PortableWorldActorOrderSnapshot beforeActorOrder,afterActorOrder;
     std::vector<PortablePlayerLoginObservation> playerLogins;
+    struct InputResetPrefixObservation {
+        bool attempted{},viewportStored{},platformReached{},sourceObserved{};
+        std::size_t keysCleared{},byteProperties{},floatProperties{};
+        bool operator==(const InputResetPrefixObservation&) const = default;
+    } inputResetPrefix;
     struct BrushTrackerObservation {
         bool attempted{},completed{},levelOwned{},topologyChecked{};
         std::size_t movers{},polygons{},nodes{},vertices{},points{};

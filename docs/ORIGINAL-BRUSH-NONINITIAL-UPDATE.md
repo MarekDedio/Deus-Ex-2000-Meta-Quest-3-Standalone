@@ -23,6 +23,21 @@ was loaded/executed. Its SHA256 is
 The future Quest dynamics adapter must establish its own genuine selected
 consumer; it is not implemented by exposing this host service.
 
+Read-only follow-up recovers the ordered gates before that call. The whole
+function skips empty BSP and requires viewport Pawn.ShowFlags bit8. Its live
+ascending Actor walk applies actual render-device HighDetailActors against
+bHighDetail, the Frame+1C/behind-view/ViewTarget branch (Frame+1C's field NAME
+is not independently authenticated), the explicit second-Actor exclusion,
+game/editor hidden flags, and repeated live Owner-chain/behind-view tests for
+bOnlyOwnerSee/bOwnerNoSee. It then selects nonstatic ABrush with nonnull Brush
+and conditionally calls the actual Level tracker per actor. Some exclusions
+bypass Update but continue later actor work. NO distance/frustum/BSP-visibility
+test precedes this brush call. The set is therefore NEITHER all brushes NOR
+only visible GPU chunks. Do not replace it by bulk Update(nullptr), snapshot
+owner sets or the Quest presentation grouping/streaming selector. Genuine
+renderer/frame/native-setting authority and those selected branches still
+need implementation; this static follow-up is not a bound render capability.
+
 ## Same caller and actual ownership
 
 Update authenticates the actual completed current Level/Model/tracker and map

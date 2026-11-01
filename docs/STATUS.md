@@ -1,5 +1,79 @@
 # Port status
 
+## Latest: original Input reset prefix and live Root key-state query (2026-11-01)
+
+The next Training APK is still blocked by actual Quest input reconciliation,
+Root keyboard/mouse dispatch, command/ReadInput services and the remaining
+audio/render/detail startup/frame connections. This batch does NOT complete
+Input.Init, startup, crate destruction/loot/gravity or headset acceptance.
+Other-map integration remains skipped; no new APK is packaged.
+
+Original Init/Reset coordinators now preserve Viewport-store/reset/log order,
+all255 key clears, independent inherited Byte/Float iterators, actual qualified
+Actor stores, Action/Delta reset and the mandatory concrete UpdateInput call.
+InputExt.Process and Root.Process typed coordinators preserve root-first
+handling, duplicate suppression, held/release ordering and selected native
+handler requirements. Their generated controls pass114281 checks/363 refusals
+and3372/16 respectively; the Process coordinators are NOT yet runtime-bound.
+Native instance protocol state joins the existing full COW/root/byte journal;
+constructor-only public authentication remains strict.
+
+The first real reset-prefix run failed: unresolved Core.ByteProperty was
+silently treated as a negative IsA, clearing15 Float fields but no input Bytes.
+The fix registers the genuine indexed ByteProperty as metadata record15 with
+native size0x60, Property superclass, Field Within and the original flags. Older
+registration indices are unchanged; no CDO or fabricated descriptor is added.
+Unresolved/foreign field Classes now refuse. Independent original metadata
+controls pass23201 checks/141 refusals, including820 actual ByteProperty exports
+and all13 Pawn input-byte declarations. Counts/GC/casts/lifetime/collision
+fixtures retain exact15-class expectations, not weakened minimum checks.
+
+The corrected actual first-Training prefix now observes255 native keys,13 Byte
+and15 Float stores, qualified field rereads, actual Viewport ownership and the
+explicit test observation source. It reaches the still-missing Quest dispatcher
+in759.943s with266870 instructions/37960 writes and native work13914052 under
+16777216. It does NOT consume that source or publish initialized=true. Full
+save/state/revision/hash/RNG/client/lookup/Actor/GC and native Input pointer/
+keys/Action/Delta/cursor/aliases/bindings/name/retained-byte restoration verify;
+45 original sources and cold immutable-cache replacement remain unchanged.
+This is expected-boundary evidence, not successful startup or device timing.
+
+Native1470 Window.IsKeyDown now authenticates the original UFunction/Enum,
+initialized Byte0 operand and copied lvalue/NoWrite/ZeroFill/Nothing ingress.
+It walks live terminal ancestry BEFORE key255 rejection and reads the actual
+Root keyDownMap, not Input.Keys or a cached/nearest Root. The owned regression
+passes1137 checks/16 refusals:1042 queries, all255 live slots, nonzero-byte and
+modifier changes, malformed inputs/declarations, cycles, bounds and full undo.
+Actual JCDenton/FlagBase/configured Root/child births stay in ONE rollback root;
+the checkpoint precedes all births, avoiding any live-FlagBase archive bypass.
+It uses16290 writes (16026 before queries) under the unchanged default16384
+limit and56584 native work. Its initial missing-FlagBase fixture run is retained
+as a failure, not a successful gate.
+
+Real normal first-Training startup still reaches the SAME retained later guard
+in703.003s with266870 instructions/37932 writes and14169046 native work. Actual
+completed tracker counts remain25 Movers/150 polygons/150 nodes/600 vertices/
+600 points. Full rollback/45 source fingerprints/cache-lifetime checks pass;
+neither this probe nor the new key getter commits original gameplay frames.
+
+Owned viewport integration passes10315/24, Input schema34381/1357, native Input
+classes10479/38, native config classes9995/48 and actual Training payload
+teardown1164/33. Nested generated struct teardown passes259/11 and the original
+struct audit also passes. Strict ARM64 and Android-native builds pass; full
+desktop build passes. Full CTest passes255 executed/311 registered/56 explicit
+owned-data skips/zero failures in139.61s. The relevant owned-data gates above
+ran separately. Repeated metadata verification on the final linked build again
+passes23201/141. Final audit confirms1903 frozen compiler inputs,45 protected
+originals, three selected texture/music assets and four statically inspected
+DLL sources unchanged, with zero live build/test jobs. No original commercial
+module executes and no new APK is packaged. Earlier compile,
+target-selection, fixture and CLI invocation failures remain in their original
+artifact logs and are not relabeled as passing executions.
+
+See ORIGINAL-INPUT-PROTOCOL-COORDINATORS.md, ORIGINAL-BYTE-PROPERTY-REGISTRATION.md
+and ORIGINAL-WINDOW-KEY-STATE.md. ORIGINAL-INPUT-EXEC-LINES.md records the next
+source-proven ParseLine256/ExecInputCommands contract; it is not implementation.
+
 ## Latest: real noninitial moving-brush dependency/removal/rebuild (2026-11-01)
 
 The host now provides actual noninitial Update against the completed current

@@ -12,6 +12,7 @@
 #include "portable_startup_weapon_fire_probe.h"
 #include "portable_viewport_canvas.h"
 #include "portable_viewport_console.h"
+#include "portable_quest_input_source.h"
 #include "quest_native_work.h"
 #include "quest_native_config.h"
 #include "quest_runtime_script_packages.h"
@@ -605,7 +606,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
     const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon,
     const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance,bool observeDynamicActors,
-    const std::vector<PortableStartupMoverCommand>& moverCommands) {
+    const std::vector<PortableStartupMoverCommand>& moverCommands,bool observeInitialInputResetPrefix) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+4u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -662,6 +663,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::cout<<"VIEWPORT CANVAS "<<canvas.canvas.objectPath<<" class="<<canvas.canvas.classPath<<
         " viewport="<<canvas.canvas.viewportPath<<"; original Init only, NOT frame Update/drawing or completed viewport startup\n";
     const auto input=PreparePortableRuntimeViewportInput(Viewport,PortableInputLoggingProfile::Ordinary);
+    if(observeInitialInputResetPrefix) {
+        // Explicit owned-test observation source, NOT a real headset capture or
+        // an absent-provider neutral fallback. Stage is not event dispatch.
+        auto source=std::make_shared<QuestVr::QuestInputSource>(lifetime,Client,Viewport);
+        QuestVr::QuestInputObservation observation;observation.displayTime=1.0;observation.deltaSeconds=0.01f;
+        observation.focused=true;source->Publish(observation);BindPortableRuntimeQuestInputSource(Viewport,source);
+    }
     Require(input.constructed&&input.execInstalled&&!input.initialized&&!input.nativeViewportIndex,
         "Cannot construct the real configured viewport Input without prematurely executing Init");
     const auto console=PreparePortableRuntimeViewportConsole(Viewport,ini);
@@ -775,6 +783,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     // This is NOT the original FURL constructor/default-options parser. Only
     // Portal/Op plus the following explicit engine-session tail sources.
     options.playerLogin.emplace();
+    options.observeInitialInputResetPrefix=observeInitialInputResetPrefix;
     const auto userConfig=QuestVr::NativeConfig::ReadOrderedIni(userIni);
     const auto iniConfig=QuestVr::NativeConfig::ReadOrderedIni(fs::path(ini));
     Require(userConfig.has_value()&&iniConfig.has_value(),"Cannot read explicit original Login class configuration sources");
@@ -840,6 +849,34 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         const auto usage=*world.execution.nativeWork;
         Require(usage.limit==nativeWork&&usage.used<=usage.limit,"Startup reported an invalid or different native-work allowance");
         std::cout<<"FINAL ROOT NATIVE WORK used="<<usage.used<<" limit="<<usage.limit<<" exhausted="<<usage.exhausted<<'\n';
+        if(observeInitialInputResetPrefix) {
+            const auto& row=world.inputResetPrefix;
+            std::cout<<"INPUT INITIAL RESET PREFIX observed attempted="<<row.attempted<<" viewport="<<row.viewportStored
+                <<" keys="<<row.keysCleared<<" bytes="<<row.byteProperties<<" floats="<<row.floatProperties
+                <<" platform="<<row.platformReached<<" source="<<row.sourceObserved<<'\n';
+            // Independent owned Engine.u inventory: thirteen Pawn input Byte
+            // declarations and fifteen PlayerPawn input Float declarations.
+            // Reaching UpdateInput alone must not hide an unresolved Class
+            // that silently filtered out an entire actual property category.
+            Require(row.attempted&&row.viewportStored&&row.keysCleared==255u&&row.byteProperties==13u&&row.floatProperties==15u&&
+                row.platformReached&&row.sourceObserved&&
+                world.execution.error=="Original Quest viewport UpdateInput dispatch/reconciliation is not prepared",
+                "Initial Input diagnostic failed before authentic reset prefix/platform boundary");
+            const auto restoredInput=ReadPortableRuntimeViewportInput(Viewport);
+            Require(!restoredInput.initialized&&!restoredInput.nativeViewportIndex&&restoredInput.keys==input.keys&&
+                restoredInput.action==input.action&&std::bit_cast<std::uint32_t>(restoredInput.delta)==std::bit_cast<std::uint32_t>(input.delta)&&
+                !restoredInput.sourceIdentity&&!restoredInput.sourceSequence&&!restoredInput.sourceRejections,
+                "Input reset prefix retained native Viewport/keys/Action/Delta/cursor after rollback");
+            Require(restoredInput.aliases==input.aliases&&restoredInput.bindings==input.bindings&&
+                restoredInput.extensionNames==input.extensionNames&&restoredInput.extensionNameIndices==input.extensionNameIndices&&
+                restoredInput.retainedBytes==input.retainedBytes&&restoredInput.objectIndex==input.objectIndex&&
+                restoredInput.classIndex==input.classIndex&&restoredInput.ownerViewportIndex==input.ownerViewportIndex&&
+                restoredInput.enumIndex==input.enumIndex&&restoredInput.uniqueCounter==input.uniqueCounter,
+                "Input reset prefix changed configured bindings/aliases/retained bytes or native owner identities");
+            std::cout<<"INPUT INITIAL RESET PREFIX keys="<<row.keysCleared<<" bytes="<<row.byteProperties<<" floats="<<row.floatProperties
+                <<" platform="<<row.platformReached<<" source="<<row.sourceObserved
+                <<"; real same-root Spawn/constructor/COW/reset writes, NOT completed platform reconciliation/Input.Init/ReadInput\n";
+        }
         const auto& brushTracker=world.brushTracker;
         std::cout<<"BRUSH TRACKER attempted="<<brushTracker.attempted<<" completed="<<brushTracker.completed
             <<" levelOwned="<<brushTracker.levelOwned<<" topologyChecked="<<brushTracker.topologyChecked
@@ -1036,7 +1073,7 @@ int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
-        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{},observePlayerDistance{},observeDynamicActors{};
+        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{},observePlayerDistance{},observeDynamicActors{},observeInitialInputResetPrefix{};
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
@@ -1051,6 +1088,7 @@ int main(int argc,char** argv) {
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
             else if(option=="--observe-training-stasis")observeTrainingStasis=true;
+            else if(option=="--observe-initial-input-reset-prefix")observeInitialInputResetPrefix=true;
             else if(option=="--observe-player-distance")observePlayerDistance=true;
             else if(option=="--observe-dynamic-actors"){observeDynamicActors=true;observePlayerDistance=true;}
             else if(option=="--interpolate-training-mover") {
@@ -1130,7 +1168,7 @@ int main(int argc,char** argv) {
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors,moverCommands);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors,moverCommands,observeInitialInputResetPrefix);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

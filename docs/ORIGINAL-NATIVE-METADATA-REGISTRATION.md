@@ -12,6 +12,12 @@ Owned Engine.dll SHA256:
 
 ## Core registration closure
 
+2026-11-01: Core.ByteProperty is appended as the15th closed record, with genuine
+native size0x60 and Property/Field Super/Within. Earlier14 indices are retained.
+The owned integration checks820 source ByteProperty exports and13 Pawn input
+Bytes. See ORIGINAL-BYTE-PROPERTY-REGISTRATION.md and STATUS.md; this does not
+add native property default construction or completed Quest input processing.
+
 All numbers are hexadecimal. Flags are supplied ClassFlags -> native-constructor
 baseline, not loaded serialized flags or proof of Register/default preparation.
 

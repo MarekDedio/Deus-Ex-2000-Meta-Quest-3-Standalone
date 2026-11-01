@@ -30,7 +30,7 @@ inline constexpr std::array<NativeEngineClassRegistration,5u> NativeEngineClasse
 // native UClasses, not default blocks, fabricated serialized descriptors or
 // permission to replay Cpp-property constructors after package loading.
 // See ORIGINAL-NATIVE-METADATA-REGISTRATION.md for each audited native header.
-inline constexpr std::array<NativeEngineClassRegistration,14u> NativeMetadataClasses{{
+inline constexpr std::array<NativeEngineClassRegistration,15u> NativeMetadataClasses{{
     {"Core.Field","Core.Object","Core.Object",0x34u,0x13u,0x04084004u,"Core"},
     {"Core.Struct","Core.Field","Core.Object",0x6cu,0x12u,0x04084004u,"Core"},
     {"Core.State","Core.Struct","Core.Object",0x484u,0x12u,0x04084004u,"Core"},
@@ -51,7 +51,12 @@ inline constexpr std::array<NativeEngineClassRegistration,14u> NativeMetadataCla
     {"Core.Enum","Core.Field","Core.Struct",0x40u,0x12u,0x04084004u,"Core"},
     // Core10129510..1012955E: real UFunction class used by ScriptConsoleExec's
     // IsA check. Within is UState (101F2118), NOT UStruct or UObject.
-    {"Core.Function","Core.Struct","Core.State",0x80u,0x12u,0x04084004u,"Core"}
+    {"Core.Function","Core.Struct","Core.State",0x80u,0x12u,0x04084004u,"Core"},
+    // Input.ResetInput performs actual UByteProperty IsA before clearing the
+    // Pawn's input bytes. Core10165BD0/10165C1B, class102A75F0; size60 includes
+    // its UEnum pointer. Append without changing any earlier metadata index.
+    // See ORIGINAL-BYTE-PROPERTY-REGISTRATION.md. No default/instance is implied.
+    {"Core.ByteProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u,"Core"}
 }};
 
 // The actual native bases of Engine's five config ClassProperties. Console

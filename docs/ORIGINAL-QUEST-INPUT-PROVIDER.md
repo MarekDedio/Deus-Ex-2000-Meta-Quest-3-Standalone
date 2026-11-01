@@ -13,6 +13,14 @@ This is not yet a concrete native UpdateInput dispatcher or initialized original
 Input service. The reset/reconciliation/command/Float-processing contracts below
 remain required, and physical Quest acceptance of the producer is still pending.
 
+2026-11-01 follow-up: native held-key/Action/Delta/cursor storage, exact typed
+Init/Reset and Process coordinators, the actual rollback-only first-Training
+reset prefix and Window.IsKeyDown native1470 are now implemented. The reached
+ByteProperty registration defect is fixed and the actual prefix proves13 Byte/
+15 Float stores. None completes concrete Quest reconciliation, Root handlers,
+ExecInputCommands, ReadInput or original startup. See
+ORIGINAL-INPUT-PROTOCOL-COORDINATORS.md and STATUS.md for verified scope.
+
 Immediate integration is the first `00_Training` map. Other-map work, account
 interfaces and character-creation menus are not prerequisites for this batch.
 
@@ -176,8 +184,9 @@ must retain their actual order before Core SET; see ORIGINAL-INPUT-FEXEC-SET-GAP
 ## Current port seams
 
 - RuntimeNativeInputInstance in portable_unreal_runtime.cpp retains configured
-  values, constructor provenance and initialized/retired markers. It currently
-  lacks held Keys[255], Action/Delta and an initialized-state protocol.
+  values, constructor provenance and initialized/retired markers, and now owns
+  held Keys[255], Action/Delta and the transactional observation cursor. The
+  completed initialized-state/event-processing protocol is still absent.
 - ActualNativeInputInstanceValid and NativeInputSnapshot in
   portable_viewport_input.inl deliberately reject initialized=true or a
   nonnull native Input.Viewport. Split/authenticate constructor and initialized
