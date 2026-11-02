@@ -1,5 +1,35 @@
 # Port status
 
+## Latest: real initialized later ResetInput (verified2026-11-02)
+
+This batch factors one native Reset provider body while preserving distinct
+constructor-only Init and initialized-only later Reset authority. Later Reset
+does not grant an Init command lease, write its Viewport pointer, initialize/log
+again or replace the completion receipt. Real native COW/qualified script undo,
+original255 key/Byte then Float iterator stores and actual UpdateInput(1) remain.
+No production call is inserted ahead of the missing audio/startup services.
+
+Generated114818 checks/363 refusal controls and focused desktop/Android-native/
+strict ARM64 pass. Fresh owned Input10315/24, alias80/10 and Root300/10 pass.
+Actual first Training now verifies laterReset1/keys255/Byte13/Float15 alongside
+previous Init/pre/post/rate/trigger checks, unchanged receipt/physical/cursor,
+brush25 movers/150 polygons, complete rollback/45 unchanged originals and cold
+Model replacement. It runs659.343s/267089 instructions/38087 writes and uses
+14254760/16777216 native work. The SAME later client/player/detail guard remains;
+this is not committed startup, live Quest input, a frame benchmark or gameplay.
+
+Full desktop, Android-native and strict ARM64 runtime/helper checks pass.
+Coherent CTest passes262 executed/321 registered/59 explicit owned-data skips/
+zero failures in135.18s; relevant owned gates ran separately. Final audit:
+1934 frozen inputs,45 originals, three selected assets and four source DLLs
+unchanged; zero live jobs and no new APK.
+Independent reset review finds no blocking defect. Next source contracts now
+also distinguish actual Client viewport-array creation from raw XR descriptors
+and audio Stop/Detach behavior on actor destruction; these are not implemented
+startup/audio adapters. See ORIGINAL-INITIALIZED-INPUT-RESET.md,
+ORIGINAL-QUEST-INPUT-PROVIDER.md and
+ORIGINAL-POST-PARTITION-AUDIO-CONTINUATION.md.
+
 ## Latest: initialized Input authority and original ReadInput (verified2026-11-02)
 
 Actual completed Init now stages a distinct native completion receipt tied to

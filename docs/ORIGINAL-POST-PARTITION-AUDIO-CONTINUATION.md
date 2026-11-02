@@ -59,6 +59,76 @@ for an ultimately rolled-back startup/frame. The CPU runtime must not access
 AAudio or render-owner handles just because viewport metadata exists. Existing
 accepted Training music/dialogue must survive unrelated input work.
 
+## Concrete existing bootstrap and commit seams
+
+Independent read-only review confirms StartAmbientAudio is currently called
+only from CompleteInitialPreparation AFTER the exclusive runtime worker's
+PrepareInitialRuntime has returned. A real audio capability needed during
+original startup therefore cannot be supplied by that late call. Split actual
+device initialization from content attachment: open/start a real initially
+silent48kHz stereo/I16 stream on its owning thread, validate negotiated format,
+then hand a revocable ready endpoint to the CPU worker before original startup.
+Attach prepared ambience/music/dialogue later without closing the endpoint.
+An initialized silent output is not a fabricated disabled/absent subsystem.
+Readiness must come from successful real AAudio open/start, not just a nonzero
+audioSampleRate_: StartAmbientAudio assigns that field before builder creation,
+which can still fail. Audio disconnect/error must revoke its own generation;
+an otherwise live client/render session does not prove the stream remains live.
+
+The proposed endpoint needs its own audio generation/lifetime in addition to
+the exact current NativeClientLifetime and client/viewport identities, bounded
+live voice/channel inventory and a reserved commit queue. No AAudio/userData/
+GL/XR handles cross to the CPU runtime. Same-viewport SetViewport must stage
+stops for actual source channel slots before equality, without using the broad
+StopAmbientAudio teardown or restarting unrelated accepted music content.
+
+PortableActorVmHost::Commit currently performs all fallible world/mesh/lease
+preparation before PublishNativeUserConfig, its last fallible boundary.
+Audio queue capacity/generation validation and reservation must finish BEFORE
+that boundary. Publish an already-prepared batch afterward without throwing;
+rollback cancels the reservation and native COW changes without stopping any
+currently audible output. The audio owner drains committed bounded batches;
+decode/join/destruction work stays off the real-time callback.
+
+Binding an actual nonnull Engine.Audio also makes the existing DestroyActor
+audioActorDestroyed provider reachable; it currently explicitly refuses.
+That notification must be source-backed and implemented along with the audio
+adapter. ClientHearSound similarly still refuses original audio publication.
+Neither missing operation may be hidden by forcing Audio=None. These are
+concrete implementation requirements, not claims that the proposed endpoint
+or original subsystem has already been implemented or accepted on hardware.
+
+## DestroyActor notification and audible destruction sounds
+
+The exact Engine caller1039609F..103960AC loads Level.Engine, then actual
+Engine.Audio and calls nonnull virtual+7C after slot removal/pending-delete but
+before ConditionalDestroy. Galaxy vtable1063D0E4 cell1063D160 selects exported
+NoteDestroy thunk10601203 (EAT18), targeting106083A0..10608485. The abstract
+Engine.AudioSubsystem slot is purecall, not a usable default implementation.
+
+NoteDestroy requires a nonnull UObject-valid Actor. At this point pending
+delete/world-slot removal is legitimate; a future audio adapter must not reject
+the identity merely because bDeleteMe or worldRemoved is already set. It walks
+the live channel count ascending without compaction or active-handle filtering.
+For a matching channel Actor owner, source Id mask `(Id & 0xE)==8` calls actual
+StopSound(index). Otherwise ONLY the Actor ownership pointer is cleared:
+sound, Id, cached position and playback are preserved. This is how nonambient
+destruction one-shots can finish after their source actor is removed; do not
+blanket-stop every sound owned by a destroyed crate/NPC.
+
+StopSound thunk1060125D (EAT35) targets10607E50..10607ECD. It conditionally stops
+the backend handle, then replaces the channel record even when no handle was
+present. Do not infer an all-zero64-byte portable default: the source has raw
+temporary padding and explicitly writes field+38 to Float-1. Only separately
+authenticated semantic defaults should be represented, not guessed PE layout.
+
+A real Quest adapter therefore needs native channel-ownership COW plus staged
+Stop/Detach operations, with exact order and rollback-reserved publication.
+The audio thread consumes opaque lifetime-safe voice identities/data, never
+RuntimeObject pointers. Main independently retained bounded caller/body source
+in artifacts/input-reset-runtime-audio-*-20261102.log; a separate read-only
+source review confirms this contract and unchanged owned source hashes.
+
 Artifacts input-read-audio-*-20261102.log/json retain the exact export/vtable,
 bounded bodies and before/after source fingerprints. No renderer/audio
 capability, original Init call site or later Reset/detail service was added.

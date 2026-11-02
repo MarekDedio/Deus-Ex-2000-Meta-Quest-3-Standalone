@@ -1,5 +1,13 @@
 # Pending Quest viewport input provider and original Input initialization
 
+2026-11-02 continuation: actual Init/ReadInput authority and rollback-only
+first-Training checks are verified/pushed479845c; see
+ORIGINAL-READINPUT-IMPLEMENTATION.md. A distinct later Reset runtime service
+now passes its actual-owner rollback, full rebuild and coherent test gates.
+See ORIGINAL-INITIALIZED-INPUT-RESET.md.
+Historical missing-input statements below are retained as source-contract
+context, not current implementation status. Production startup remains open.
+
 Static audit2026-10-28. **Original input processing is not implemented.** This document does
 not claim successful Input.Init, ResetInput, ReadInput, OpenWindow, a bound
 render-device provider, original startup or live Training gameplay. The current
@@ -25,6 +33,54 @@ Immediate integration is the first `00_Training` map. Other-map work, account
 interfaces and character-creation menus are not prerequisites for this batch.
 
 ## Correct original startup order
+
+The initial engine driver must distinguish real created native Client viewport
+objects from pre-registered hardware/target metadata. A fresh bounded PE-as-data
+read of103891C0..103897A0 confirms: initial GameEngine.Init creates/stores
+Client at10389272 and invokes its Init(+54) at1038927A; its ordered Browse work
+at103895E2 and optional fallback1038965B precedes Client.NewViewport(+6C) at
+103896C5. That newly created viewport then receives the Console/Spawn/Init/
+OpenWindow tail below. A registered stereo target alone does not mean a native
+viewport already exists in the original Client's live array during first load.
+An independent concrete-profile audit now confirms the owned selected
+WinDrv.UWindowsClient.Init does not create a viewport. Its vtable111124A8
+selects Init+54 ->111011F9 ->11101D20..11102493 and NewViewport+6C ->111011A9
+->11102E60. WindowsClient ctor111014E0 calls real base UClient ctor10374E80,
+which zeros the actual data/Num/Max viewport-array words at+2C/+30/+34.
+Base UClient.Init10375C80 only stores Engine at+28. Init's display enumeration
+callback11101A50 appends16-byte records to+16C, NOT the viewport array; its
+PostEditChange111030F0 delegates the base setting clamp/Modify and joystick
+capability setup, not viewport creation. Imported Windows drivers were not
+recursively audited; this claim concerns the selected client-owned body and
+its concrete callbacks, not arbitrary external injected behavior.
+
+Actual NewViewport11102E60 allocates UWindowsViewport with Client as Outer and
+caller FName, then calls its11106900 constructor. Its real base UViewport ctor
+103730B0 appends THIS actual native viewport to Outer+2C through FArray.Add
+at10373122 and stores the new slot at10373139. Canvas construction/Init then
+Input construction occur in that same constructor; Input.Init remains later.
+These PE32 addresses identify source behavior, not portable memory layouts.
+The actual initial source also contains literal entry.dx at1047E788. Entry is
+an engine bootstrap dependency, not optional integration/testing of another
+campaign mission; first Training remains the immediate playable target.
+
+Current quest_main.ValidateInitialRuntime prepares actual native session
+objects early and loads the map/visual demo; it does not invoke the complete
+original initial GameEngine driver. Current ProbeWorldStartup's explicit
+nonempty-viewport LoadMap diagnostic exercises later per-viewport spawning;
+its Init primitive observation is not proof that the original initial
+GameEngine call site has been integrated. Do not make that diagnostic Init
+unconditional at the LoadMap loop. Later LoadMap.ResetInput is a different
+operation on an already-initialized object, after its required audio calls.
+
+Next production integration needs an actual native Client array distinct from
+the raw target registry, correct initial empty/live count semantics, genuine
+initial Console/Spawn/Init and OpenWindow/render/detail/audio readiness, then
+subsequent map-load resets. First Training remains the immediate gameplay
+target; this ordering must not be bypassed by moving Init to a convenient later
+site. Primary bounded evidence is retained in
+artifacts/input-reset-runtime-initial-gameengine-source-20261102.log; original
+DLLs were read as data only. This is an integration gap, not a new driver.
 
 The earlier interpretation of GameEngine.Init1038972F as OpenWindow was wrong.
 The actual sequence is:
@@ -182,6 +238,30 @@ provider really inherits/forwards that behavior. All earlier FExec providers
 must retain their actual order before Core SET; see ORIGINAL-INPUT-FEXEC-SET-GAP.md.
 
 ## Current port seams
+
+2026-11-02 repository follow-up for the next startup batch:
+
+- PreparePortableRuntimePlayerObjects currently stages/indexes Client AND
+  Viewport in one publication interval; no Client-only API exists. It already
+  has real allocation roots, replacement lookup maps, package-budget admission,
+  final client-lifetime recheck and no-throw publication scaffolding. Reuse that
+  ownership rather than adding a detached Client mirror or second allocator.
+- RuntimePlayerSession owns the actual UObject viewport array and payloads;
+  persistentNativeClient.ReadOnlyView is the separate raw target registry.
+  The native Client.Engine back-pointer from base UClient.Init is not currently
+  represented/authenticated. Add real typed payload/GC/teardown/accounting for
+  that backedge when implementing Client-only constructor/Init/NewViewport,
+  without claiming to execute a Windows device driver on Quest.
+- A teardown risk needs an actual repeat-session diagnostic before a fix:
+  ClearNativePlayerObjects clears session.viewports/client but does not clear
+  session.nativeViewports; new creation selects only a null payload.viewport.
+  Repeated client generations can therefore retain occupied/stale raw payload
+  slots despite the16-live-viewport bound. Existing short rebind tests do not
+  establish long-cycle reuse. Reproduce, then retire/reset owned payload slots
+  without dropping surviving UClass roots or invalidating an active undo root.
+
+The implementation notes below predate the verified Init/ReadInput/Reset
+batches; use their linked current reports for completed service scope.
 
 - RuntimeNativeInputInstance in portable_unreal_runtime.cpp retains configured
   values, constructor provenance and initialized/retired markers, and now owns

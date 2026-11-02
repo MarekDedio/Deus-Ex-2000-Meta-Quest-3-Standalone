@@ -1,43 +1,65 @@
-    void InitializeNativeViewportInput(RuntimeObject* viewport,QuestVr::Vm::Execution& execution,
-        PortableWorldStartupProbeResult::InputResetPrefixObservation* diagnostic=nullptr) {
+    enum class NativeViewportInputResetMode {Initial,LaterReset};
+    static bool SameNativeInputInitialization(const RuntimeNativeInputInstance::Initialization& first,
+        const RuntimeNativeInputInstance::Initialization& second) {
+        return first.client==second.client&&first.viewport==second.viewport&&first.lookup==second.lookup&&
+            first.source==second.source&&first.inputIndex==second.inputIndex&&
+            first.viewportIndex==second.viewportIndex&&first.enumIndex==second.enumIndex;
+    }
+    void RunNativeViewportInputReset(RuntimeObject* viewport,QuestVr::Vm::Execution& execution,
+        NativeViewportInputResetMode mode,PortableWorldStartupProbeResult::InputResetPrefixObservation* diagnostic) {
+        const bool initializing=mode==NativeViewportInputResetMode::Initial;
+        const bool initialDiagnostic=initializing&&diagnostic;
         PortableWorldStartupProbeResult::InputResetPrefixObservation ordinary;
         auto& observed=diagnostic?*diagnostic:ordinary;
-        // Genuine initial Init service. Its caller must own the original initial
-        // GameEngine call site; this is NOT an Init inserted at LoadMap.ResetInput.
+        // Shared exact Reset providers, with DISTINCT caller authority. Initial
+        // GameEngine.Init owns the constructor -> Init path; later LoadMap owns
+        // Reset on an already-initialized instance, not a substituted Init.
         if(!transaction_||!viewport||NativeSessionViewport(viewport->nativeViewportIdentity)!=viewport||
             !viewport->nativeViewportActor||!viewport->nativeViewportActor->nativePlayerBinding||
             viewport->nativeViewportActor->nativePlayer!=viewport||!viewport->nativeViewportInput||
-            !ActualNativeInputInstanceValid(viewport->nativeViewportInput))
-            throw std::runtime_error("Original Input.Init requires actual spawned Pawn/Viewport/Input ownership");
+            !(initializing?ActualNativeInputInstanceValid(viewport->nativeViewportInput):
+                ActualNativeInitializedInputInstanceValid(viewport->nativeViewportInput)))
+            throw std::runtime_error(initializing?
+                "Original Input.Init requires actual spawned Pawn/Viewport/Input ownership":
+                "Original Input.ResetInput requires actual initialized Pawn/Viewport/Input ownership");
         auto* input=viewport->nativeViewportInput;
-        if(input->nativeInputInstance->initialized||input->nativeInputInstance->values.viewport)
+        if(initializing&&(input->nativeInputInstance->initialized||input->nativeInputInstance->values.viewport))
             throw std::runtime_error("Initial Input diagnostic requires its actual constructor-only instance");
-        if(!viewport->nativeViewportConsole||!viewport->nativeViewportConsole->nativeConsoleObject)
-            throw std::runtime_error("Initial Input diagnostic lacks its actual initialized Console");
-        RequireNativeViewportConsole(viewport->nativeViewportConsole);
+        if(initializing){
+            if(!viewport->nativeViewportConsole||!viewport->nativeViewportConsole->nativeConsoleObject)
+                throw std::runtime_error("Initial Input diagnostic lacks its actual initialized Console");
+            RequireNativeViewportConsole(viewport->nativeViewportConsole);
+        }
         observed.attempted=true;static_cast<void>(MutateNativeInputValues(input));
         auto& protocol=*input->nativeInputInstance;
+        QuestVr::NativeScratchScope resetAuthority(nativeQueryScratchBytes_,
+            sizeof(std::optional<RuntimeNativeInputInstance::Initialization>)+128u,
+            [this](std::size_t bytes){ValidateStateBudget(bytes);});
+        const auto resetReceipt=initializing?std::optional<RuntimeNativeInputInstance::Initialization>{}:protocol.initialization;
         // Explicit diagnostic stress values in the real COW instance, NOT an
         // original constructor claim or a fabricated Pawn/input provider.
-        if(diagnostic){protocol.keys.fill(0xa5u);protocol.action=7;protocol.delta=-3.0f;}
+        if(initialDiagnostic){protocol.keys.fill(0xa5u);protocol.action=7;protocol.delta=-3.0f;}
         const auto previous=nativeQueryScratchBytes_;std::size_t frames{};
         struct Restore {std::size_t& ledger;std::size_t before;~Restore(){ledger=before;}} restore{nativeQueryScratchBytes_,previous};
         const auto check=[&] {
-            if(!transaction_||input->nativeInputInstance.get()!=&protocol||protocol.retired||protocol.initialized||
+            if(!transaction_||input->nativeInputInstance.get()!=&protocol||protocol.retired||
+                (initializing?protocol.initialized:!ActualNativeInitializedInputInstanceValid(input))||
                 protocol.ownerViewport!=viewport||viewport->nativeViewportInput!=input||
                 NativeSessionViewport(protocol.viewportIdentity)!=viewport||
                 protocol.clientIdentity!=persistentNativeClient.ClientIdentity()||
                 protocol.lookupGeneration!=persistentObjectLookup->generation)
-                throw std::runtime_error("Initial Input private root/payload lease changed");
+                throw std::runtime_error(initializing?"Initial Input private root/payload lease changed":
+                    "Later Input reset private root/payload lease changed");
         };
-        if(lexicalCommandInput_||lexicalCommandCheck_)
+        if(initializing&&(lexicalCommandInput_||lexicalCommandCheck_))
             throw std::runtime_error("Initial Input command lease cannot nest another initialization");
         const std::function<void()> commandCheck=check;
-        lexicalCommandInput_=input;lexicalCommandCheck_=&commandCheck;
+        if(initializing){lexicalCommandInput_=input;lexicalCommandCheck_=&commandCheck;}
         struct EndCommandLease {
             RuntimeObject*& input;const std::function<void()>*& check;
-            ~EndCommandLease(){input=nullptr;check=nullptr;}
-        } endCommandLease{lexicalCommandInput_,lexicalCommandCheck_};
+            bool active;
+            ~EndCommandLease(){if(active){input=nullptr;check=nullptr;}}
+        } endCommandLease{lexicalCommandInput_,lexicalCommandCheck_,initializing};
         const auto native=[&](std::uintptr_t identity)->RuntimeObject* {
             check();if(!identity)throw std::runtime_error("Original input native receiver is None");
             return reinterpret_cast<RuntimeObject*>(identity);
@@ -74,6 +96,7 @@
         q.leaveScratch=[&](std::size_t bytes)noexcept{if(bytes>frames)std::terminate();frames-=bytes;nativeQueryScratchBytes_=previous+frames;};
         q.inputViewport=[&](std::uintptr_t identity){actualInput(identity);return reinterpret_cast<std::uintptr_t>(protocol.values.viewport);};
         q.writeInputViewport=[&](std::uintptr_t identity,std::uintptr_t target){actualInput(identity);
+            if(!initializing)throw std::runtime_error("Later ResetInput attempted an Init-only native Viewport store");
             if(native(target)!=viewport)throw std::runtime_error("Original Input.Init supplied another Viewport");
             protocol.values.viewport=viewport;observed.viewportStored=true;};
         q.writeKey=[&](std::uintptr_t identity,std::size_t index,std::uint8_t value){actualInput(identity);
@@ -131,13 +154,13 @@
                 throw std::runtime_error("Original Input platform reset reached before native key/accumulator clearing");
             // Explicit primitive checks at the real Init-prefix authority.
             // They do not replace UpdateInput or consume a physical event.
-            if(diagnostic)ProbeOriginalInputActionCells(input,observed,execution);
+            if(initialDiagnostic)ProbeOriginalInputActionCells(input,observed,execution);
             std::string output;const auto reconciled=UpdateNativeQuestInput(input,true,std::nullopt,output,execution);
             observed.sourceObserved=reconciled.rows!=0u;observed.sourceReconciled=true;
             observed.sourceRows=reconciled.rows;observed.sourcePressed=reconciled.pressed;
             observed.sourceReleased=reconciled.released;observed.sourceAxes=reconciled.axes;
             observed.sourceSequence=protocol.sourceCursor.sequence;observed.physicalMappingVersion=protocol.physical.version;
-            if(!diagnostic)return;
+            if(!initialDiagnostic)return;
             auto* pawn=actor(target);
             auto* strafe=FindInputProperty(input,pawn,u"aStrafe",Kind::Float);
             auto* forward=FindInputProperty(input,pawn,u"aBaseY",Kind::Float);
@@ -168,9 +191,19 @@
                 protocol.keys[static_cast<std::size_t>(mapping.fire)]==1u&&
                 Read(pawn,DescribeProperty("Engine.Pawn.bFire"),0u).integer==1;
         };
-        q.initializedLog=[&](std::uintptr_t target){if(native(target)!=viewport||!viewport->lookupName)
+        q.initializedLog=[&](std::uintptr_t target){
+            if(!initializing)throw std::runtime_error("Later ResetInput attempted an Init-only initialized log");
+            if(native(target)!=viewport||!viewport->lookupName)
                 throw std::runtime_error("Original Input.Init log lost its actual Viewport Name");
             __android_log_print(ANDROID_LOG_INFO,"quest_main","Input system initialized for %s",viewport->lookupName->ToString().c_str());};
+        if(!initializing){
+            QuestVr::ResetOriginalInput(reinterpret_cast<std::uintptr_t>(input),q);
+            check();
+            if(!resetReceipt||!protocol.initialization||
+                !SameNativeInputInitialization(*resetReceipt,*protocol.initialization)||ActualNativeInputInstanceValid(input))
+                throw std::runtime_error("Later ResetInput changed its genuine initialized receipt/authority");
+            return;
+        }
         QuestVr::InitializeOriginalInput(reinterpret_cast<std::uintptr_t>(input),reinterpret_cast<std::uintptr_t>(viewport),q);
         observed.initReturned=true;
         // This completion record is staged ONLY after the real Init body,
@@ -186,6 +219,14 @@
         if(ActualNativeInputInstanceValid(input)||!ActualNativeInitializedInputInstanceValid(input))
             throw std::runtime_error("Original completed Init did not establish distinct initialized-state authority");
         observed.initializedAuthenticated=true;
+    }
+    void InitializeNativeViewportInput(RuntimeObject* viewport,QuestVr::Vm::Execution& execution,
+        PortableWorldStartupProbeResult::InputResetPrefixObservation* diagnostic=nullptr) {
+        RunNativeViewportInputReset(viewport,execution,NativeViewportInputResetMode::Initial,diagnostic);
+    }
+    void ResetNativeViewportInput(RuntimeObject* viewport,QuestVr::Vm::Execution& execution,
+        PortableWorldStartupProbeResult::InputResetPrefixObservation* diagnostic=nullptr) {
+        RunNativeViewportInputReset(viewport,execution,NativeViewportInputResetMode::LaterReset,diagnostic);
     }
     void ProbeInitialInputResetPrefix(RuntimeObject* viewport,
         PortableWorldStartupProbeResult::InputResetPrefixObservation& observed,QuestVr::Vm::Execution& execution) {
@@ -237,6 +278,29 @@
         observed.readInputRateVerified=second.running&&second.holds==1u&&second.scaled==15u&&
             Read(pawn,Describe(strafe),0u).floating==observed.readInputStrafe&&
             Read(pawn,Describe(forward),0u).floating==observed.readInputForward;
+        // Explicit later-reset primitive check on the REAL initialized object;
+        // not an early Init substituted into the production LoadMap sequence.
+        QuestVr::NativeScratchScope laterResetObservation(nativeQueryScratchBytes_,
+            sizeof(PortableWorldStartupProbeResult::InputResetPrefixObservation)+
+                sizeof(RuntimeNativeInputInstance::Initialization)+sizeof(QuestVr::QuestInputPhysicalState)+
+                sizeof(QuestVr::QuestInputCursor)+128u,[this](std::size_t bytes){ValidateStateBudget(bytes);});
+        const auto resetReceipt=*protocol.initialization;const auto resetPhysical=protocol.physical;
+        const auto resetCursor=protocol.sourceCursor;
+        PortableWorldStartupProbeResult::InputResetPrefixObservation resetCounts;
+        ResetNativeViewportInput(viewport,execution,&resetCounts);
+        observed.laterResetKeys=resetCounts.keysCleared;observed.laterResetBytes=resetCounts.byteProperties;
+        observed.laterResetFloats=resetCounts.floatProperties;
+        observed.laterResetVerified=resetCounts.attempted&&resetCounts.keysCleared==255u&&
+            resetCounts.byteProperties==13u&&resetCounts.floatProperties==15u&&!resetCounts.viewportStored&&
+            !resetCounts.initReturned&&resetCounts.sourceReconciled&&resetCounts.sourceRows==1u&&
+            resetCounts.sourcePressed==1u&&resetCounts.sourceReleased==1u&&resetCounts.sourceAxes==2u&&
+            ActualNativeInitializedInputInstanceValid(input)&&!ActualNativeInputInstanceValid(input)&&
+            protocol.initialization&&SameNativeInputInitialization(resetReceipt,*protocol.initialization)&&
+            protocol.physical==resetPhysical&&QuestVr::QuestInputReconcileDetail::Same(protocol.sourceCursor,resetCursor)&&
+            std::fabs(Read(pawn,Describe(strafe),0u).floating-1.8f)<0.00001f&&
+            std::fabs(Read(pawn,Describe(forward),0u).floating-2.4f)<0.00001f;
+        if(!observed.laterResetVerified)
+            throw std::runtime_error("Later actual initialized ResetInput primitive diagnostic differs");
         // Return to the REAL remaining startup path; no artificial input
         // boundary or early partial-world/initialized-state commit is inserted.
     }

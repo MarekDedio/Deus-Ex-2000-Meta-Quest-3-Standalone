@@ -887,6 +887,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 <<" trigger="<<row.physicalTriggerVerified<<" sameReset="<<row.sameSampleResetVerified<<" scriptCommands="<<row.originalScriptCommands
                 <<" initializedAuth="<<row.initializedAuthenticated<<" initRefusals="<<row.initializationRefusals<<" readPre="<<row.readInputPreVerified
                 <<" readPost="<<row.readInputPostVerified<<" readRate="<<row.readInputRateVerified
+                <<" laterReset="<<row.laterResetVerified<<" resetKeys="<<row.laterResetKeys
+                <<" resetBytes="<<row.laterResetBytes<<" resetFloats="<<row.laterResetFloats
                 <<" heldCalls="<<row.readInputHolds<<" scaledFloats="<<row.readInputFloats
                 <<" readStrafe="<<row.readInputStrafe<<" readForward="<<row.readInputForward
                 <<" initReturned="<<row.initReturned<<'\n';
@@ -902,6 +904,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 std::fabs(row.sourceForward-2.4f)<0.00001f&&row.sourceStrafeLevel==0.6f&&row.sourceForwardLevel==0.8f&&row.emptyPollVerified&&
                 row.physicalTriggerVerified&&row.sameSampleResetVerified&&row.originalScriptCommands>=2u&&
                 row.initializedAuthenticated&&row.readInputPreVerified&&row.readInputPostVerified&&row.readInputRateVerified&&
+                row.laterResetVerified&&row.laterResetKeys==255u&&row.laterResetBytes==13u&&row.laterResetFloats==15u&&
                 row.initializationRefusals==9u&&row.readInputHolds==1u&&row.readInputFloats==15u&&row.readInputStrafe==3600.0f&&
                 std::bit_cast<std::uint32_t>(row.readInputForward)==0x45960001u&&
                 world.execution.error=="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back",

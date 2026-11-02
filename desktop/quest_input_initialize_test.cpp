@@ -142,6 +142,16 @@ void LiveReadsAndInit() {
     Mock noClass;noClass.classes[Actor]=0u;noClass.Reset();
     Check(noClass.stores.empty()&&noClass.classReads.size()==2u&&noClass.platformCalls==1u,
         "Null iterator class invented field writes or omitted accumulator/platform work");
+    Mock resetOnly;auto resetQ=resetOnly.Bind();resetQ.writeInputViewport={};resetQ.initializedLog={};
+    QuestVr::ResetOriginalInput(Input,resetQ);
+    Check(resetOnly.pointerWrites==0u&&resetOnly.logs.empty()&&resetOnly.viewport==Viewport&&resetOnly.platformCalls==1u,
+        "Later ResetInput required Init-only pointer/log providers or replaced its established Viewport");
+    Mock repress;repress.platformHook=[](Mock& m){
+        Check(std::all_of(m.keys.begin(),m.keys.end(),[](auto value){return value==0u;})&&m.action==0&&
+            std::bit_cast<std::uint32_t>(m.delta)==0u,"Platform reset saw uncleared key/accumulator prefix");
+        m.keys[7u]=1u;m.action=4;m.delta=.25f;};repress.Reset();
+    Check(repress.keys[7u]==1u&&repress.action==4&&repress.delta==.25f&&repress.pointerWrites==0u&&repress.logs.empty(),
+        "Later ResetInput erased platform re-press state after UpdateInput1 or ran Init work");
 }
 void RefusalsAndPartialWrites() {
     Mock missing;missing.viewport=0u;Refuse([&]{missing.Reset();},"nonnull native Viewport");

@@ -606,6 +606,8 @@ struct PortableWorldStartupProbeResult {
         bool physicalTriggerVerified{},sameSampleResetVerified{};
         std::size_t originalScriptCommands{};
         bool initializedAuthenticated{},readInputPreVerified{},readInputPostVerified{},readInputRateVerified{};
+        bool laterResetVerified{};
+        std::size_t laterResetKeys{},laterResetBytes{},laterResetFloats{};
         std::size_t initializationRefusals{};
         std::size_t readInputHolds{},readInputFloats{};
         float readInputStrafe{},readInputForward{};
