@@ -21,10 +21,14 @@
     }
     void ExecuteOriginalInputAlias(RuntimeObject* input,std::size_t slot,std::string& output,
         QuestVr::Vm::Execution& execution) {
+        ExecuteOriginalInputSource(input,slot,false,output,execution);
+    }
+    void ExecuteOriginalInputSource(RuntimeObject* input,std::size_t slot,bool binding,std::string& output,
+        QuestVr::Vm::Execution& execution) {
         RequireOriginalCommandInput(input);
-        if(slot>=40u)
-            throw std::runtime_error("Original Input alias dispatcher lacks its current native Input/root");
-        const auto& command=input->nativeInputInstance->values.aliases[slot].command;
+        if(slot>=(binding?255u:40u))
+            throw std::runtime_error("Original Input command source exceeds its actual native fixed storage");
+        const auto& command=binding?input->nativeInputInstance->values.bindings[slot]:input->nativeInputInstance->values.aliases[slot].command;
         if(command.size()>3u*QuestVr::NativeInputKeyQueries::MaximumCommandUnits)
             throw std::runtime_error("Original alias command exceeds admitted transport storage");
         QuestVr::NativeScratchScope capture(nativeQueryScratchBytes_,
@@ -37,8 +41,9 @@
         const auto inputId=reinterpret_cast<std::uintptr_t>(input),outputId=reinterpret_cast<std::uintptr_t>(&output);
         const auto validate=[&] {
             RequireOriginalCommandInput(input);
-            if(input->nativeInputInstance->values.aliases[slot].command!=captured)
-                throw std::runtime_error("Original Input alias native owner/source changed during dispatch");
+            const auto& live=binding?input->nativeInputInstance->values.bindings[slot]:input->nativeInputInstance->values.aliases[slot].command;
+            if(live!=captured)
+                throw std::runtime_error("Original Input command native owner/source changed during dispatch");
         };
         const auto identities=[&](std::uintptr_t receiver,std::uintptr_t device) {
             validate();if(receiver!=inputId||device!=outputId)
@@ -85,4 +90,52 @@
         };
         QuestVr::ExecuteOriginalInputCommands(inputId,outputId,source,q);
         validate();
+    }
+    RuntimeObject* NativeInputExtRoot(RuntimeObject* input) {
+        auto* pawn=InputCommandActor(input);
+        if(!pawn)return nullptr;
+        if(!IsDerivedFromPath(pawn->cls,"Extension.PlayerPawnExt"))
+            throw std::runtime_error("Original InputExt Process requires its actual PlayerPawnExt actor");
+        const auto property=DescribeProperty("Extension.PlayerPawnExt.RootWindow");auto* field=Object(property.key);
+        if(property.zero.kind!=Kind::Object||property.arrayDimension!=1u||property.flags!=0x2002u||
+            !OwnsProperty(pawn->cls,property)||!field->property||field->property->type!="ObjectProperty"||
+            LowerAscii(Qualified(Table(field->sourcePath),field->property->referencedType))!="extension.rootwindow")
+            throw std::runtime_error("Original InputExt root lookup lost its actual const RootWindow declaration");
+        const auto value=Read(pawn,property,0u);
+        if(value.kind!=Kind::Object)throw std::runtime_error("Original InputExt actual RootWindow value is not Object");
+        if(value.text.empty())return nullptr;
+        auto* root=Object(value.text);RequireRootInputOwner(root);
+        if(root!=pawn->nativeRootWindow||RootInputParentPawn(root)!=pawn)
+            throw std::runtime_error("Original InputExt Process lost its actual Root/parentPawn reciprocal owner");
+        return root;
+    }
+    bool ProcessNativeInputExt(RuntimeObject* input,std::int32_t key,std::int32_t action,float delta,
+        std::string& output,QuestVr::Vm::Execution& execution) {
+        RequireOriginalCommandInput(input);clientDependent_=true;
+        if(!persistentInputSchema||!persistentInputSchema->get()||input->cls!=persistentInputSchema->get()->inputExtClass)
+            throw std::runtime_error("Original InputExt Process is not the configured actual Extension.InputExt class");
+        static_cast<void>(MutateNativeInputValues(input));
+        QuestVr::NativeScratchScope control(nativeQueryScratchBytes_,sizeof(QuestVr::OriginalInputProcessQueries)+256u,
+            [this](std::size_t bytes){ValidateStateBudget(bytes);});
+        const auto previous=nativeQueryScratchBytes_;std::size_t frames{};
+        struct Restore {std::size_t& ledger;std::size_t before;~Restore(){ledger=before;}} restore{nativeQueryScratchBytes_,previous};
+        const auto protocol=[&]()->RuntimeNativeInputInstance&{RequireOriginalCommandInput(input);return *input->nativeInputInstance;};
+        const auto selected=[&](std::int32_t index)->std::size_t {
+            if(index<0||index>=255)throw std::runtime_error("Original InputExt Process selected an invalid native key slot");
+            return static_cast<std::size_t>(index);};
+        QuestVr::OriginalInputProcessQueries q;q.work=[this]{LifecycleStep();};
+        q.enterFrame=[&](std::size_t bytes){const auto next=QuestVr::DecalStateDetail::Add(frames,bytes);
+            nativeQueryScratchBytes_=previous;ValidateStateBudget(next);frames=next;nativeQueryScratchBytes_=previous+frames;};
+        q.leaveFrame=[&](std::size_t bytes)noexcept{if(bytes>frames)std::terminate();frames-=bytes;nativeQueryScratchBytes_=previous+frames;};
+        q.hasRoot=[&]{return NativeInputExtRoot(input)!=nullptr;};
+        q.rootProcess=[&](std::int32_t value,std::int32_t state,float amount){auto* root=NativeInputExtRoot(input);
+            if(!root)throw std::runtime_error("Original InputExt selected Root disappeared before Process");
+            return ProcessNativeRootInput(root,value,state,amount,execution);};
+        q.key=[&](std::int32_t index){return protocol().keys[selected(index)];};
+        q.writeKey=[&](std::int32_t index,std::uint8_t value){protocol().keys[selected(index)]=value;};
+        q.bindingNonempty=[&](std::int32_t index){return !protocol().values.bindings[selected(index)].empty();};
+        q.writeAction=[&](std::int32_t value){protocol().action=value;};
+        q.writeDelta=[&](float value){protocol().delta=value;};
+        q.execBinding=[&](std::int32_t index){ExecuteOriginalInputSource(input,selected(index),true,output,execution);};
+        return QuestVr::ProcessOriginalInputExt(key,action,delta,q);
     }

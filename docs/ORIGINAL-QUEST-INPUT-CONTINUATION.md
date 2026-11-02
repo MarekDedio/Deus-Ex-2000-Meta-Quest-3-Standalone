@@ -6,6 +6,14 @@ Root handlers, initialized Input, ReadInput, playable Training or a new APK.
 No original commercial DLL/EXE is loaded or executed. Immediate integration
 remains the first `00_Training` map, not other-map work or account screens.
 
+Update2026-11-02: actual Root.Process, HandleVirtualKeyboard and InputExt.Process
+bindings now exist and pass the owned Root300/10 and actual Training Init-prefix
+gates; see ORIGINAL-ROOT-INPUT-DISPATCH.md. This document's initial audit was
+read-only. Physical Quest delivery/reconciliation, completed initialized-state
+authority, mouse/character handlers and navigation1442..1447 are still missing.
+The real Training rerun still ends at the same explicit boundary below; this
+is not a published playable startup or a new APK.
+
 ## Current concrete boundary
 
 `portable_input_initialize_host.inl` reaches the actual Init reset prefix after
@@ -17,7 +25,9 @@ actual bound Quest source, the retained continuation still refuses with:
 `Original Quest viewport UpdateInput dispatch/reconciliation is not prepared`
 
 `quest_input_process.h` supplies exact typed InputExt.Process and Root.Process
-coordinators, but they currently have no authenticated runtime consumer.
+coordinators, now bound to actual native owners by `portable_input_exec_host.inl`
+and `portable_root_input_host.inl`. Those bindings are exercised by owned runtime
+diagnostics but are not yet called by a physical Quest source consumer.
 `quest_input_source.h` supplies bounded non-consuming observations, not events.
 The missing callback must connect those two services to actual native owners,
 current binding execution and transactional cursor/baseline publication.

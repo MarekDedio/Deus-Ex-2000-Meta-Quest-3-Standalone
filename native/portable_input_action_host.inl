@@ -282,5 +282,16 @@
         observed.actionStores=execution.WriteCount()-before;
         observed.cachedInputProperties=InputProperties(actor->cls).fields.size();
         if(inputPropertyCache_.size()!=1u)throw std::runtime_error("Button/axis lookup did not share one actual Class property cache");
+        // Real native InputExt ownership/protocol prefix, using a genuinely
+        // unbound original None key. This is NOT a physical Quest observation.
+        if(!protocol.values.bindings[0u].empty()||protocol.keys[0u])
+            throw std::runtime_error("InputExt prefix diagnostic requires the original empty None binding/cleared key");
+        std::string processOutput;
+        const bool consumed=ProcessNativeInputExt(input,0,1,0.01f,processOutput,execution);
+        if(protocol.keys[0u]!=(consumed?0u:1u))
+            throw std::runtime_error("Actual InputExt Root-first/unbound Press did not preserve its real key state");
+        static_cast<void>(ProcessNativeInputExt(input,0,3,0.0f,processOutput,execution));
+        if(protocol.keys[0u]||protocol.action||std::bit_cast<std::uint32_t>(protocol.delta)||!processOutput.empty())
+            throw std::runtime_error("Actual InputExt unbound Release changed its native accumulators/output");
         observed.actionsCompleted=true;
     }

@@ -14,7 +14,7 @@
             case QuestVr::NativeWindowRelativeLink::NextSibling:name="nextSibling";break;
             default:throw std::runtime_error("Native Window navigation link is invalid");
             }
-            const auto key="Extension.Window."+std::string(name);
+            std::string key{"Extension.Window."};key+=name;
             host.ValidateNativeWindowScalar(window,key.c_str(),Kind::Object,"ObjectProperty","Extension.Window",2u);
             return host.WindowLink(window,name);
         }

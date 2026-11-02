@@ -62,6 +62,7 @@
 #include "quest_native_window_navigation.h"
 #include "portable_window_navigation.h"
 #include "portable_window_key_state.h"
+#include "portable_root_input.h"
 #include "quest_native_text_window_setters.h"
 #include "quest_native_text_content.h"
 #include "quest_native_text_log_storage.h"
@@ -7990,12 +7991,14 @@ public:
         execution.WriteReference(ReferenceFor(object,property,0u,false),value);
     }
     RuntimeObject* WindowLink(RuntimeObject* window,const char* name) {
-        const auto key="Extension.Window."+std::string(name);
+        std::string key{"Extension.Window."};key+=name;
         const auto property=DescribeProperty(key);
         if(!window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window") ||
             property.zero.kind!=Kind::Object || property.arrayDimension!=1u || !OwnsProperty(window->cls,property))
             throw std::runtime_error("Native window link has no original Object declaration");
         const auto value=Read(window,property,0u);
+        if(value.kind!=Kind::Object)
+            throw std::runtime_error("Native window link has an invalid live Object value");
         return value.text.empty()?nullptr:Object(value.text);
     }
     void WindowLinkWrite(RuntimeObject* window,const char* name,RuntimeObject* target,
@@ -8413,6 +8416,8 @@ public:
 #include "portable_window_axis_probe.inl"
 #include "portable_window_navigation.inl"
 #include "portable_window_key_state.inl"
+#include "portable_root_virtual_keyboard.inl"
+#include "portable_root_input_host.inl"
 #include "portable_window_tile_layout.inl"
 #include "portable_window_tile_probe.inl"
     void InitializeChildRadioBox(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
@@ -15790,6 +15795,18 @@ PortableWindowNavigationProbeResult ProbePortableNativeWindowNavigation(const st
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
     }
+    return result;
+}
+
+PortableRootInputProbeResult ProbePortableRuntimeRootInput(const std::string& levelInfoPath,
+    PortableRootInputProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableRootInputProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeRootInput(levelInfoPath,mode,result,execution);
+        },limits);
+    }catch(const std::exception& error){result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();}
     return result;
 }
 

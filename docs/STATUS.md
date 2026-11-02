@@ -1,5 +1,46 @@
 # Port status
 
+## Latest: actual Root keyboard and InputExt dispatch (verified2026-11-02)
+
+Original Root.Process and HandleVirtualKeyboard now operate on the real
+constructed Root/Pawn: actual keyDownMap/grab fields, most-derived original
+Raw/Virtual scripts, last-visible-child/previous-visible-sibling fallback,
+duplicate ordering, post-callback destruction checks and current-parent
+propagation. Actual InputExt.Process offers that Root first, then maintains
+native Keys/Action/Delta and the current binding command-source route. Aliases
+and key bindings share the existing real command executor and output collector.
+Source dispatch, native COW and script writes use the same outer VM root and
+shared work/byte ledgers. No initialized bit, physical sample or source cursor
+is fabricated. Reached missing mouse/navigation handlers explicitly refuse.
+
+Owned Root tests pass300 checks/10 refusal controls, including a real focused
+child, actual most-derived game Root callback, Raw-before-destruction ordering,
+duplicate press/release, real Fire/AltFire clearing before the missing mouse
+handler, budgets and full rollback. Final alias/native1470 regressions pass80/10
+and1137/16. The first desktop build's existing std::string optimizer warning is
+retained in its log; equivalent append-based link-path construction fixes it
+without suppression. Final focused desktop, strict ARM64 warning/syntax,
+Android-native and full desktop builds pass. CTest passes259 executed/318
+registered/59 explicit owned-data skips/zero failures in141.34s. Final audit:
+1925 frozen compiler inputs,45 originals, three assets and four static native
+DLL sources unchanged; zero live build/test jobs.
+
+The real first-Training Init-prefix rerun passes in398.85s, including new actual
+InputExt None-binding Press/Release assertions:266870 instructions/37972 writes,
+13952583/16777216 native work,19 action commands/10 real player stores and one
+28-property cache. It reaches the SAME unsupported Quest dispatch/reconciliation
+boundary, then verifies whole save/state/revision/hash/RNG/client/lookup/Actor/
+GC rollback, all45 original files and cold immutable-Model replacement. This is
+expected-boundary evidence, NOT completed startup or physical controller input.
+
+Next are physical Quest mapping/reset/release reconciliation, initialized-state
+authority/ReadInput and remaining original startup/render/audio services, then
+committed frames and live Training crates/loot/gravity. No new APK is packaged;
+other-map integration stays skipped. Accepted HUD, hands/body/NPC presentation
+and controls were not changed. No account/login UI or player-creation flow was
+added. See ORIGINAL-ROOT-INPUT-DISPATCH.md and
+ORIGINAL-QUEST-INPUT-CONTINUATION.md.
+
 ## Latest: actual player action fields and Const metadata (verified2026-11-02)
 
 The native Input entry now offers BUTTON/PULSE/TOGGLE/AXIS before key queries
