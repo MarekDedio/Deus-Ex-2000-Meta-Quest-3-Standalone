@@ -605,6 +605,10 @@ struct PortableWorldStartupProbeResult {
         bool emptyPollVerified{};
         bool physicalTriggerVerified{},sameSampleResetVerified{};
         std::size_t originalScriptCommands{};
+        bool initializedAuthenticated{},readInputPreVerified{},readInputPostVerified{},readInputRateVerified{};
+        std::size_t initializationRefusals{};
+        std::size_t readInputHolds{},readInputFloats{};
+        float readInputStrafe{},readInputForward{};
         float sourceStrafeLevel{},sourceForwardLevel{};
         bool operator==(const InputResetPrefixObservation&) const = default;
     } inputResetPrefix;

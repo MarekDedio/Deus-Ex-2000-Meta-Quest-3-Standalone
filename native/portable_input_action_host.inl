@@ -22,7 +22,7 @@
     }
     void RequireOriginalCommandInput(RuntimeObject* input) {
         if(!transaction_)throw std::runtime_error("Original Input commands require their actual outer VM root");
-        if(ActualNativeInputInstanceValid(input))return;
+        if(ActualNativeInputObjectValid(input))return;
         // ONLY the real Init prefix lends this lexical authority. It neither
         // changes the public constructor authenticator nor permits publication.
         if(!input||input!=lexicalCommandInput_||!lexicalCommandCheck_)

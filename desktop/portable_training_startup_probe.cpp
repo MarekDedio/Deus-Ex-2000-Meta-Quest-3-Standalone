@@ -885,6 +885,10 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 <<" mapping="<<row.physicalMappingVersion<<" strafe="<<row.sourceStrafe<<" forward="<<row.sourceForward
                 <<" strafeLevel="<<row.sourceStrafeLevel<<" forwardLevel="<<row.sourceForwardLevel<<" emptyPoll="<<row.emptyPollVerified
                 <<" trigger="<<row.physicalTriggerVerified<<" sameReset="<<row.sameSampleResetVerified<<" scriptCommands="<<row.originalScriptCommands
+                <<" initializedAuth="<<row.initializedAuthenticated<<" initRefusals="<<row.initializationRefusals<<" readPre="<<row.readInputPreVerified
+                <<" readPost="<<row.readInputPostVerified<<" readRate="<<row.readInputRateVerified
+                <<" heldCalls="<<row.readInputHolds<<" scaledFloats="<<row.readInputFloats
+                <<" readStrafe="<<row.readInputStrafe<<" readForward="<<row.readInputForward
                 <<" initReturned="<<row.initReturned<<'\n';
             // Independent owned Engine.u inventory: thirteen Pawn input Byte
             // declarations and fifteen PlayerPawn input Float declarations.
@@ -897,12 +901,15 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 row.sourceSequence==1u&&row.physicalMappingVersion==1u&&std::fabs(row.sourceStrafe-1.8f)<0.00001f&&
                 std::fabs(row.sourceForward-2.4f)<0.00001f&&row.sourceStrafeLevel==0.6f&&row.sourceForwardLevel==0.8f&&row.emptyPollVerified&&
                 row.physicalTriggerVerified&&row.sameSampleResetVerified&&row.originalScriptCommands>=2u&&
-                world.execution.error=="Original completed Input.Init initialized-state/ReadInput publication is not prepared",
+                row.initializedAuthenticated&&row.readInputPreVerified&&row.readInputPostVerified&&row.readInputRateVerified&&
+                row.initializationRefusals==9u&&row.readInputHolds==1u&&row.readInputFloats==15u&&row.readInputStrafe==3600.0f&&
+                std::bit_cast<std::uint32_t>(row.readInputForward)==0x45960001u&&
+                world.execution.error=="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back",
                 "Initial Input diagnostic failed before authentic reset prefix/platform boundary");
             const auto restoredInput=ReadPortableRuntimeViewportInput(Viewport);
             Require(!restoredInput.initialized&&!restoredInput.nativeViewportIndex&&restoredInput.keys==input.keys&&
                 restoredInput.action==input.action&&std::bit_cast<std::uint32_t>(restoredInput.delta)==std::bit_cast<std::uint32_t>(input.delta)&&
-                !restoredInput.sourceIdentity&&!restoredInput.sourceSequence&&!restoredInput.sourceRejections&&
+                !restoredInput.sourceIdentity&&!restoredInput.sourceSequence&&!restoredInput.sourceRejections&&!restoredInput.initializationSource&&
                 restoredInput.physicalMappingVersion==input.physicalMappingVersion&&restoredInput.physicalHeld==input.physicalHeld&&
                 restoredInput.physicalMappingKeys==input.physicalMappingKeys&&restoredInput.physicalAxes==input.physicalAxes,
                 "Input reset prefix retained native Viewport/keys/Action/Delta/cursor after rollback");
@@ -914,7 +921,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 "Input reset prefix changed configured bindings/aliases/retained bytes or native owner identities");
             std::cout<<"INPUT INITIAL RESET PREFIX keys="<<row.keysCleared<<" bytes="<<row.byteProperties<<" floats="<<row.floatProperties
                 <<" platform="<<row.platformReached<<" source="<<row.sourceObserved
-                <<"; real same-root Spawn/constructor/COW/reset writes, NOT completed platform reconciliation/Input.Init/ReadInput\n";
+                <<"; actual same-root Spawn/Init/reconciliation/pre-post ReadInput and full rollback, NOT committed startup or headset gameplay\n";
         }
         const auto& brushTracker=world.brushTracker;
         std::cout<<"BRUSH TRACKER attempted="<<brushTracker.attempted<<" completed="<<brushTracker.completed

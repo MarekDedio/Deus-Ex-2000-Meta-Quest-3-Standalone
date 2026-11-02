@@ -1,5 +1,13 @@
 # Original ReadInput continuation: static audit (2026-11-02)
 
+Implementation follow-up: initialized-owner authority and actual Input/
+Viewport ReadInput now pass their rollback-only first-Training gate, with
+pre/post/rate checks,15 Float stores and nine altered-authority refusals.
+See ORIGINAL-READINPUT-IMPLEMENTATION.md for exact current scope/evidence.
+The historical static audit and staged implementation notes below are retained;
+their statements that ReadInput remains missing are superseded by that report.
+Production startup, pose/aim handover and committed gameplay remain incomplete.
+
 Read-only PE-as-data inspection during the physical-reconciliation source
 freeze. No original DLL/EXE was loaded or executed. This is not an implemented
 ReadInput provider, initialized-state publication or gameplay acceptance.

@@ -20,6 +20,7 @@ struct PortableViewportInputSnapshot {
     std::int32_t action{};
     float delta{};
     std::uint64_t sourceIdentity{},sourceSequence{},sourceRejections{};
+    std::uint64_t initializationSource{};
     std::uint32_t physicalMappingVersion{};
     std::array<std::uint8_t,255u> physicalHeld{};
     std::array<std::int32_t,5u> physicalMappingKeys{};

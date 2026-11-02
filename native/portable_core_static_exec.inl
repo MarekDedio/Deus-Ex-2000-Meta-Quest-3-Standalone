@@ -271,7 +271,7 @@
             LifecycleStep();const auto* record=persistentObjectLookup->index.RecordAt(index);if(!record)continue;
             auto* object=ActualLookupObject(*persistentObjectLookup,record->identity);
             if(object->defaultOwner||!object->cls||!IsDerivedFromPath(object->cls,cls->reflection.objectPath))continue;
-            if(!ActualNativeInputInstanceValid(object))
+            if(!ActualNativeInputObjectValid(object))
                 throw std::runtime_error("Core SET encountered an unsupported matching indexed Input lifecycle");
             ImportCoreInputProperty(object,field,packet.value,profile,execution);++result.instanceImports;
             // Actual Input/PostEditChange inherits UObject::Modify. The

@@ -1,7 +1,7 @@
 // Same-root UObject.ResetConfig for the actually prepared User-configured
 // Input classes. Native544 uses this service; it is NOT UInput.ResetInput.
     void InputResetPostEditChange(RuntimeObject* object) {
-        if(!ActualNativeInputInstanceValid(object)||object->reflection.flags!=0x4000u)
+        if(!ActualNativeInputObjectValid(object)||object->reflection.flags!=0x4000u)
             throw std::runtime_error("Input ResetConfig PostEditChange lacks its actual native instance authority");
         // Input/InputExt inherit UObject.PostEditChange -> Modify. These exact
         // registered implementations and flags4000 have no transactional bit1;
@@ -85,7 +85,7 @@
             LifecycleStep();const auto* record=persistentObjectLookup->index.RecordAt(index);if(!record)continue;
             auto* object=ActualLookupObject(*persistentObjectLookup,record->identity);
             if(object->defaultOwner||!object->cls||!IsDerivedFromPath(object->cls,selected->reflection.objectPath))continue;
-            if(!ActualNativeInputInstanceValid(object))
+            if(!ActualNativeInputObjectValid(object))
                 throw std::runtime_error("Input ResetConfig encountered an unsupported matching live instance");
             reload(object,object->cls);InputResetPostEditChange(object);++observed.instanceReloads;
         }
@@ -151,7 +151,7 @@
         };
         query.inputClass=[](std::uintptr_t identity) {
             auto* input=reinterpret_cast<RuntimeObject*>(identity);
-            if(!ActualNativeInputInstanceValid(input))
+            if(!ActualNativeInputObjectValid(input))
                 throw std::runtime_error("ResetKeyboard Input lacks its actual constructor/Class authority");
             return reinterpret_cast<std::uintptr_t>(input->cls);
         };

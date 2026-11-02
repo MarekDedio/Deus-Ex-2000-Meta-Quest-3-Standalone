@@ -1,5 +1,53 @@
 # Port status
 
+## Latest: initialized Input authority and original ReadInput (verified2026-11-02)
+
+Actual completed Init now stages a distinct native completion receipt tied to
+the real client/viewport/lookup/Input/Enum/source identities. Constructor-only
+authentication remains strict; ordinary native access, COW and publication
+leases accept constructor OR separately authenticated initialized authority.
+Teardown and whole-root undo clear/restore the actual receipt and source state.
+The reusable initial Init service is not inserted at LoadMap's later ResetInput
+site; genuine production startup call-site integration remains required.
+
+Actual viewport ReadInput polls only for ordered elapsed other than-1, then
+reloads Input/output. Actual Input observes running first, caches real INPUT
+declarations by entry Actor Class, reads live held keys ascending with fresh
+global output per Hold, and scales each current actual Float through qualified
+VM stores. Original extended20/elapsed and post-input multiplication by+0
+preserve NaN/Infinity/signed-zero behavior. Local Player Tick calls this service
+without replacing its original checked PlayerInput/PlayerTick sequence.
+
+Generated tests pass2895 checks/278 refusals, including an independent desktop
+x87 PC64 oracle and exact rate-invariant axis golden45960001 (4800+one Float
+ULP, not exact decimal4800). The real first-Training diagnostic passes in546.571s:
+267016 instructions/38052 writes,14241246/16777216 native work, initializedAuth1,
+nine altered-authority refusals, pre/post/rate1, heldCalls1 and scaledFloats15.
+It passes the old Input publication refusal, completes the actual non-Entry
+brush tracker25 movers/150 polygons, then reaches the existing later original
+post-partition client/player/detail refusal. Whole save/state/revision/hash/
+RNG/client/lookup/Actor/GC rollback,45 unchanged originals and cold immutable
+Model replacement pass. This remains a rollback-only diagnostic, not committed
+startup, physical Quest delivery, weapon/crate damage or gameplay acceptance.
+
+Focused/full desktop, Android-native and strict ARM64 runtime/helper checks
+pass. Owned Input10315/24, alias80/10, Root300/10, ResetConfig9632/15 and
+Console5505/34 pass. CTest passes262 executed/321 registered/59 explicit skips/
+zero failures in132.50s. Only stale successful-prefix CLI prose changed after
+the actual long Training run; its rebuilt executable passes compilation and
+the runtime/diagnostic assertions are unchanged. Accepted HUD/hands/body/NPC
+presentation is unchanged. No APK is packaged by native library linking.
+Final audit verifies1934 frozen compiler inputs,45 originals, three selected
+assets and four native source DLLs unchanged; zero live jobs. Independent
+read-only review finds no blocking ordering/ownership/rollback defects.
+
+Next: actual initial GameEngine Init integration, remaining ordered audio/
+LoadMap ResetInput/render/detail startup and pose/aim/legacy-control handover,
+then committed Training frames and live crates/loot/gravity/headset validation.
+Other-map integration remains skipped now; the full campaign goal remains open.
+See ORIGINAL-READINPUT-IMPLEMENTATION.md and the bounded next audio source audit
+in ORIGINAL-POST-PARTITION-AUDIO-CONTINUATION.md.
+
 ## Latest: original script-command packets and trigger binding (verified2026-11-02)
 
 ScriptConsoleExec's real selection prefix now calls its retained function with

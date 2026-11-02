@@ -7,6 +7,7 @@
 #include "portable_actor_point_check.h"
 #include "portable_process_loop.h"
 #include "quest_input_reconcile.h"
+#include "quest_input_read.h"
 #include "quest_script_command_call.h"
 
 #include "GC/GC.h"
@@ -258,6 +259,11 @@ struct RuntimeNativeInputInstance {
     PortableInputLoggingProfile logging{PortableInputLoggingProfile::Ordinary};
     std::size_t configReloads{},configPasses{},configImports{},configFailures{},configWarnings{},configWork{};
     bool initialized{},retired{};
+    struct Initialization {
+        std::uint64_t client{},viewport{},lookup{},source{};
+        std::uint32_t inputIndex{},viewportIndex{},enumIndex{};
+    };
+    std::optional<Initialization> initialization;
     // Actual instance protocol, never config/default/actor-save storage.
     std::array<std::uint8_t,255u> keys{};
     std::int32_t action{};
@@ -1083,6 +1089,8 @@ std::unique_ptr<GCRoot<RuntimeNativeInputDomain>> persistentInputSchema;
 bool InputSchemaDefaultValid(const RuntimeObject* cls);
 bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object);
 bool ActualNativeInputInstanceValid(const RuntimeObject* object);
+bool ActualNativeInitializedInputInstanceValid(const RuntimeObject* object);
+bool ActualNativeInputObjectValid(const RuntimeObject* object);
 std::unique_ptr<RuntimePreparedNativeDefaults> CopyInputDefault(const RuntimePreparedNativeDefaults& source);
 void LoadInputDefaultConfig(const RuntimeNativeInputDomain&,RuntimeNativeInputConfig&,RuntimeObject*,
     RuntimeNativeInputValues&,std::size_t,const QuestVr::NativeConfig::OrderedIni*);
@@ -1881,6 +1889,7 @@ void ClearNativePlayerObjects() noexcept {
             if(input->nativeInputInstance) {
                 input->nativeInputInstance->retired=true;input->nativeInputInstance->ownerViewport=nullptr;
                 input->nativeInputInstance->values.viewport=nullptr;
+                input->nativeInputInstance->initialized=false;input->nativeInputInstance->initialization.reset();
                 input->nativeInputInstance->sourceCursor={};input->nativeInputInstance->physical={};
             }
             viewport->nativeViewportInput=nullptr;unindex(input);
@@ -2671,7 +2680,7 @@ bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object) {
     return !property.referencedStruct&&!property.inner&&
         (object->cls->reflection.objectPath=="Core.NameProperty"||object->cls->reflection.objectPath=="Core.StrProperty");
 }
-bool ActualNativeInputInstanceValid(const RuntimeObject* object) {
+bool ActualNativeInputOwnerValid(const RuntimeObject* object) {
     if(!object||!object->nativeInputInstance||!persistentInputSchema||!persistentInputSchema->get()||
         !persistentInputSchema->get()->config||!persistentInputClass||!persistentEngineCollision||
         !persistentPlayerSession||!persistentPlayerSession->get()||!persistentObjectLookup||!persistentObjectLookup->active||
@@ -2682,7 +2691,7 @@ bool ActualNativeInputInstanceValid(const RuntimeObject* object) {
         object->cls->reflection.objectPath!=*persistentInputClass||object->outer!=persistentEngineCollision->get()->transient)return false;
     const auto& input=*object->nativeInputInstance;const auto& domain=*persistentInputSchema->get();
     const auto registered=persistentNativeClient.ReadOnlyView();
-    if(input.retired||input.initialized||input.values.viewport||!input.values.execInstalled||input.values.keyEnum!=domain.keyEnum||
+    if(input.retired||!input.values.execInstalled||input.values.keyEnum!=domain.keyEnum||
         input.lookupGeneration!=persistentObjectLookup->generation||input.clientIdentity!=persistentNativeClient.ClientIdentity()||
         object->nativeClientIdentity!=input.clientIdentity||input.logging!=PortableInputLoggingProfile::Ordinary||
         !input.ownerViewport||input.ownerViewport->nativeViewportInput!=object||
@@ -2696,6 +2705,27 @@ bool ActualNativeInputInstanceValid(const RuntimeObject* object) {
     return canonical!=persistentQualifiedObjects.end()&&canonical->second==object&&
         folded!=persistentVmObjects.end()&&folded->second==object&&domain.keyEnum&&domain.keyEnum->enumDescriptor&&
         domain.keyEnum->enumDescriptor->names.size()==255u&&persistentNativeClient.HasClient();
+}
+bool ActualNativeInputInstanceValid(const RuntimeObject* object) {
+    // This remains STRICT constructor-only authentication.
+    return ActualNativeInputOwnerValid(object)&&!object->nativeInputInstance->initialized&&
+        !object->nativeInputInstance->initialization&&!object->nativeInputInstance->values.viewport;
+}
+bool ActualNativeInitializedInputInstanceValid(const RuntimeObject* object) {
+    if(!ActualNativeInputOwnerValid(object))return false;
+    const auto& input=*object->nativeInputInstance;
+    if(!input.initialized||!input.initialization||input.values.viewport!=input.ownerViewport)return false;
+    const auto& receipt=*input.initialization;
+    if(receipt.client!=input.clientIdentity||receipt.viewport!=input.viewportIdentity||receipt.lookup!=input.lookupGeneration||
+        receipt.inputIndex!=object->objectIndex.Index()||receipt.viewportIndex!=input.ownerViewport->objectIndex.Index()||
+        receipt.enumIndex!=input.values.keyEnum->objectIndex.Index()||!receipt.source||
+        receipt.source!=input.sourceCursor.source||!input.sourceCursor.sequence||
+        input.physical.version!=QuestVr::QuestInputReconcileDetail::Version)return false;
+    const auto& source=CurrentQuestInputSource(input.viewportIdentity);
+    return source->Read().source==receipt.source;
+}
+bool ActualNativeInputObjectValid(const RuntimeObject* object) {
+    return ActualNativeInputInstanceValid(object)||ActualNativeInitializedInputInstanceValid(object);
 }
 bool ActualNativeCollisionObjectValid(const RuntimeObject* object) {
     if(ActualNativeSystemObjectValid(object))return true;
@@ -3306,7 +3336,7 @@ public:
         if(found->second->nativeClientIdentity &&
             found->second->nativeClientIdentity!=persistentNativeClient.ClientIdentity())
             throw std::runtime_error("Portable native session UObject is revoked or stale");
-        if(found->second->nativeInputInstance&&!ActualNativeInputInstanceValid(found->second))
+        if(found->second->nativeInputInstance&&!ActualNativeInputObjectValid(found->second))
             throw std::runtime_error("Portable native Input ownership is revoked, stale or unprepared");
         return found->second;
     }
@@ -3991,7 +4021,7 @@ public:
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
         if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance) {
-            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputInstanceValid(object))
+            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputObjectValid(object))
                 throw std::runtime_error("Constructed native UObject identity is invalid");
             return object->reflection.objectPath;
         }
@@ -4826,6 +4856,7 @@ public:
 #include "portable_input_initialize_host.inl"
 #include "portable_input_exec_host.inl"
 #include "portable_quest_input_dispatch.inl"
+#include "portable_input_read_host.inl"
 #include "portable_string_to_name_host.inl"
 #include "portable_flag_base_host.inl"
 #include "portable_viewport_canvas_host.inl"
@@ -8707,7 +8738,7 @@ public:
                 throw std::runtime_error("Native Window private pointer-array storage is not a script-visible value");
         }
         if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance) {
-            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputInstanceValid(object))
+            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputObjectValid(object))
                 throw std::runtime_error("Native UObject reflected read lost its actual identity");
             const auto key=LowerAscii(property.key);
             if(key.rfind("core.object.",0u)==0u) {
@@ -8743,7 +8774,7 @@ public:
         if(nativeInputValues) {
             auto* owner=object->defaultOwner?object->defaultOwner:object->cls;
             if(!owner||!InputSchemaDefaultValid(owner)||
-                (object->nativeInputInstance&&!ActualNativeInputInstanceValid(object))||
+                (object->nativeInputInstance&&!ActualNativeInputObjectValid(object))||
                 (!object->nativeInputInstance&&!object->defaultOwner)||!OwnsProperty(owner,property)||index>=property.arrayDimension)
                 throw std::runtime_error("Native Input default read lacks its actual field/default authority");
             auto* field=Object(property.key);

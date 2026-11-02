@@ -119,7 +119,7 @@
             // The original rereads Player+5D4 before BOTH virtual calls.
             // Callbacks may replace the pointer; never reuse initialPlayer.
             local.player=[&](auto identity){static_cast<void>(require(identity));return q.player(identity);};
-            local.readInput=[&](auto player,float) {
+            local.readInput=[&](auto player,float inputElapsed) {
                 auto* receiver=require(a);
                 if(!receiver->nativePlayerBinding||!receiver->nativePlayer||
                     player!=reinterpret_cast<std::uintptr_t>(receiver->nativePlayer))
@@ -129,10 +129,7 @@
                 if(!viewport->nativeViewportIdentity||NativeSessionViewport(viewport->nativeViewportIdentity)!=viewport||
                     viewport->nativeViewportActor!=receiver)
                     throw std::runtime_error("Original local Player ReadInput has a revoked, stale or unpaired viewport");
-                // Actual UViewport+54 requires an owned configured Input at+60
-                // before UpdateInput/Input.ReadInput. The wrapper registry is
-                // not that native Input instance, and is not a no-op input hook.
-                throw std::runtime_error("Original viewport ReadInput configured Input service is not prepared");
+                std::string output;static_cast<void>(ReadNativeViewportInput(viewport,inputElapsed,output,execution));
             };
             local.playerInput=[&](auto identity,float elapsedInput) {
                 OriginalNativeActorCallback(require(identity),"PlayerInput",Value::Float(elapsedInput),execution);

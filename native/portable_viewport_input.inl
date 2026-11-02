@@ -20,17 +20,18 @@ constexpr std::array<const char*,52u> ExtensionInputNameSpellings{{
 }};
 RuntimeObject* RequiredViewportInput(const std::uint64_t identity) {
     auto* viewport=NativeSessionViewport(identity);auto* input=viewport->nativeViewportInput;
-    if(!input||!ActualNativeInputInstanceValid(input)||input->nativeInputInstance->ownerViewport!=viewport)
+    if(!input||!ActualNativeInputObjectValid(input)||input->nativeInputInstance->ownerViewport!=viewport)
         throw std::runtime_error("Viewport has no current authenticated constructed Input");
     return input;
 }
 PortableViewportInputSnapshot NativeInputSnapshot(RuntimeObject* object,const RuntimeExtensionInputNames* stagedNames=nullptr,
     const std::int32_t* stagedCounter=nullptr,const bool staged=false) {
-    if(!object||!object->nativeInputInstance||(!staged&&!ActualNativeInputInstanceValid(object)))
+    if(!object||!object->nativeInputInstance||(!staged&&!ActualNativeInputObjectValid(object)))
         throw std::runtime_error("Native Input constructor snapshot lost its actual instance authority");
     const auto& input=*object->nativeInputInstance;const auto& values=input.values;
     if(!object->cls||!object->outer||!input.ownerViewport||!values.keyEnum||!values.keyEnum->enumDescriptor||
-        !values.execInstalled||values.viewport||input.initialized||input.retired||!object->lookupName||
+        !values.execInstalled||(input.initialized?values.viewport!=input.ownerViewport||!input.initialization:
+            values.viewport||input.initialization.has_value())||input.retired||!object->lookupName||
         object->reflection.flags!=0x4000u||input.logging!=PortableInputLoggingProfile::Ordinary)
         throw std::runtime_error("Native Input constructor snapshot has invented Init/header/Enum state");
     PortableViewportInputSnapshot result;
@@ -51,6 +52,7 @@ PortableViewportInputSnapshot NativeInputSnapshot(RuntimeObject* object,const Ru
     result.bindings=values.bindings;
     result.keys=input.keys;result.action=input.action;result.delta=input.delta;
     result.sourceIdentity=input.sourceCursor.source;result.sourceSequence=input.sourceCursor.sequence;result.sourceRejections=input.sourceCursor.rejections;
+    result.initializationSource=input.initialization?input.initialization->source:0u;
     result.physicalMappingVersion=input.physical.version;result.physicalHeld=input.physical.held;
     const auto& map=input.physical.mapping;result.physicalMappingKeys={map.fire,map.frob,map.inventory,map.strafe,map.forward};
     result.physicalAxes={input.physical.strafeLevel,input.physical.forwardLevel};
@@ -113,7 +115,7 @@ struct NativeInputQueryOperations {
     std::size_t scratchBytes{};
     void Validate() const {
         if(commandValidator){commandValidator();return;}
-        if(!ActualNativeInputInstanceValid(object))throw std::runtime_error("Native Input query ownership was revoked or replaced");
+        if(!ActualNativeInputObjectValid(object))throw std::runtime_error("Native Input query ownership was revoked or replaced");
     }
     void Step() {
         Validate();if(result.work==65536u)throw std::runtime_error("Native Input query work budget exceeded");
@@ -157,7 +159,7 @@ PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject* input,const std:
     if(command.size()>QuestVr::NativeInputKeyQueries::MaximumCommandUnits*3u)
         throw std::runtime_error("Native Input command transport exceeds bound");
     if(commandValidator)commandValidator();
-    else if(!ActualNativeInputInstanceValid(input))throw std::runtime_error("Native Input key query requires a constructed current instance");
+    else if(!ActualNativeInputObjectValid(input))throw std::runtime_error("Native Input key query requires a current constructed/initialized instance");
     // Meter concrete command/Enum/binding storage, not a fixed worst-case
     //112KiB reservation. Supported bundled GNU/libc++ strings grow by at most
     //2x: include transient old+new Decode buffers (6xcommand bytes), both

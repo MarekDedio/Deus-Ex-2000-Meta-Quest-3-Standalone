@@ -76,7 +76,7 @@
         if(!transaction_||!object)throw std::runtime_error("Native Input mutation requires its active root owner");
         if(object->nativeInputInstance) {
             for(auto& entry:beforeNativeInputInstances_)if(entry.owner.get()==object)return object->nativeInputInstance->values;
-            if(!ActualNativeInputInstanceValid(object))
+            if(!ActualNativeInputObjectValid(object))
                 throw std::runtime_error("Native Input mutation encountered an unsupported or stale indexed instance");
             if(beforeNativeInputInstances_.size()>=QuestVr::NativeClientRegistry::MaximumViewports)
                 throw std::runtime_error("Native Input beforeimage inventory exceeds the actual viewport bound");
@@ -149,7 +149,7 @@
                 [this](std::size_t bytes){ValidateStateBudget(bytes);}));
         }
         for(const auto& entry:beforeNativeInputInstances_)
-            if(!ActualNativeInputInstanceValid(entry.owner.get()))
+            if(!ActualNativeInputObjectValid(entry.owner.get()))
                 throw std::runtime_error("Native Input lease was revoked before config/state publication");
     }
     void RollbackNativeInputJournal() noexcept {
