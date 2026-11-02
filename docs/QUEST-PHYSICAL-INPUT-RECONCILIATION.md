@@ -1,5 +1,12 @@
 # Quest physical input reconciliation (2026-11-02)
 
+Following verified update: ORIGINAL-SCRIPT-COMMAND-CALL-IMPLEMENTATION.md now
+records actual original ParseLeftClick|Fire from a tracked trigger observation,
+nonzero physical baseline, bFire/bJustFired and same-sample reset Release1/Press1,
+with whole rollback. The earlier blanket digital-command blocker below is
+historical; general imports/menus and initialized Input/ReadInput still need
+work. This is not physical headset or committed gameplay acceptance.
+
 Verified native/owned-runtime integration, not an installed APK or physical
 headset acceptance. Immediate integration remains first Training. No account/player-
 creation UI, other-map integration or accepted presentation change is included.

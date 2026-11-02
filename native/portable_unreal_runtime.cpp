@@ -7,6 +7,7 @@
 #include "portable_actor_point_check.h"
 #include "portable_process_loop.h"
 #include "quest_input_reconcile.h"
+#include "quest_script_command_call.h"
 
 #include "GC/GC.h"
 
@@ -3680,7 +3681,7 @@ public:
         nativeActorOrderObservationBytes_=0u;
         std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         startupMoverPreview_=false;
-        nativeStartupOut_.clear();
+        nativeStartupOut_.clear();scriptCommandPackets_.clear();
         nativeDestroyReferenceBytes_=0u;
         nativePhysicsReferenceBytes_=0u;
         nativeTileReferenceBytes_=0u;
@@ -3787,7 +3788,7 @@ public:
         beforePendingTouch_.clear();
         beforeActorOrder_.reset();
         nativeActorOrderObservationBytes_=0u;
-        nativeStartupOut_.clear();
+        nativeStartupOut_.clear();scriptCommandPackets_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
         std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
@@ -3879,7 +3880,7 @@ public:
         beforePendingTouch_.clear();
         nativeActorOrderObservationBytes_=0u;
         std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
-        nativeStartupOut_.clear();
+        nativeStartupOut_.clear();scriptCommandPackets_.clear();
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->classDefaultValues.swap(entry.second.defaults);
@@ -4830,6 +4831,7 @@ public:
 #include "portable_viewport_canvas_host.inl"
 #include "portable_viewport_console_host.inl"
 #include "portable_system_host.inl"
+#include "portable_script_command_packet.inl"
 #include "portable_viewport_exec_host.inl"
     std::shared_ptr<const Function> WindowNativeDeclaration(const std::uint16_t index,const Function* declaration) {
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
@@ -11785,6 +11787,7 @@ private:
         if(persistentNativeModelCache&&persistentNativeModelCache->collisionSource)
             defaults.Retain(sizeof(QuestVr::OriginalImmutableCollisionModel)+4u*sizeof(void*));
         defaults.Retain(sizeof(nativeStartupOut_)+nativeStartupOut_.capacity()*sizeof(StartupOutStorage));
+        defaults.Retain(ScriptCommandPacketBytes());
         for(const auto& cell:nativeStartupOut_) {
             // OUT references are also retained by the outer VM undo journal.
             // Measure current payload through nested Login calls, not a stale

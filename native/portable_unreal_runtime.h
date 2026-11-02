@@ -603,6 +603,8 @@ struct PortableWorldStartupProbeResult {
         std::uint32_t physicalMappingVersion{};
         float sourceStrafe{},sourceForward{};
         bool emptyPollVerified{};
+        bool physicalTriggerVerified{},sameSampleResetVerified{};
+        std::size_t originalScriptCommands{};
         float sourceStrafeLevel{},sourceForwardLevel{};
         bool operator==(const InputResetPrefixObservation&) const = default;
     } inputResetPrefix;

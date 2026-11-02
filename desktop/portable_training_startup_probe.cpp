@@ -672,6 +672,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         QuestVr::QuestInputObservation observation;observation.displayTime=1.0;observation.deltaSeconds=0.01f;
         observation.focused=observation.mounted=observation.headValid=observation.headTracked=true;
         observation.hands[0u].tracked=true;observation.hands[0u].stickX=0.6f;observation.hands[0u].stickY=0.8f;
+        observation.hands[1u].tracked=true;observation.hands[1u].trigger=0.8f;
         source->Publish(observation);BindPortableRuntimeQuestInputSource(Viewport,source);
     }
     Require(input.constructed&&input.execInstalled&&!input.initialized&&!input.nativeViewportIndex,
@@ -883,6 +884,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 <<" sourceReleased="<<row.sourceReleased<<" sourceAxes="<<row.sourceAxes<<" sourceSequence="<<row.sourceSequence
                 <<" mapping="<<row.physicalMappingVersion<<" strafe="<<row.sourceStrafe<<" forward="<<row.sourceForward
                 <<" strafeLevel="<<row.sourceStrafeLevel<<" forwardLevel="<<row.sourceForwardLevel<<" emptyPoll="<<row.emptyPollVerified
+                <<" trigger="<<row.physicalTriggerVerified<<" sameReset="<<row.sameSampleResetVerified<<" scriptCommands="<<row.originalScriptCommands
                 <<" initReturned="<<row.initReturned<<'\n';
             // Independent owned Engine.u inventory: thirteen Pawn input Byte
             // declarations and fifteen PlayerPawn input Float declarations.
@@ -891,9 +893,10 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             Require(row.attempted&&row.viewportStored&&row.keysCleared==255u&&row.byteProperties==13u&&row.floatProperties==15u&&
                 row.platformReached&&row.sourceObserved&&row.actionsCompleted&&row.actionKeyQuery&&
                 row.actionCommands==19u&&row.actionStores==10u&&row.cachedInputProperties==28u&&
-                row.sourceReconciled&&row.initReturned&&row.sourceRows==1u&&!row.sourcePressed&&!row.sourceReleased&&row.sourceAxes==2u&&
+                row.sourceReconciled&&row.initReturned&&row.sourceRows==1u&&row.sourcePressed==1u&&!row.sourceReleased&&row.sourceAxes==2u&&
                 row.sourceSequence==1u&&row.physicalMappingVersion==1u&&std::fabs(row.sourceStrafe-1.8f)<0.00001f&&
                 std::fabs(row.sourceForward-2.4f)<0.00001f&&row.sourceStrafeLevel==0.6f&&row.sourceForwardLevel==0.8f&&row.emptyPollVerified&&
+                row.physicalTriggerVerified&&row.sameSampleResetVerified&&row.originalScriptCommands>=2u&&
                 world.execution.error=="Original completed Input.Init initialized-state/ReadInput publication is not prepared",
                 "Initial Input diagnostic failed before authentic reset prefix/platform boundary");
             const auto restoredInput=ReadPortableRuntimeViewportInput(Viewport);

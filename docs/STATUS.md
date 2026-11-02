@@ -1,5 +1,49 @@
 # Port status
 
+## Latest: original script-command packets and trigger binding (verified2026-11-02)
+
+ScriptConsoleExec's real selection prefix now calls its retained function with
+typed zero parameters, actual scalar/String ImportText providers, first-Object
+executor injection, original ParseNext comments/whitespace and selected cleanup.
+Remaining UTF16/cursor/Execution/output are threaded through Console/Player/Game
+routes. Packet GC roots, durable immutable versions and all retained storage
+join the same outer journal/work/byte ledgers. No raw PE32 ParmsSize/layout is
+guessed. Object/Class textual imports, aggregate/fixed-array packets, localized
+required-error output and unknown native override branches remain explicit
+missing services. This is not general command or complete-menu acceptance.
+
+Actual ProcessEvent honors the audited Actor or exact prepared Console virtual
+profile and begun-play/scriptability/probe/pending-kill/native-index/RPC gates.
+A distinct VM packet entry copies ALL input fields back; ordinary bytecode/
+CallFunction OUT-only behavior is unchanged. Generated coordinator60/23 and VM
+702535/1097 pass, including Float/String non-OUT copyback and late undo. Owned
+Console5505/34 passes actual TimeDemo Bool packet/call/copyback/full rollback.
+Existing Root300/10 and actual alias80/10 regressions remain passing.
+
+The real Training Init-prefix now includes a tracked trigger0.8, not only axes.
+It passes genuine ParseLeftClick|Fire, actual bFire/bJustFired, nonzero physical
+held baseline, empty poll and SAME-sample reset Release1/Press1/cursor invariants.
+In409.469s it executes267016 instructions/37988 writes,13968565/16777216 native
+work and records trigger1/sameReset1/scriptCommands2/initReturned1. It then
+reaches the SAME explicit initialized-state/ReadInput publication refusal and
+verifies whole save/state/revision/hash/RNG/client/lookup/Actor/GC rollback,
+45 unchanged originals and cold immutable-Model replacement. It does not prove
+a committed player frame, armed weapon hit, crate damage or physical Quest input.
+
+Final desktop/Android-native builds and strict ARM64 runtime/VM/helper syntax
+and warnings pass. CTest passes261 executed/320 registered/59 explicit owned-data
+skips/zero failures147.23s; relevant owned gates ran separately. Final audit:
+1931 frozen inputs,45 originals, three assets and four static native DLL sources
+unchanged; zero live jobs and no new APK. Initial direct-test/runtime compile
+failures are retained, corrected after all jobs terminated, never suppressed.
+
+Next: genuinely initialized Input authority/ReadInput, remaining original
+startup/render/audio, pose/aim and legacy-control ownership handover, committing
+Training frames and live crates/loot/gravity, then broader campaign validation.
+Other-map integration remains skipped now; accepted HUD/hands/NPC presentation
+is unchanged. See ORIGINAL-SCRIPT-COMMAND-CALL-IMPLEMENTATION.md and the source
+contracts in ORIGINAL-READINPUT-CONTINUATION.md.
+
 ## Latest: Quest source reconciliation through actual InputExt (verified2026-11-02)
 
 The native Quest observation consumer now resolves the actual original key Enum

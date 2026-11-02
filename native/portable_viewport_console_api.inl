@@ -27,13 +27,14 @@ PortableViewportConsoleResult PreparePortableRuntimeViewportConsole(std::uint64_
     return result;
 }
 PortableConsoleExecPrefixResult ExecutePortableRuntimeConsoleExecPrefix(std::uint64_t viewportIdentity,
-    const std::string& command,const QuestVr::Vm::Limits& limits) {
+    const std::string& command,const QuestVr::Vm::Limits& limits,bool commit) {
     CollectBirthGarbageAtBoundary collect;PortableConsoleExecPrefixResult result;
     try {
         PortableActorVmHost host;auto* viewport=NativeSessionViewport(viewportIdentity);
         static_cast<void>(RequireQuestViewportPayload(viewport));
-        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
-            result.handled=host.ConsoleCommandPrefix(viewport->nativeViewportConsole,command,viewport->nativeViewportActor);
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            result.handled=host.ConsoleCommandPrefix(viewport->nativeViewportConsole,command,viewport->nativeViewportActor,execution,result.output);
+            if(!commit)throw std::runtime_error("Original script command diagnostic complete; rollback required");
             return QuestVr::Vm::Value::Bool(result.handled);
         },limits);
     }catch(const std::exception& error) {
@@ -46,8 +47,8 @@ PortableConsoleExecPrefixResult ExecutePortableRuntimeActorConsoleExecPrefix(con
     CollectBirthGarbageAtBoundary collect;PortableConsoleExecPrefixResult result;
     try {
         PortableActorVmHost host;
-        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
-            result.handled=host.ScriptConsoleCommandPrefix(host.Object(actorPath),command,nullptr);
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            result.handled=host.ScriptConsoleCommandPrefix(host.Object(actorPath),command,nullptr,execution,result.output);
             return QuestVr::Vm::Value::Bool(result.handled);
         },limits);
     }catch(const std::exception& error) {

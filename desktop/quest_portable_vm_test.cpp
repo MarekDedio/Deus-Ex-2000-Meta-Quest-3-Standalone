@@ -7706,6 +7706,30 @@ void ProgramAndEligibilityContracts() {
 }
 }
 
+void ProcessEventPacketContracts() {
+    for(bool all:{false,true})for(bool late:{false,true})for(auto kind:{Vm::Kind::Float,Vm::Kind::String}){
+        TestHost host;const auto zero=kind==Vm::Kind::Float?Value::Float(0):Value::Text(kind,{});
+        const auto before=kind==Vm::Kind::Float?Value::Float(3):Value::Text(kind,"before");
+        const auto after=kind==Vm::Kind::Float?Value::Float(7):Value::Text(kind,"after");
+        auto function=Function("Packet",Join({Let(Ref(0x00,1),kind==Vm::Kind::Float?Real(7):String("after")),Return()}));
+        const auto property=host.Property(function,1,"F",zero,0x90u,1u,true);function.variables.push_back(property);
+        auto storage=std::make_shared<Value>(before);auto reference=std::make_shared<Vm::Reference>();reference->zero=zero;
+        reference->read=[storage]{return *storage;};reference->write=[storage](const Value& value){*storage=value;};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution){
+            const std::vector<Vm::Evaluation> arguments{{before,reference}};
+            const auto returned=all?execution.CallProcessEventPacket(function,"Self",arguments):execution.CallFunction(function,"Self",arguments);
+            Require(Vm::Equal(*storage,all?after:before),"ProcessEvent all-input copyback/ordinary OUT-only distinction lost");
+            if(late)throw std::runtime_error("Packet late failure");
+            return returned;
+        });
+        Require(result.passed()!=late&&result.committed!=late,"ProcessEvent packet transaction disposition differs");
+        Require(Vm::Equal(*storage,late?before:all?after:before),"ProcessEvent packet copyback did not share outer rollback");
+    }
+    {TestHost host;auto method=Function("PacketArray",Return());method.variables.push_back({"F","F",Value::Float(0),0x80u,2u});
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution){return execution.CallProcessEventPacket(method,"Self",{});});
+        Require(!result.passed()&&result.error.find("fixed-array")!=std::string::npos,"Unsupported packet array became scalar");++rejections;}
+}
+
 int main() {
     try {
         NormalizedSerializedContracts();
@@ -7713,6 +7737,7 @@ int main() {
         ExecutionContracts();
         ScalarFloatContracts();
         TransactionContracts();
+        ProcessEventPacketContracts();
         StatePhaseContracts();
         FinishAnimDeclarationContracts();
         ProgramAndEligibilityContracts();

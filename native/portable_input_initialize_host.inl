@@ -142,6 +142,12 @@
             observed.sourceStrafe=Read(pawn,Describe(strafe),0u).floating;
             observed.sourceForward=Read(pawn,Describe(forward),0u).floating;
             observed.sourceStrafeLevel=protocol.physical.strafeLevel;observed.sourceForwardLevel=protocol.physical.forwardLevel;
+            const auto mapping=NativeQuestInputMapping(input);
+            observed.originalScriptCommands=scriptCommandPackets_.size();
+            observed.physicalTriggerVerified=protocol.physical.held[static_cast<std::size_t>(mapping.fire)]==1u&&
+                protocol.keys[static_cast<std::size_t>(mapping.fire)]==1u&&
+                Read(pawn,DescribeProperty("Engine.Pawn.bFire"),0u).integer==1&&
+                Read(pawn,DescribeProperty("Engine.PlayerPawn.bJustFired"),0u).boolean;
             // Explicit second CPU-poll diagnostic, no new physical row. The
             // actual source/owners/current bindings remain unchanged.
             QuestVr::NativeScratchScope retainedObservation(nativeQueryScratchBytes_,
@@ -153,6 +159,11 @@
                 protocol.physical==physical&&QuestVr::QuestInputReconcileDetail::Same(protocol.sourceCursor,cursor)&&
                 std::fabs(Read(pawn,Describe(strafe),0u).floating-5.4f)<0.00001f&&
                 std::fabs(Read(pawn,Describe(forward),0u).floating-7.2f)<0.00001f;
+            const auto resetAgain=UpdateNativeQuestInput(input,true,0.01f,output,execution);
+            observed.sameSampleResetVerified=resetAgain.reset&&resetAgain.rows==1u&&resetAgain.pressed==1u&&resetAgain.released==1u&&
+                protocol.physical==physical&&QuestVr::QuestInputReconcileDetail::Same(protocol.sourceCursor,cursor)&&
+                protocol.keys[static_cast<std::size_t>(mapping.fire)]==1u&&
+                Read(pawn,DescribeProperty("Engine.Pawn.bFire"),0u).integer==1;
         };
         q.initializedLog=[&](std::uintptr_t target){if(native(target)!=viewport||!viewport->lookupName)
                 throw std::runtime_error("Original Input.Init log lost its actual Viewport Name");

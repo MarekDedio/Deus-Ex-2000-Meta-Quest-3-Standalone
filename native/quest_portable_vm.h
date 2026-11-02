@@ -160,6 +160,12 @@ public:
     // The declaration must remain alive until this synchronous call returns.
     virtual Value CallFunction(const Function& identity, const std::string& receiver,
         const std::vector<Evaluation>& arguments = {}) = 0;
+    // Distinct native ProcessEvent packet entry: copy back ALL input fields,
+    // not only OUT. Host authenticates the original ProcessEvent gates and owns
+    // durable typed packet references. Ordinary calls remain OUT-only.
+    virtual Value CallProcessEventPacket(const Function&,const std::string&,const std::vector<Evaluation>&) {
+        throw std::runtime_error("VM ProcessEvent packet service is unavailable");
+    }
     // Trusted synchronous host writes to raw host-owned references use the same
     // write/storage budgets and rollback journal as bytecode assignments. A
     // failed write poisons the enclosing transaction even if its caller catches

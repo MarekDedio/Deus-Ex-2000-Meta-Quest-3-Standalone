@@ -228,12 +228,17 @@ int main(int argc,char** argv) {
         }
         Require(NameString::FindCompareIndex("QuestAbsentConsolePrefix20261028")==unknownName,
             "Actual Console command lookup interned a missing name");
-        for(const auto* command:{"TimeDemo", "Talk", "TeamTalk"}) {
+        for(const auto* command:{"TimeDemo"}) {
             const auto queried=ExecutePortableRuntimeConsoleExecPrefix(992u,command);
             Require(!queried.execution.passed()&&!queried.execution.committed&&!queried.handled&&
-                queried.execution.error==std::string("Original ScriptConsoleExec command parameter/call service is not implemented: Engine.Console.")+command,
+                queried.execution.error=="Original ScriptConsoleExec localized BadProperty output service is not prepared: Engine.Console.TimeDemo / bEnabled",
                 "Actual Console Exec match became a fabricated decline/success: "+queried.execution.error);++refusals;
         }
+        const auto nativeCommand=ExecutePortableRuntimeConsoleExecPrefix(992u,"TimeDemo False True",{},false);
+        Require(nativeCommand.handled&&!nativeCommand.execution.passed()&&!nativeCommand.execution.committed&&nativeCommand.execution.writes>=3u&&
+            nativeCommand.execution.error=="Original script command diagnostic complete; rollback required",
+            "Actual Console command Bool packet/ProcessEvent/copyback failed: "+nativeCommand.execution.error);
+        Require(Save(checkpoint)==commandCheckpoint,"Actual Console parameter/call probe escaped outer rollback");
         for(const auto* actor:{"00_Training.LevelInfo0","00_Training.Doctor1","00_Training.WeaponCrowbar1"}) {
             for(const auto* command:{"SET InputExt T Talk","QuestAbsentActorConsolePrefix20261028","Tick"}) {
                 const auto queried=ExecutePortableRuntimeActorConsoleExecPrefix(actor,command);
@@ -296,8 +301,9 @@ int main(int argc,char** argv) {
         std::filesystem::remove(checkpoint);std::filesystem::remove(temporary);temporary.clear();
         std::cout<<"PASS original Console constructor/InitExecution: "<<checks<<" checks / "<<refusals
             <<" refusals; 323 copied indexed fields, genuine header/Viewport/frame/probes, constructor order, rollback/name/index/save/GC/accounting, "
-            "distinct viewports, actual ScriptConsoleExec lookup/miss/non-Exec/match-refusal, map retention and client teardown. "
-            "Not matched parameter execution, Typing, OpenWindow, Input.Init, full FExec or VR gameplay.\n";
+            "distinct viewports, actual ScriptConsoleExec lookup/miss/non-Exec, selected TimeDemo Bool packet/Core ProcessEvent/copyback/rollback, "
+            "required-error-provider refusal, map retention and client teardown. "
+            "Not general parameter imports, Typing, OpenWindow, Input.Init, full FExec or VR gameplay.\n";
         return 0;
     }catch(const std::exception& error) {
         if(lifetime)lifetime->Revoke();

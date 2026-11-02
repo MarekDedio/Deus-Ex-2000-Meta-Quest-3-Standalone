@@ -1,7 +1,7 @@
 // Included inside PortableActorVmHost. Immutable native ConstructorLink and
 // selected dynamic-payload destruction. No generic Let, clocks or provenance
 // mutation. Every owning value store borrows the caller's VM write journal.
-    std::size_t DestroyRetainedValue(const Value& value) {
+    std::size_t DestroyRetainedValue(const Value& value) const {
         QuestVr::AuthoredStructLimits limits;QuestVr::AuthoredStructDetail::Budget budget{limits};
         QuestVr::AuthoredStructDetail::RetainedValue(value,budget);
         const auto arrays=[&](const auto& self,const Value& current)->void {

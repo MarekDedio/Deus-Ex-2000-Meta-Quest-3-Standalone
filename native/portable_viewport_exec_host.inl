@@ -7,6 +7,9 @@
         PortableActorVmHost& host;
         RuntimeObject* receiver;
         RuntimeObject* executor;
+        std::u16string_view command;
+        QuestVr::Vm::Execution& execution;
+        std::string& output;
         void Step(){host.LifecycleStep();}
         void Admit(std::size_t bytes){host.ValidateStateBudget(bytes);}
         bool IsScriptable(){return host.OriginalGameScriptsEnabled();}
@@ -32,13 +35,12 @@
             return function&&function->cls&&IsDerivedFromPath(function->cls,"Core.Function")&&function->script;
         }
         std::uint32_t FunctionFlags(RuntimeObject* function){return function->script->functionFlags;}
-        void Match(RuntimeObject* function,std::size_t) {
-            static_cast<void>(executor);
-            throw std::runtime_error("Original ScriptConsoleExec command parameter/call service is not implemented: "+
-                function->reflection.objectPath);
+        void Match(RuntimeObject* function,std::size_t cursor) {
+            host.ExecuteSelectedScriptCommand(receiver,executor,function,command,cursor,execution,output);
         }
     };
-    bool ScriptConsoleCommandPrefix(RuntimeObject* receiver,const std::string& command,RuntimeObject* executor) {
+    bool ScriptConsoleCommandPrefix(RuntimeObject* receiver,const std::string& command,RuntimeObject* executor,
+        QuestVr::Vm::Execution& execution,std::string& output) {
         clientDependent_=true;
         if(receiver&&receiver->nativeConsoleObject)RequireNativeViewportConsole(receiver);
         else {
@@ -55,11 +57,12 @@
         QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,8u*(command.size()+1u)+4096u,
             [this](std::size_t bytes){ValidateStateBudget(bytes);});
         const auto text=QuestVr::UnrealString::Decode(command);
-        ScriptConsoleOperations operations{*this,receiver,executor};
+        ScriptConsoleOperations operations{*this,receiver,executor,text,execution,output};
         return QuestVr::ProcessConsoleExec::Exec(operations,text);
     }
-    bool ConsoleCommandPrefix(RuntimeObject* console,const std::string& command,RuntimeObject* executor) {
-        RequireNativeViewportConsole(console);return ScriptConsoleCommandPrefix(console,command,executor);
+    bool ConsoleCommandPrefix(RuntimeObject* console,const std::string& command,RuntimeObject* executor,
+        QuestVr::Vm::Execution& execution,std::string& output) {
+        RequireNativeViewportConsole(console);return ScriptConsoleCommandPrefix(console,command,executor,execution,output);
     }
     RuntimeObject* CommandObjectField(RuntimeObject* owner,const char* declaration,const char* constraint) {
         RequireMapActor(owner);const auto property=DescribeProperty(declaration);auto* field=Object(property.key);
@@ -99,7 +102,7 @@
         NativeCommandOperations operations{*this,"Level"};std::size_t cursor{};
         return QuestVr::EngineExecCommands::Exec(operations,command,cursor,QuestVr::EngineExecCommands::Level);
     }
-    bool GameEngineCommandExec(RuntimeObject* engine,std::u16string_view command,QuestVr::Vm::Execution& execution) {
+    bool GameEngineCommandExec(RuntimeObject* engine,std::u16string_view command,QuestVr::Vm::Execution& execution,std::string& output) {
         if(!engine||!persistentEngineCollision||engine!=persistentEngineCollision->get()->engine||
             !ActualNativeCollisionObjectValid(engine)||!engine->nativeEngineInstance||!engine->nativeEngineInstance->execInstalled)
             throw std::runtime_error("Command has no actual configured native Engine FExec provider");
@@ -124,7 +127,7 @@
         if(current) {
             RequireCommandLevel(current);auto* info=persistentWorldActors.front();
             if(auto* game=CommandObjectField(info,"Engine.LevelInfo.Game","Engine.GameInfo"))
-                if(ScriptConsoleCommandPrefix(game,QuestVr::UnrealString::Encode(forwarded),nullptr))return true;
+                if(ScriptConsoleCommandPrefix(game,QuestVr::UnrealString::Encode(forwarded),nullptr,execution,output))return true;
         }
         // Fresh import resolution corrects the old GExec label: the provider
         // BEFORE Core.StaticExec is GSys (USystem.FExec), not later GExec.
@@ -144,7 +147,7 @@
     }
     struct PlayerCommandOperations {
         using Handle=RuntimeObject*;
-        PortableActorVmHost& host;RuntimeObject* viewport;QuestVr::Vm::Execution& execution;
+        PortableActorVmHost& host;RuntimeObject* viewport;QuestVr::Vm::Execution& execution;std::string& output;
         void Step(){host.LifecycleStep();}
         Handle Actor() {
             static_cast<void>(RequireQuestViewportPayload(viewport));
@@ -169,9 +172,9 @@
         }
         bool ExecLevel(Handle level,std::u16string_view command){return host.LevelCommandExec(level,command);}
         bool ScriptConsoleExec(Handle receiver,std::u16string_view command,Handle executor) {
-            return host.ScriptConsoleCommandPrefix(receiver,QuestVr::UnrealString::Encode(command),executor);
+            return host.ScriptConsoleCommandPrefix(receiver,QuestVr::UnrealString::Encode(command),executor,execution,output);
         }
-        bool ExecEngine(Handle engine,std::u16string_view command){return host.GameEngineCommandExec(engine,command,execution);}
+        bool ExecEngine(Handle engine,std::u16string_view command){return host.GameEngineCommandExec(engine,command,execution,output);}
     };
     struct ViewportCommandOperations {
         PortableActorVmHost& host;
@@ -200,11 +203,13 @@
         ViewportCommandOperations operations{*this};
         static_cast<void>(QuestVr::ViewportExecCommands::Exec(operations,text,cursor));
         const auto forwarded=QuestVr::UnrealString::Encode(text.substr(cursor));
+        std::string output;
         // Original viewport+34 may be null. A present Console must run its
         // actual ScriptConsoleExec, with Actor as executor, before UPlayer.
         if(viewport->nativeViewportConsole&&ConsoleCommandPrefix(viewport->nativeViewportConsole,
-            forwarded,viewport->nativeViewportActor))return {};
-        PlayerCommandOperations player{*this,viewport,execution};
+            forwarded,viewport->nativeViewportActor,execution,output))return output;
+        PlayerCommandOperations player{*this,viewport,execution,output};
         static_cast<void>(QuestVr::PlayerExecRoute::Exec(player,text.substr(cursor)));
-        return nativeViewportCoreResult_?nativeViewportCoreResult_->output:std::string{};
+        if(nativeViewportCoreResult_)output+=nativeViewportCoreResult_->output;
+        return output;
     }

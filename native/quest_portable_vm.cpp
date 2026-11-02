@@ -533,6 +533,25 @@ public:
             return Run(identity, receiver, arguments);
         });
     }
+    Value CallProcessEventPacket(const Function& identity,const std::string& receiver,
+        const std::vector<Evaluation>& arguments) override {
+        if(result_.callStack.empty()&&!failure_)Locate(identity,0,0);
+        return DirectOperation([&]{
+            if(identity.path.size()>limits_.stringBytes||identity.source.size()>limits_.stringBytes||receiver.size()>limits_.stringBytes)
+                Fail(Status::Budget,"VM ProcessEvent packet identity limit");
+            std::size_t count{};
+            for(const auto& property:identity.variables){
+                if((property.flags&0x480u)!=0x80u)break;
+                if(property.arrayDimension!=1u)Fail(Status::Unsupported,"VM ProcessEvent fixed-array packet copy is not implemented");
+                ++count;
+            }
+            if(count!=arguments.size())Fail(Status::Invalid,"VM ProcessEvent packet does not match its leading input declarations");
+            for(const auto& argument:arguments)if(!argument.reference||!argument.reference->read||!argument.reference->write||
+                argument.reference->dimension!=1u)Fail(Status::Invalid,"VM ProcessEvent packet lacks durable typed cells");
+            const auto result=RunEvaluation(identity,receiver,arguments,{},false,nullptr,true);
+            return result.disposition==ResultDisposition::Written?result.Load():Value{};
+        });
+    }
     void WriteReference(const std::shared_ptr<Reference>& reference,const Value& value) override {
         if (result_.callStack.empty() && !failure_) {
             result_.function.clear(); result_.offset=0; result_.opcode=0;
@@ -568,7 +587,7 @@ public:
     }
     Evaluation RunEvaluation(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming,
         std::optional<std::optional<Value>> capturedContext = {}, const bool nativeArgumentsMaterialized = false,
-        const std::vector<std::optional<ResultLayout>>* materializedAddresses = nullptr) {
+        const std::vector<std::optional<ResultLayout>>* materializedAddresses = nullptr,const bool processEventPacket=false) {
         if (self.empty() || !host_.CanCall(identity, self)) return {{},{},ResultDisposition::NoWrite};
         if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM call depth limit");
         // An engaged outer optional records that expression evaluation already
@@ -796,7 +815,7 @@ public:
         argument = 0;
         for (const auto& p : fn.variables) {
             if (!(p.flags & 0x80) || (p.flags & 0x400)) continue;
-            if ((p.flags & 0x100) && argument < args.size() && args[argument].reference)
+            if (((p.flags & 0x100)||processEventPacket) && argument < args.size() && args[argument].reference)
                 Write(args[argument].reference, frame.locals.at(p.key)->read());
             ++argument;
         }

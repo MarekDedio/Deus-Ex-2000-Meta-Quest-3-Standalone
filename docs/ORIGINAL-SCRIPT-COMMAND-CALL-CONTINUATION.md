@@ -1,5 +1,14 @@
 # Missing original script-command call service (static audit2026-11-02)
 
+Latest implementation: see ORIGINAL-SCRIPT-COMMAND-CALL-IMPLEMENTATION.md. The
+matched scalar/String command packet and actual ProcessEvent call now exist,
+and actual Training ParseLeftClick|Fire/trigger/reset plus Console TimeDemo Bool
+packet/copyback gates pass. The blanket missing-call refusal below is historical
+audit context. Object/Class textual imports, aggregate/fixed-array layouts,
+localized required-error output and some native overrides still explicitly
+refuse. Complete menu interaction, initialized Input/ReadInput and playable
+startup are not claimed. No new APK.
+
 Read-only independent source/runtime audit during physical-input compiler
 freeze. No source provider is implemented by this document. Original commercial
 modules were inspected AS DATA ONLY, never loaded/executed.

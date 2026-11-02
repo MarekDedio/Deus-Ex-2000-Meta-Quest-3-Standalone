@@ -37,12 +37,13 @@ PortableViewportConsoleSnapshot ReadPortableRuntimeViewportConsole(std::uint64_t
 struct PortableConsoleExecPrefixResult {
     QuestVr::Vm::Result execution;
     bool handled{};
+    std::string output;
 };
 // Actual Console ScriptConsoleExec selection prefix. Missing/non-Exec methods
 // decline; matching Exec methods refuse until their parameter/call service is
 // implemented. This is not UViewport/UPlayer fallback or successful startup.
 PortableConsoleExecPrefixResult ExecutePortableRuntimeConsoleExecPrefix(std::uint64_t viewportIdentity,
-    const std::string& command,const QuestVr::Vm::Limits& limits={});
+    const std::string& command,const QuestVr::Vm::Limits& limits={},bool commit=true);
 // Same actual Core.ScriptConsoleExec selection on a current-map Actor. Native
 // virtual inheritance is authenticated; no Actor event or parameter call is
 // invented. This entry has no executor (matching the GameEngine Game offer).
