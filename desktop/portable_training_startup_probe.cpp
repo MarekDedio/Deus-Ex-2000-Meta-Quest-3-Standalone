@@ -13,6 +13,7 @@
 #include "portable_viewport_canvas.h"
 #include "portable_viewport_console.h"
 #include "portable_quest_input_source.h"
+#include "portable_process_loop.h"
 #include "quest_native_work.h"
 #include "quest_native_config.h"
 #include "quest_runtime_script_packages.h"
@@ -665,10 +666,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const auto input=PreparePortableRuntimeViewportInput(Viewport,PortableInputLoggingProfile::Ordinary);
     if(observeInitialInputResetPrefix) {
         // Explicit owned-test observation source, NOT a real headset capture or
-        // an absent-provider neutral fallback. Stage is not event dispatch.
+        // an absent-provider neutral fallback. Real left-stick sample; the
+        // runtime resolves actual JoyX/Y and executes their current bindings.
         auto source=std::make_shared<QuestVr::QuestInputSource>(lifetime,Client,Viewport);
         QuestVr::QuestInputObservation observation;observation.displayTime=1.0;observation.deltaSeconds=0.01f;
-        observation.focused=true;source->Publish(observation);BindPortableRuntimeQuestInputSource(Viewport,source);
+        observation.focused=observation.mounted=observation.headValid=observation.headTracked=true;
+        observation.hands[0u].tracked=true;observation.hands[0u].stickX=0.6f;observation.hands[0u].stickY=0.8f;
+        source->Publish(observation);BindPortableRuntimeQuestInputSource(Viewport,source);
     }
     Require(input.constructed&&input.execInstalled&&!input.initialized&&!input.nativeViewportIndex,
         "Cannot construct the real configured viewport Input without prematurely executing Init");
@@ -716,12 +720,31 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     Require(unpossessed.execution.passed()&&unpossessed.pass.completed&&unpossessed.pass.noActor&&
         unpossessed.execution.writes==0u&&unpossessed.pass.writes==0u&&unpossessed.pass.steps==2u,
         "Original distance prepass fabricated a possessed player or eagerly required the partition: "+unpossessed.execution.error);
+    // This executable owns its actual observation loop, not the PC launcher's
+    // assignment timing or a synthesized always-running game provider. The
+    // selected real input bindings require this distinct explicit capability.
+    std::shared_ptr<QuestVr::ProcessLoopControl> observationLoop;
+    struct RevokeObservationLoop {
+        std::shared_ptr<QuestVr::ProcessLoopControl>& control;
+        ~RevokeObservationLoop()noexcept{if(control)control->Revoke();}
+    } revokeObservationLoop{observationLoop};
+    if(observeInitialInputResetPrefix){
+        observationLoop=std::make_shared<QuestVr::ProcessLoopControl>();
+        BindPortableRuntimeProcessLoop(observationLoop);observationLoop->EnterExecution();
+        const auto loop=ReadPortableRuntimeProcessLoop();
+        Require(loop.running&&loop.identity==observationLoop->Identity(),"Owned observation loop lost its actual execution capability");
+        std::cout<<"OWNED OBSERVATION LOOP identity="<<loop.identity<<" running="<<loop.running
+            <<"; explicit diagnostic CPU-loop scope, NOT PC-launcher timing or playable startup\n";
+    }
     const auto saved=temporary.Save("BeforeStartup");const auto revision=GetPortableRuntimeWorldRevision();
     const bool statePresent=GetPortableRuntimeScriptStatePresent(),unsaved=GetPortableRuntimeUnsavedScriptState();
     const auto time=ReadPortableRuntimeLevelTime();const auto lookup=ReadPortableRuntimeObjectLookup();
     GC::Collect();const auto gc=GC::GetStats();
     std::cout<<"INITIAL LOOKUP objects="<<lookup.objects<<" retainedBytes="<<lookup.retainedBytes<<'\n';
     const auto rollback=[&] {
+        if(observationLoop){const auto loop=ReadPortableRuntimeProcessLoop();
+            Require(loop.running&&loop.identity==observationLoop->Identity()&&loop.lookupGeneration==lookup.generation,
+                "Startup rollback changed the actual observation-loop owner/state");}
         Require(temporary.Save("AfterStartup")==saved,"Startup diagnostic changed the full checkpoint/property/clock/RNG state");
         Require(GetPortableRuntimeWorldRevision()==revision&&GetPortableRuntimeScriptStatePresent()==statePresent&&
             GetPortableRuntimeUnsavedScriptState()==unsaved&&
@@ -855,7 +878,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 <<" keys="<<row.keysCleared<<" bytes="<<row.byteProperties<<" floats="<<row.floatProperties
                 <<" platform="<<row.platformReached<<" source="<<row.sourceObserved
                 <<" actions="<<row.actionCommands<<" stores="<<row.actionStores<<" inputProperties="<<row.cachedInputProperties
-                <<" keyQuery="<<row.actionKeyQuery<<" actionsCompleted="<<row.actionsCompleted<<'\n';
+                <<" keyQuery="<<row.actionKeyQuery<<" actionsCompleted="<<row.actionsCompleted
+                <<" reconciled="<<row.sourceReconciled<<" sourceRows="<<row.sourceRows<<" sourcePressed="<<row.sourcePressed
+                <<" sourceReleased="<<row.sourceReleased<<" sourceAxes="<<row.sourceAxes<<" sourceSequence="<<row.sourceSequence
+                <<" mapping="<<row.physicalMappingVersion<<" strafe="<<row.sourceStrafe<<" forward="<<row.sourceForward
+                <<" strafeLevel="<<row.sourceStrafeLevel<<" forwardLevel="<<row.sourceForwardLevel<<" emptyPoll="<<row.emptyPollVerified
+                <<" initReturned="<<row.initReturned<<'\n';
             // Independent owned Engine.u inventory: thirteen Pawn input Byte
             // declarations and fifteen PlayerPawn input Float declarations.
             // Reaching UpdateInput alone must not hide an unresolved Class
@@ -863,12 +891,17 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             Require(row.attempted&&row.viewportStored&&row.keysCleared==255u&&row.byteProperties==13u&&row.floatProperties==15u&&
                 row.platformReached&&row.sourceObserved&&row.actionsCompleted&&row.actionKeyQuery&&
                 row.actionCommands==19u&&row.actionStores==10u&&row.cachedInputProperties==28u&&
-                world.execution.error=="Original Quest viewport UpdateInput dispatch/reconciliation is not prepared",
+                row.sourceReconciled&&row.initReturned&&row.sourceRows==1u&&!row.sourcePressed&&!row.sourceReleased&&row.sourceAxes==2u&&
+                row.sourceSequence==1u&&row.physicalMappingVersion==1u&&std::fabs(row.sourceStrafe-1.8f)<0.00001f&&
+                std::fabs(row.sourceForward-2.4f)<0.00001f&&row.sourceStrafeLevel==0.6f&&row.sourceForwardLevel==0.8f&&row.emptyPollVerified&&
+                world.execution.error=="Original completed Input.Init initialized-state/ReadInput publication is not prepared",
                 "Initial Input diagnostic failed before authentic reset prefix/platform boundary");
             const auto restoredInput=ReadPortableRuntimeViewportInput(Viewport);
             Require(!restoredInput.initialized&&!restoredInput.nativeViewportIndex&&restoredInput.keys==input.keys&&
                 restoredInput.action==input.action&&std::bit_cast<std::uint32_t>(restoredInput.delta)==std::bit_cast<std::uint32_t>(input.delta)&&
-                !restoredInput.sourceIdentity&&!restoredInput.sourceSequence&&!restoredInput.sourceRejections,
+                !restoredInput.sourceIdentity&&!restoredInput.sourceSequence&&!restoredInput.sourceRejections&&
+                restoredInput.physicalMappingVersion==input.physicalMappingVersion&&restoredInput.physicalHeld==input.physicalHeld&&
+                restoredInput.physicalMappingKeys==input.physicalMappingKeys&&restoredInput.physicalAxes==input.physicalAxes,
                 "Input reset prefix retained native Viewport/keys/Action/Delta/cursor after rollback");
             Require(restoredInput.aliases==input.aliases&&restoredInput.bindings==input.bindings&&
                 restoredInput.extensionNames==input.extensionNames&&restoredInput.extensionNameIndices==input.extensionNameIndices&&

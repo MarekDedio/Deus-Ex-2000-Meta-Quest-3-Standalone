@@ -1,5 +1,11 @@
 # Actual Root/InputExt input dispatch (2026-11-02)
 
+Following update: Quest source dispatch and retained physical/analog state now
+pass actual Training Init/empty-poll integration; see
+QUEST-PHYSICAL-INPUT-RECONCILIATION.md. This document retains the earlier Root/
+InputExt batch's verification history. Initialized-state publication, ReadInput,
+default digital script-command calls and playable startup remain missing.
+
 Implementation verified on desktop and Android-native (2026-11-02). This is not physical Quest delivery, completed
 Input.Init/ReadInput, full UI navigation, playable startup or a new APK.
 See ORIGINAL-QUEST-INPUT-CONTINUATION.md for the owned Extension source hash,

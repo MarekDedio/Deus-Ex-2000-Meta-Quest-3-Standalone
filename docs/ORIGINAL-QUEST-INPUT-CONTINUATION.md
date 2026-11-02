@@ -1,5 +1,14 @@
 # Next Quest input continuation (2026-11-01)
 
+Latest2026-11-02: the real Quest source consumer/held-state/retained-axis/reset
+bridge now passes its actual Training Init/empty-poll gate. See
+QUEST-PHYSICAL-INPUT-RECONCILIATION.md for exact scope/results. The current
+explicit boundary is `Original completed Input.Init initialized-state/ReadInput
+publication is not prepared`. The earlier audit/refusal text below is historical
+source context, not the latest missing-source implementation state. Actual
+initialized-state publication, ReadInput, ScriptConsoleExec command calls,
+pose/aim conversion and committed gameplay are still absent. No new APK.
+
 Read-only source/integration audit prepared while compiler inputs were frozen.
 Only this document is added. This is NOT an implementation of platform input,
 Root handlers, initialized Input, ReadInput, playable Training or a new APK.
@@ -23,6 +32,8 @@ cells at that authority; it is not physical event delivery. After staging the
 actual bound Quest source, the retained continuation still refuses with:
 
 `Original Quest viewport UpdateInput dispatch/reconciliation is not prepared`
+
+That was the audit's initial boundary; the latest boundary is stated above.
 
 `quest_input_process.h` supplies exact typed InputExt.Process and Root.Process
 coordinators, now bound to actual native owners by `portable_input_exec_host.inl`

@@ -597,6 +597,13 @@ struct PortableWorldStartupProbeResult {
         std::size_t keysCleared{},byteProperties{},floatProperties{};
         bool actionsCompleted{},actionKeyQuery{};
         std::size_t actionCommands{},actionStores{},cachedInputProperties{};
+        bool sourceReconciled{},initReturned{};
+        std::size_t sourceRows{},sourcePressed{},sourceReleased{},sourceAxes{};
+        std::uint64_t sourceSequence{};
+        std::uint32_t physicalMappingVersion{};
+        float sourceStrafe{},sourceForward{};
+        bool emptyPollVerified{};
+        float sourceStrafeLevel{},sourceForwardLevel{};
         bool operator==(const InputResetPrefixObservation&) const = default;
     } inputResetPrefix;
     struct BrushTrackerObservation {

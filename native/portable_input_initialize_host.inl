@@ -130,19 +130,36 @@
             // Explicit primitive checks at the real Init-prefix authority.
             // They do not replace UpdateInput or consume a physical event.
             ProbeOriginalInputActionCells(input,observed,execution);
-            QuestVr::NativeScratchScope batchStorage(nativeQueryScratchBytes_,sizeof(QuestVr::QuestInputSource::Batch),
+            std::string output;const auto reconciled=UpdateNativeQuestInput(input,true,std::nullopt,output,execution);
+            observed.sourceObserved=reconciled.rows!=0u;observed.sourceReconciled=true;
+            observed.sourceRows=reconciled.rows;observed.sourcePressed=reconciled.pressed;
+            observed.sourceReleased=reconciled.released;observed.sourceAxes=reconciled.axes;
+            observed.sourceSequence=protocol.sourceCursor.sequence;observed.physicalMappingVersion=protocol.physical.version;
+            auto* pawn=actor(target);
+            auto* strafe=FindInputProperty(input,pawn,u"aStrafe",Kind::Float);
+            auto* forward=FindInputProperty(input,pawn,u"aBaseY",Kind::Float);
+            if(!strafe||!forward)throw std::runtime_error("Quest diagnostic lacks actual original joystick INPUT Float declarations");
+            observed.sourceStrafe=Read(pawn,Describe(strafe),0u).floating;
+            observed.sourceForward=Read(pawn,Describe(forward),0u).floating;
+            observed.sourceStrafeLevel=protocol.physical.strafeLevel;observed.sourceForwardLevel=protocol.physical.forwardLevel;
+            // Explicit second CPU-poll diagnostic, no new physical row. The
+            // actual source/owners/current bindings remain unchanged.
+            QuestVr::NativeScratchScope retainedObservation(nativeQueryScratchBytes_,
+                sizeof(QuestVr::QuestInputPhysicalState)+sizeof(QuestVr::QuestInputCursor)+256u,
                 [this](std::size_t bytes){ValidateStateBudget(bytes);});
-            const auto& source=CurrentQuestInputSource(protocol.viewportIdentity);const auto batch=source->Stage(protocol.sourceCursor,true);
-            if(batch.status!=QuestVr::QuestInputReadStatus::Ready||!batch.reset||batch.count!=1u)
-                throw std::runtime_error("Original Quest UpdateInput reset requires a current valid physical observation");
-            observed.sourceObserved=true;
-            // A coherent baseline is NOT key reconciliation, Root.Process or
-            // ExecInputCommands. Preserve the actual unsupported continuation;
-            // do not advance cursor or label native Init complete from Stage.
-            throw std::runtime_error("Original Quest viewport UpdateInput dispatch/reconciliation is not prepared");
+            const auto physical=protocol.physical;const auto cursor=protocol.sourceCursor;
+            const auto empty=UpdateNativeQuestInput(input,false,0.02f,output,execution);
+            observed.emptyPollVerified=empty.empty&&!empty.rows&&empty.axes==2u&&
+                protocol.physical==physical&&QuestVr::QuestInputReconcileDetail::Same(protocol.sourceCursor,cursor)&&
+                std::fabs(Read(pawn,Describe(strafe),0u).floating-5.4f)<0.00001f&&
+                std::fabs(Read(pawn,Describe(forward),0u).floating-7.2f)<0.00001f;
         };
         q.initializedLog=[&](std::uintptr_t target){if(native(target)!=viewport||!viewport->lookupName)
                 throw std::runtime_error("Original Input.Init log lost its actual Viewport Name");
             __android_log_print(ANDROID_LOG_INFO,"quest_main","Input system initialized for %s",viewport->lookupName->ToString().c_str());};
         QuestVr::InitializeOriginalInput(reinterpret_cast<std::uintptr_t>(input),reinterpret_cast<std::uintptr_t>(viewport),q);
+        observed.initReturned=true;
+        // The source consumer completed, but constructor-only public authority
+        // is NOT silently widened or marked initialized by this diagnostic.
+        throw std::runtime_error("Original completed Input.Init initialized-state/ReadInput publication is not prepared");
     }

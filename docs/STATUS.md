@@ -1,5 +1,51 @@
 # Port status
 
+## Latest: Quest source reconciliation through actual InputExt (verified2026-11-02)
+
+The native Quest observation consumer now resolves the actual original key Enum
+and offers physical transitions through real InputExt/Root/current bindings,
+not direct Pawn mirrors. Input COW owns an independent physical-held baseline,
+mapping identity, retained normalized stick levels and source cursor. Reset
+releases old/represses current even for the same sample. Focus/mount/head/
+individual-hand loss releases controls; rejected/overwritten history needs an
+explicit new valid reset. Root consumption cannot manufacture repeated presses.
+Axes are newest-level samples, weighted by actual CPU poll elapsed for original
+ReadInput20/elapsed scaling. Empty polls reuse admitted normalized levels with
+rows0/cursor unchanged, not a fabricated zero/fresh row. Accepted VR-reserved
+controls and presentation remain unchanged; pose/world aim handover is pending.
+
+Generated tests pass73849 checks/30 refusal controls, including rate invariance
+at50/72/90/100/120Hz, CPU/render period mismatch, faster CPU/empty polls,
+tracking/rejection/overflow, callback failure, lifetime and budget controls.
+The actual owned Training Init-prefix gate now passes in406.105s:266870
+instructions/37976 writes,13957887/16777216 work, sourceRows1/axes2/cursor1/
+mapping1, actual player axes1.8/2.4 and normalized.6/.8, real empty-poll
+accumulation5.4/7.2 with unchanged baseline/cursor, and original Init returned.
+The harness supplies its own real scoped app-loop capability, not an invented
+running bit. The root ends at the NEW explicit initialized-state/ReadInput
+publication refusal and verifies whole save/state/revision/hash/RNG/client/
+lookup/Actor/GC rollback,45 unchanged originals and cold Model replacement.
+This is expected-boundary evidence, NOT initialized publication or gameplay.
+
+Final desktop, Android-native and strict ARM64 runtime/test gates pass. CTest:
+260 executed/319 registered/59 explicit owned-data skips/zero failures185.44s.
+Separate current owned Root300/10, alias80/10 and viewport10315/24 pass. The
+wrong positional-root viewport invocation remains a documented Usage failure;
+its corrected --game-root run passes. Final audit:1928 frozen inputs,45
+originals, three selected assets and four static DLL sources unchanged, zero
+live build/test jobs, no new APK. Independent reviews confirm final ownership/
+empty-level handling and document original ReadInput/command-call requirements.
+
+Default trigger/A/Menu commands are NOT working yet: ScriptConsoleExec Match
+still refuses its missing original parameter/call service before genuine
+ParseLeftClick/ParseRightClick/ShowInventoryWindow. No binding is replaced to
+hide that blocker. Next required work includes that call/import/ProcessEvent/
+teardown service, initialized-state authority/ReadInput, remaining startup/
+render/audio, pose/aim/legacy-control ownership handover, then committing
+Training and live crates/loot/gravity. Other-map integration stays skipped.
+See QUEST-PHYSICAL-INPUT-RECONCILIATION.md, ORIGINAL-READINPUT-CONTINUATION.md
+and ORIGINAL-SCRIPT-COMMAND-CALL-CONTINUATION.md.
+
 ## Latest: actual Root keyboard and InputExt dispatch (verified2026-11-02)
 
 Original Root.Process and HandleVirtualKeyboard now operate on the real

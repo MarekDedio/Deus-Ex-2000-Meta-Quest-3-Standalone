@@ -51,6 +51,9 @@ PortableViewportInputSnapshot NativeInputSnapshot(RuntimeObject* object,const Ru
     result.bindings=values.bindings;
     result.keys=input.keys;result.action=input.action;result.delta=input.delta;
     result.sourceIdentity=input.sourceCursor.source;result.sourceSequence=input.sourceCursor.sequence;result.sourceRejections=input.sourceCursor.rejections;
+    result.physicalMappingVersion=input.physical.version;result.physicalHeld=input.physical.held;
+    const auto& map=input.physical.mapping;result.physicalMappingKeys={map.fire,map.frob,map.inventory,map.strafe,map.forward};
+    result.physicalAxes={input.physical.strafeLevel,input.physical.forwardLevel};
     const auto* names=stagedNames?stagedNames:persistentInputSchema->get()->extensionNames.get();
     if(object->cls==persistentInputSchema->get()->inputExtClass) {
         if(!names||input.configReloads!=2u||input.configPasses!=4u)

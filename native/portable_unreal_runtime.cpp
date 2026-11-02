@@ -6,6 +6,7 @@
 #include "portable_retail_collision.h"
 #include "portable_actor_point_check.h"
 #include "portable_process_loop.h"
+#include "quest_input_reconcile.h"
 
 #include "GC/GC.h"
 
@@ -261,6 +262,7 @@ struct RuntimeNativeInputInstance {
     std::int32_t action{};
     float delta{};
     QuestVr::QuestInputCursor sourceCursor;
+    QuestVr::QuestInputPhysicalState physical;
 };
 struct RuntimeNativeStruct {
     NameString friendlyName{"None"};
@@ -1878,6 +1880,7 @@ void ClearNativePlayerObjects() noexcept {
             if(input->nativeInputInstance) {
                 input->nativeInputInstance->retired=true;input->nativeInputInstance->ownerViewport=nullptr;
                 input->nativeInputInstance->values.viewport=nullptr;
+                input->nativeInputInstance->sourceCursor={};input->nativeInputInstance->physical={};
             }
             viewport->nativeViewportInput=nullptr;unindex(input);
         }
@@ -4821,6 +4824,7 @@ public:
 #include "portable_input_action_host.inl"
 #include "portable_input_initialize_host.inl"
 #include "portable_input_exec_host.inl"
+#include "portable_quest_input_dispatch.inl"
 #include "portable_string_to_name_host.inl"
 #include "portable_flag_base_host.inl"
 #include "portable_viewport_canvas_host.inl"
