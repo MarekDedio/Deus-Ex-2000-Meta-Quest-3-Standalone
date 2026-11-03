@@ -1,5 +1,30 @@
 # Port status
 
+## Latest: native viewport session reuse (verified2026-11-03)
+
+The new owned regression reproduced retained payload-slot exhaustion after
+`SESSION REUSE cycle=12`. Native client teardown now clears its viewport payload
+array together with the retired actual viewport objects, without raising the
+16-live-viewport bound, dropping persistent native UClasses or collecting
+objects still rooted by an in-flight transaction.
+
+Focused desktop and Android-native builds pass. The identical regression now
+passes all18 sequential generations:10387 checks/24 refusal controls, stable
+post-teardown GC/lookup and unchanged whole actor checkpoint. Console5505/34
+and standalone native registry116/39 pass. Owned InputExt ResetConfig9632/15
+also passes. Final audit verifies1934 frozen compiler inputs,45 originals,
+three selected assets and four source DLLs unchanged, with zero live jobs.
+These are focused regression/build results, not a new full CTest run.
+
+This fixes session restart ownership, not committed Training startup or crate
+gameplay. No APK was packaged. The production demo still loads a dormant map;
+its Pawn-only damage helper and frame loop do not yet deliver original crate
+damage/loot/physics. Next is genuine Client-only/Engine binding distinct from
+explicit viewport construction, then the remaining original startup and live
+player/frame integration. First Training remains the immediate target; other
+campaign integration is deferred. ORIGINAL-PLAYER-WALKING-CONTINUATION.md records
+the newly bounded static dependencies for the missing local-player movement.
+
 ## Latest: real initialized later ResetInput (verified2026-11-02)
 
 This batch factors one native Reset provider body while preserving distinct

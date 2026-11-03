@@ -240,6 +240,28 @@ void Owned(const fs::path& root,const std::vector<PortablePackageTables>& packag
     Constructed(next,replacementSession,schema);Require(next.objectPath!=input.objectPath&&next.objectPath!=other.objectPath&&next.uniqueCounter>other.uniqueCounter,
         "Fresh native session reused retired concrete Input name/counter or preserved old owner");Query(4302u,"KEYBINDING LeftMouse",true,"ParseLeftClick|Fire");
     replacement->Revoke();ClearPortableRuntimeClient();GC::Collect();
+    // A bound16-live-viewport array must be reusable across arbitrarily many
+    // sequential render sessions, not exhausted by retired generations.
+    const auto cycleGc=GC::GetStats();const auto cycleLookup=ReadPortableRuntimeObjectLookup();
+    for(std::size_t cycle=0u;cycle<QuestVr::NativeClientRegistry::MaximumViewports+2u;++cycle){
+        std::cout<<"SESSION REUSE cycle="<<cycle<<'\n';
+        const auto cycleClient=6001u+cycle,cycleViewport=7001u+cycle;
+        auto cycleLifetime=std::make_shared<QuestVr::NativeClientLifetime>();
+        BindPortableRuntimeClient(cycleLifetime,cycleClient);
+        RegisterPortableRuntimeViewport(cycleClient,{cycleViewport,1440u,1440u,3u,2u});
+        const auto cycleSession=PreparePortableRuntimePlayerObjects(cycleViewport);
+        Require(!cycleSession.bound&&cycleSession.viewportIdentity==cycleViewport&&cycleSession.clientIdentity==cycleClient,
+            "Sequential session reused a retired native viewport/client identity");
+        cycleLifetime->Revoke();ClearPortableRuntimeClient();GC::Collect();
+        Require(!HasPortableRuntimeClient()&&ReadPortableRuntimeClientView().empty()&&
+            !FindPortableRuntimeObject({cycleSession.viewportPath,0u,0u,true,false})&&
+            !FindPortableRuntimeObject({cycleSession.clientPath,0u,0u,true,false}),
+            "Sequential session retained a retired target or native object lookup");
+        const auto cleared=ReadPortableRuntimeObjectLookup();
+        Require(cleared.objects==cycleLookup.objects&&cleared.generation==cycleLookup.generation,
+            "Sequential session changed persistent lookup census/generation");
+        SameGc(cycleGc,"Sequential session retained native Client/Viewport allocations");
+    }
     Require(temporary.Snapshot("ClearedInputs")==baseline,"Input/session revoke/rebind changed actor checkpoint");Dormant();
     ShutdownPortableRuntime();
 }

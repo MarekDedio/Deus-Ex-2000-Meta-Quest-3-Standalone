@@ -1896,6 +1896,11 @@ void ClearNativePlayerObjects() noexcept {
         }
         unindex(viewport);
     }
+    // Payload slots belong to this client generation, not to the persistent
+    // native UClasses. Retire their identities and device roots together with
+    // the viewport array so sequential sessions can reuse the live-slot bound.
+    // In-flight journals retain their own roots; do not collect them here.
+    session->nativeViewports={};
     session->client=nullptr;session->viewports.clear();
     // Registered native UClasses outlive every particular renderer client.
     // Keep their engine-owned roots and indexes until engine shutdown, including
