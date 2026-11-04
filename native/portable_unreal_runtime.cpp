@@ -963,6 +963,34 @@ struct RuntimeProcessLoopBinding {
     std::uint64_t lookupGeneration{};
 };
 std::optional<RuntimeProcessLoopBinding> persistentProcessLoop;
+// This capability is not a UObject/native Audio instance. The actual session
+// and Engine retain their own GC roots; these private pointers are identities
+// only and are never dereferenced before the current canonical graph is proved.
+struct RuntimeAudioOutputBinding {
+    std::shared_ptr<QuestVr::AudioOutputTransport> transport;
+    RuntimePackage* runtime{};
+    RuntimeObjectLookupControl* lookup{};
+    RuntimeObject *client{},*engine{},*viewport{};
+    std::uint64_t lookupGeneration{};
+    std::uint32_t clientIndex{},engineIndex{},viewportIndex{};
+};
+std::optional<RuntimeAudioOutputBinding> persistentAudioOutput;
+constexpr std::size_t AudioOutputCapabilityBytes() noexcept {
+    // Conservatively charge full retained capability/control storage even when
+    // the embedding owner also keeps a reference. PCM data is separately metered
+    // by AudioPcmBudget and deliberately excluded from VM/reference storage.
+    return sizeof(RuntimeAudioOutputBinding)+sizeof(QuestVr::AudioOutputTransport)+8u*sizeof(void*)+
+        sizeof(QuestVr::AudioPcmBudget)+8u*sizeof(void*)+sizeof(QuestVr::AudioOutputIdentity)+8u*sizeof(void*)+
+        QuestVr::AudioEndpointControl::RetainedBytes()+
+        sizeof(QuestVr::NativeClientLifetime)+8u*sizeof(void*);
+}
+std::size_t AudioOutputBindingBytes() noexcept {
+    return persistentAudioOutput?AudioOutputCapabilityBytes():0u;
+}
+void RetireRuntimeAudioOutput() noexcept {
+    if(persistentAudioOutput)persistentAudioOutput->transport->Revoke();
+    persistentAudioOutput.reset();
+}
 std::size_t persistentVmRootCount{};
 std::size_t ProcessLoopBindingBytes() noexcept {
     return persistentProcessLoop?sizeof(RuntimeProcessLoopBinding)+QuestVr::ProcessLoopControl::RetainedBytes():0u;
@@ -1871,6 +1899,7 @@ void ClearNativePlayerEdges() noexcept {
 }
 
 void ClearNativePlayerObjects() noexcept {
+    RetireRuntimeAudioOutput(); // Revoke before native identity/lookup retirement.
     std::vector<RuntimeQuestInputBinding>{}.swap(persistentQuestInputSources);
     ClearNativePlayerEdges();
     if(persistentEngineCollision&&persistentEngineCollision->get()&&persistentEngineCollision->get()->engine&&
@@ -11886,6 +11915,7 @@ private:
         defaults.Retain(NativeClientRootRetainedBytes());
         defaults.Retain(QuestInputSourceStorageBytes());
         defaults.Retain(ProcessLoopBindingBytes());
+        defaults.Retain(AudioOutputBindingBytes());
         if(processLoopControl_)defaults.Retain(sizeof(processLoopControl_)+sizeof(processLoopRuntime_)+sizeof(processLoopGeneration_));
         defaults.Retain(NativeCanvasInventoryBytes());
         defaults.Retain(NativeConsoleInventoryBytes());
@@ -14436,6 +14466,7 @@ void ShutdownPortableRuntime() {
     if(persistentRetailCollision && persistentRetailCollision->ReadUsage().depth)
         throw std::runtime_error("Runtime shutdown refused during an active retail collision root");
     if(persistentVmRootCount)throw std::runtime_error("Runtime shutdown refused during an active VM root");
+    RetireRuntimeAudioOutput(); // Before lookup, Engine or actual Client roots retire.
     persistentGameScriptsEnabled=false;
     persistentProcessLoop.reset(); // Unbind before any runtime/lookup/GC retirement.
     persistentRetailCollision.reset();
@@ -15232,7 +15263,9 @@ void RegisterPortableRuntimeViewport(const std::uint64_t clientIdentity,
         throw std::runtime_error("Native viewport requires an initialized engine runtime");
     persistentNativeClient.Register(clientIdentity, viewport);
 }
-void ClearPortableRuntimeClient() { ClearNativePlayerObjects(); persistentNativeClient.Clear(); }
+void ClearPortableRuntimeClient() {
+    ClearNativePlayerObjects();persistentNativeClient.Clear();
+}
 bool HasPortableRuntimeClient() { return persistentNativeClient.HasClient(); }
 std::vector<QuestVr::NativeViewport> ReadPortableRuntimeClientView() {
     const auto targets = persistentNativeClient.ReadOnlyView();
@@ -15348,6 +15381,95 @@ PortableNativeClientSessionSnapshot ReadPortableRuntimeClientSession() {
     const auto& session=*persistentPlayerSession->get();PortableActorVmHost host;
     auto result=DescribeNativeClientSession(host,session.client,session.nativeClient,session.viewports,session.nativeViewports,true);
     host.ValidateAdditionalPackageBudget(NativeClientSnapshotBytes(result));
+    return result;
+}
+
+namespace {
+RuntimeAudioOutputBinding CaptureRuntimeAudioOutputBinding(
+    const std::shared_ptr<QuestVr::AudioOutputTransport>& transport,const bool requireReady) {
+    if(!transport||!persistentRuntime||!persistentRuntime->get()||!persistentObjectLookup||
+        !persistentObjectLookup->active||!persistentObjectLookup->generation||
+        !persistentNativeClient.MatchesLifetime(transport->ClientLifetime())||
+        persistentNativeClient.ClientIdentity()!=transport->ClientIdentity())
+        throw std::runtime_error("Audio output requires its exact live runtime Client lifetime and lookup");
+    if(requireReady)transport->RequireReady();
+    const auto client=ReadPortableRuntimeClientSession();
+    if(!client.initialized||!client.clientIndex||!client.engineIndex||
+        client.clientIdentity!=transport->ClientIdentity()||
+        client.lookupGeneration!=persistentObjectLookup->generation)
+        throw std::runtime_error("Audio output requires actual initialized Client.Engine/Engine.Client ownership");
+    auto* viewport=NativeSessionViewport(transport->ViewportIdentity());
+    if(std::count_if(client.viewports.begin(),client.viewports.end(),[&](const auto& value) {
+            return value.identity==transport->ViewportIdentity()&&value.path==viewport->reflection.objectPath;
+        })!=1)
+        throw std::runtime_error("Audio output viewport is not an actual native Client.Viewports member");
+    static_cast<void>(RequireQuestViewportPayload(viewport));
+    const auto& session=*persistentPlayerSession->get();
+    RuntimeAudioOutputBinding result{transport,persistentRuntime->get(),persistentObjectLookup.get(),
+        session.client,session.nativeClient.engine,viewport,client.lookupGeneration,
+        client.clientIndex,client.engineIndex,viewport->objectIndex.Index()};
+    for(auto* object:{result.client,result.engine,result.viewport})
+        if(!object||!object->objectIndex||object->lookupControl!=persistentObjectLookup||
+            ActualLookupObject(*persistentObjectLookup,reinterpret_cast<std::uintptr_t>(object))!=object)
+            throw std::runtime_error("Audio output native tuple is absent from its exact actual object index");
+    if(!persistentNativeClient.MatchesLifetime(transport->ClientLifetime()))
+        throw std::runtime_error("Audio output Client was revoked during native provenance validation");
+    if(requireReady)transport->RequireReady();
+    return result;
+}
+bool SameRuntimeAudioOutputBinding(const RuntimeAudioOutputBinding& left,
+    const RuntimeAudioOutputBinding& right) noexcept {
+    return left.transport==right.transport&&left.runtime==right.runtime&&left.lookup==right.lookup&&
+        left.lookupGeneration==right.lookupGeneration&&left.client==right.client&&left.engine==right.engine&&
+        left.viewport==right.viewport&&left.clientIndex==right.clientIndex&&left.engineIndex==right.engineIndex&&
+        left.viewportIndex==right.viewportIndex;
+}
+} // namespace
+
+void BindPortableRuntimeAudioOutput(std::shared_ptr<QuestVr::AudioOutputTransport> transport) {
+    if(persistentVmRootCount)throw std::runtime_error("Audio output binding requires an exclusive CPU boundary");
+    auto candidate=CaptureRuntimeAudioOutputBinding(transport,true);
+    if(persistentAudioOutput) {
+        const auto current=CaptureRuntimeAudioOutputBinding(persistentAudioOutput->transport,true);
+        if(!SameRuntimeAudioOutputBinding(*persistentAudioOutput,current)||
+            !SameRuntimeAudioOutputBinding(*persistentAudioOutput,candidate))
+            throw std::runtime_error("Audio output replacement requires native Client clear/runtime shutdown");
+        return;
+    }
+    PortableActorVmHost host;host.ValidateAdditionalPackageBudget(AudioOutputCapabilityBytes());
+    // Last fallible checks precede exclusive-owner, no-allocation publication.
+    transport->RequireReady();
+    if(!persistentNativeClient.MatchesLifetime(transport->ClientLifetime()))
+        throw std::runtime_error("Audio output Client was revoked before capability publication");
+    persistentAudioOutput.emplace(std::move(candidate));
+}
+
+PortableAudioOutputSnapshot ReadPortableRuntimeAudioOutput() {
+    if(!persistentAudioOutput)return {};
+    const auto current=CaptureRuntimeAudioOutputBinding(persistentAudioOutput->transport,false);
+    if(!SameRuntimeAudioOutputBinding(*persistentAudioOutput,current))
+        throw std::runtime_error("Audio output binding belongs to a stale actual native tuple");
+    PortableAudioOutputSnapshot result;
+    result.bound=true;result.ready=current.transport->Ready();result.generation=current.transport->Generation();
+    result.clientIdentity=current.transport->ClientIdentity();result.viewportIdentity=current.transport->ViewportIdentity();
+    result.lookupGeneration=current.lookupGeneration;result.clientIndex=current.clientIndex;
+    result.engineIndex=current.engineIndex;result.viewportIndex=current.viewportIndex;
+    result.format=current.transport->Endpoint()->Format();
+    result.clientPath=current.client->reflection.objectPath;result.enginePath=current.engine->reflection.objectPath;
+    result.viewportPath=current.viewport->reflection.objectPath;
+    if(auto* audio=current.engine->nativeEngineInstance->values.audio) {
+        PortableActorVmHost host;
+        if(host.Object(audio->reflection.objectPath)!=audio)
+            throw std::runtime_error("Actual Engine.Audio path does not resolve to its current UObject");
+        result.engineAudioPath=audio->reflection.objectPath;
+    }
+    result.referenceRetainedBytes=AudioOutputBindingBytes();result.resourcePcmBytes=current.transport->RetainedPcmBytes();
+    result.pendingBatches=current.transport->PendingBatches();
+    PortableActorVmHost host;
+    auto bytes=sizeof(result);
+    for(const auto* text:{&result.clientPath,&result.enginePath,&result.viewportPath,&result.engineAudioPath})
+        bytes=QuestVr::DecalStateDetail::Add(bytes,text->capacity()+1u);
+    host.ValidateAdditionalPackageBudget(bytes);
     return result;
 }
 

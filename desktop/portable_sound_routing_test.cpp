@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "portable_object_lookup.h"
+#include "portable_process_loop.h"
 #include "quest_level_clock.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_script_state.h"
@@ -978,6 +979,97 @@ void OwnedStartupClientRouting(Fixture& fixture,const Tables& hybrid,const std::
     options.playerLogin.reset();selected(probe(options),"ServerGame",false);
     std::cout<<"OWNED STARTUP CLIENT: actual Engine None/empty Client/metadata-only/native B,A; original same-root Login protocol, generated test Game callbacks/None/long OUT, final-copyback rollback and exact native ownership; NOT playable startup.\n";
 }
+void OwnedAudioOutputBinding(Fixture& fixture,const std::function<void()>& initialize) {
+    initialize();
+    constexpr std::uint64_t clientId=8401u,viewportId=8402u;
+    auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();
+    const auto output=[&](const std::shared_ptr<QuestVr::NativeClientLifetime>& owner,bool started=true) {
+        auto endpoint=std::make_shared<QuestVr::AudioEndpointControl>(19u,owner,clientId,viewportId,
+            QuestVr::AudioOutputFormat{48'000u,2u});
+        // Explicit HOST protocol confirmation, not AAudio or headset evidence.
+        if(started)Require(endpoint->ConfirmStartedOnOwner(true),"Owned audio protocol start refused");
+        return std::make_shared<QuestVr::AudioOutputTransport>(endpoint,owner,clientId,viewportId);
+    };
+    const auto refuse=[&](const std::shared_ptr<QuestVr::AudioOutputTransport>& transport) {
+        const auto before=fixture.Snapshot("AudioBindingBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto gc=GC::GetStats();const auto lookup=ReadPortableRuntimeObjectLookup();
+        bool rejected{};
+        try {BindPortableRuntimeAudioOutput(transport);}catch(const std::exception&){rejected=true;}
+        Require(rejected,"Unauthenticated audio output binding accepted");++refusals;
+        const auto after=GC::GetStats();
+        Require(before==fixture.Snapshot("AudioBindingAfter")&&revision==GetPortableRuntimeWorldRevision()&&
+            gc.numObjects==after.numObjects&&gc.memoryUsage==after.memoryUsage&&
+            SameLookup(lookup,ReadPortableRuntimeObjectLookup()),"Refused audio binding changed native/script/save/lookup state");
+    };
+    auto transport=output(lifetime);
+    Require(!ReadPortableRuntimeAudioOutput().bound,"Fresh runtime fabricated an audio output binding");
+    refuse(transport); // No registered owner or actual Client.
+    BindPortableRuntimeClient(lifetime,clientId);
+    refuse(transport); // Raw owner descriptor alone.
+    Require(PreparePortableRuntimeClientObjects().initialized,"Cannot initialize actual Client for audio binding");
+    refuse(transport); // Actual Client, but no target or native Viewport.
+    RegisterPortableRuntimeViewport(clientId,{viewportId,1440u,1440u,3u,2u});
+    refuse(transport); // Registered target still is not Client.Viewports.
+    const auto viewport=PreparePortableRuntimePlayerObjects(viewportId);
+    const auto client=ReadPortableRuntimeClientSession();
+    refuse(output(lifetime,false)); // Real native tuple cannot authorize a Pending stream.
+    refuse(output(std::make_shared<QuestVr::NativeClientLifetime>())); // Same numeric IDs, different owner.
+    const auto before=fixture.Snapshot("AudioBoundBefore");const auto revision=GetPortableRuntimeWorldRevision();
+    const auto gc=GC::GetStats();const auto lookup=ReadPortableRuntimeObjectLookup();
+    BindPortableRuntimeAudioOutput(transport);BindPortableRuntimeAudioOutput(transport);
+    auto bound=ReadPortableRuntimeAudioOutput();
+    Require(bound.bound&&bound.ready&&bound.notAudioSubsystem&&bound.generation==19u&&
+        bound.clientIdentity==clientId&&bound.viewportIdentity==viewportId&&bound.lookupGeneration==client.lookupGeneration&&
+        bound.clientIndex==client.clientIndex&&bound.engineIndex==client.engineIndex&&bound.viewportIndex!=0u&&
+        bound.clientPath==client.clientPath&&bound.enginePath==client.enginePath&&bound.viewportPath==viewport.viewportPath&&
+        bound.engineAudioPath.empty()&&bound.referenceRetainedBytes>=sizeof(QuestVr::AudioOutputTransport)&&
+        bound.resourcePcmBytes==0u&&bound.pendingBatches==0u&&bound.format.sampleRate==48'000u&&bound.format.channels==2u,
+        "Bound output lost actual native tuple, separated PCM accounting or truthful Engine.Audio=None");
+    const auto after=GC::GetStats();
+    Require(before==fixture.Snapshot("AudioBoundAfter")&&revision==GetPortableRuntimeWorldRevision()&&
+        gc.numObjects==after.numObjects&&gc.memoryUsage==after.memoryUsage&&SameLookup(lookup,ReadPortableRuntimeObjectLookup()),
+        "Output capability binding changed UObjects, world/save or actual lookup");
+    refuse(output(lifetime)); // Even the same endpoint numbers cannot replace an existing capability.
+    const auto process=std::make_shared<QuestVr::ProcessLoopControl>();BindPortableRuntimeProcessLoop(process);
+    const auto rootBinding=ProbePortableRuntimeProcessLoop([&]{BindPortableRuntimeAudioOutput(transport);});
+    Require(!rootBinding.execution.passed()&&!rootBinding.execution.committed&&!rootBinding.completed&&
+        rootBinding.execution.error.find("exclusive CPU boundary")!=std::string::npos,
+        "Audio binding mutation was allowed inside a live VM root");++refusals;
+    Require(ReadPortableRuntimeAudioOutput().ready&&fixture.Snapshot("AudioBindingRootAfter")==before&&
+        revision==GetPortableRuntimeWorldRevision(),"Refused in-root output binding changed persistent state");
+    auto pcm=transport->PreparePcm({100,-100,200,-200},48'000u);
+    const auto withPcm=ReadPortableRuntimeAudioOutput();
+    Require(withPcm.resourcePcmBytes==transport->RetainedPcmBytes()&&withPcm.resourcePcmBytes>=8u&&
+        withPcm.referenceRetainedBytes==bound.referenceRetainedBytes,"PCM charge was hidden in VM reference-state budget");
+    QuestVr::AudioVoiceBatch batch;batch.generation=transport->Generation();batch.count=1u;
+    batch.commands[0u].operation=QuestVr::AudioVoiceOperation::Play;batch.commands[0u].voice=1u;batch.commands[0u].pcm=pcm;
+    {
+        auto canceled=transport->Reserve(batch);canceled.RequirePublishable();
+        Require(ReadPortableRuntimeAudioOutput().pendingBatches==0u,"Reserved output became visible before commit");
+    }
+    auto ticket=transport->Reserve(batch);ticket.RequirePublishable();ticket.PublishPrepared();
+    Require(ReadPortableRuntimeAudioOutput().pendingBatches==1u,"Committed queue was not reflected in bound output snapshot");
+    transport->Endpoint()->Revoke(-731);
+    const auto revoked=ReadPortableRuntimeAudioOutput();
+    Require(revoked.bound&&!revoked.ready&&revoked.engineAudioPath.empty(),"Revoked stream hid its binding or fabricated native audio");
+    refuse(transport);
+    ClearPortableRuntimeClient();
+    Require(!ReadPortableRuntimeAudioOutput().bound&&!transport->Ready(),"Native Client clear retained a usable output binding");
+    lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);
+    PreparePortableRuntimeClientObjects();RegisterPortableRuntimeViewport(clientId,{viewportId,1440u,1440u,3u,2u});
+    PreparePortableRuntimePlayerObjects(viewportId);refuse(transport);
+    auto replacement=output(lifetime);BindPortableRuntimeAudioOutput(replacement);
+    Require(ReadPortableRuntimeAudioOutput().ready,"Fresh same-ID Client could not bind its own exact capability");
+    ClearPortableRuntimeClient();
+    Require(!replacement->Ready()&&replacement->Endpoint()->Ready(),"Client clear failed transport retirement or revoked another owner's stream");
+    lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);
+    PreparePortableRuntimeClientObjects();RegisterPortableRuntimeViewport(clientId,{viewportId,1440u,1440u,3u,2u});
+    PreparePortableRuntimePlayerObjects(viewportId);auto finalOutput=output(lifetime);BindPortableRuntimeAudioOutput(finalOutput);
+    ShutdownPortableRuntime();
+    Require(!finalOutput->Ready()&&!ReadPortableRuntimeAudioOutput().bound,"Runtime shutdown retained usable audio capability");
+    std::cout<<"OWNED AUDIO OUTPUT: exact actual Client/Engine/Viewport binding, pending/metadata/stale owner refusals, PCM accounting and clear/shutdown; host protocol only, NOT original AudioSubsystem or hardware readiness.\n";
+}
+
 void OwnedActualClientRouting(const std::filesystem::path& root,bool startup=false) {
     // ScriptSaveSchema derives its game root from the actual Actor UClass's
     // source. Put verified byte-identical copies beside the generated test map
@@ -1020,6 +1112,7 @@ void OwnedActualClientRouting(const std::filesystem::path& root,bool startup=fal
         fixture.Unchanged();for(const auto& source:sources)source.Unchanged();for(const auto& source:copies)source.Unchanged();
         ShutdownPortableRuntime();GC::Collect();return;
     }
+    OwnedAudioOutputBinding(fixture,initialize);
     constexpr std::uint64_t clientId=8301u,firstId=8302u,secondId=8303u;
     const auto empty=[&](const char* label) {
         const auto before=fixture.Snapshot("OwnedEmptyBefore");const auto gc=GC::GetStats();

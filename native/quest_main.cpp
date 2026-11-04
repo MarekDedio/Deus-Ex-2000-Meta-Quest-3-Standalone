@@ -48,6 +48,7 @@
 #include "quest_native_client.h"
 #include "quest_audio_endpoint.h"
 #include "quest_audio_pcm.h"
+#include "quest_audio_transport.h"
 #include "portable_quest_input_source.h"
 #include "persona_ui_canvas.h"
 #include "quest_dialogue_ui.h"
@@ -706,10 +707,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport,
         const std::shared_ptr<QuestVr::QuestInputSource>& inputSource,
         const std::shared_ptr<QuestVr::ProcessLoopControl>& processLoop,
-        const std::shared_ptr<QuestVr::AudioEndpointControl>& audioEndpoint) {
+        const std::shared_ptr<QuestVr::AudioEndpointControl>& audioEndpoint,
+        const std::shared_ptr<QuestVr::AudioOutputTransport>& audioTransport) {
         try {
             if(!audioEndpoint)throw std::runtime_error("Initial runtime has no real audio endpoint");
             (void)audioEndpoint->RequireReady(clientLifetime,clientIdentity,viewport.identity);
+            if(!audioTransport||audioTransport->Endpoint()!=audioEndpoint||
+                audioTransport->ClientLifetime()!=clientLifetime||audioTransport->ClientIdentity()!=clientIdentity||
+                audioTransport->ViewportIdentity()!=viewport.identity)
+                throw std::runtime_error("Initial runtime audio transport does not belong to its real endpoint/Client/Viewport");
+            audioTransport->RequireReady();
             std::vector<PortablePackageTables> scripts;
             scripts.reserve(QuestVr::RuntimeScriptPackages.size());
             for (const char* packageName : QuestVr::RuntimeScriptPackages) {
@@ -800,6 +807,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 materializedClient.viewports[0u].path!=playerSession.viewportPath||playerSession.bound||
                 playerSession.clientPath!=nativeClient.clientPath)
                 throw std::runtime_error("Quest native viewport materialization changed its Client or fabricated player possession");
+            BindPortableRuntimeAudioOutput(audioTransport);
+            ALOG("DeusExQuest: real output transport bound generation=%llu; original AudioSubsystem UObject/channels remain separate",
+                static_cast<unsigned long long>(audioTransport->Generation()));
             BindPortableRuntimeQuestInputSource(viewport.identity,inputSource);
             ALOG("DeusExQuest: native player session objects ready client=%s viewport=%s class=%s bound=%s",
                 playerSession.clientPath.c_str(),playerSession.viewportPath.c_str(),
@@ -1010,7 +1020,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const auto processLoop=processLoopControl_;
             const auto audioEndpoint=BeginSilentAudioEndpoint(clientLifetime,clientIdentity,viewport.identity);
             pendingInitialLaunch_=InitialLaunch{clientLifetime,clientIdentity,viewport,inputSource,processLoop,
-                audioEndpoint,std::chrono::steady_clock::now()+std::chrono::seconds(2)};
+                audioEndpoint,nativeAudioTransport_,std::chrono::steady_clock::now()+std::chrono::seconds(2)};
             // requestStart is asynchronous. Owner Update refreshes actual
             // state/real callback evidence BEFORE starting the CPU worker.
         } catch (const std::exception& error) {
@@ -1180,6 +1190,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
         PollInitialAudioStart();
         PollAudioEndpointFailure();
+        ConsumeNativeAudioCommands();
         healthUiVisible_=beltUiVisible_=false;
         playerVisualsCanRender_=false;
         // Release any stale held input even through tracking/startup returns.
@@ -2141,6 +2152,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     struct InitialPreparation {
         bool passed{};
         std::shared_ptr<QuestVr::AudioEndpointControl> audioEndpoint;
+        std::shared_ptr<QuestVr::AudioOutputTransport> audioTransport;
         std::string error;
         MapPreparation map;
         std::vector<std::string> mapNames;
@@ -2157,6 +2169,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::shared_ptr<QuestVr::QuestInputSource> inputSource;
         std::shared_ptr<QuestVr::ProcessLoopControl> processLoop;
         std::shared_ptr<QuestVr::AudioEndpointControl> audioEndpoint;
+        std::shared_ptr<QuestVr::AudioOutputTransport> audioTransport;
         std::chrono::steady_clock::time_point audioDeadline;
     };
 
@@ -2165,13 +2178,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport,
         const std::shared_ptr<QuestVr::QuestInputSource>& inputSource,
         const std::shared_ptr<QuestVr::ProcessLoopControl>& processLoop,
-        const std::shared_ptr<QuestVr::AudioEndpointControl>& audioEndpoint) {
+        const std::shared_ptr<QuestVr::AudioEndpointControl>& audioEndpoint,
+        const std::shared_ptr<QuestVr::AudioOutputTransport>& audioTransport) {
         InitialPreparation preparation;
         preparation.audioEndpoint=audioEndpoint;
+        preparation.audioTransport=audioTransport;
         try {
             if(!audioEndpoint)throw std::runtime_error("Initial worker has no real audio capability");
             const auto output=audioEndpoint->RequireReady(clientLifetime,clientIdentity,viewport.identity);
-            if (!ValidateInitialRuntime(clientLifetime, clientIdentity, viewport,inputSource,processLoop,audioEndpoint))
+            if (!ValidateInitialRuntime(clientLifetime,clientIdentity,viewport,inputSource,processLoop,audioEndpoint,audioTransport))
                 throw std::runtime_error("initial portable runtime validation failed; see quest_main log");
             preparation.mapNames = ReadMapCatalog();
             if (!BuildQuestMapCache(gameRoot_, "00_Training"))
@@ -2212,6 +2227,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ALOG("DeusExQuest: original held-item CPU preparation unavailable: %s",
                     preparation.heldItemVisuals.error.c_str());
             (void)audioEndpoint->RequireReady(clientLifetime,clientIdentity,viewport.identity);
+            audioTransport->RequireReady();
             map.passed = map.runtimeAvailable = true;
             preparation.passed = true;
         } catch (const std::exception& error) {
@@ -2235,8 +2251,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ShutdownPortableRuntime();
         }
         initialPreparationPending_ = false;
-        if(preparation.passed&&!QuestVr::SameReadyAudioEndpoint(nativeAudioEndpoint_,preparation.audioEndpoint)) {
-            preparation.passed=false;preparation.error="Audio endpoint changed or failed during initial preparation";
+        if(preparation.passed&&(!QuestVr::SameReadyAudioEndpoint(nativeAudioEndpoint_,preparation.audioEndpoint)||
+            !nativeAudioTransport_||nativeAudioTransport_!=preparation.audioTransport||!nativeAudioTransport_->Ready())) {
+            preparation.passed=false;preparation.error="Audio output endpoint/transport changed or failed during initial preparation";
         }
         if (!preparation.passed) {
             // Future get above is the ownership barrier. Shutdown is never
@@ -2314,6 +2331,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 return;
             }
             const auto output=pending.audioEndpoint->RequireReady(pending.clientLifetime,pending.clientIdentity,pending.viewport.identity);
+            if(!nativeAudioTransport_||nativeAudioTransport_!=pending.audioTransport||
+                pending.audioTransport->Endpoint()!=pending.audioEndpoint)
+                throw std::runtime_error("Initial audio output transport changed before worker launch");
+            pending.audioTransport->RequireReady();
             audioSampleRate_=output.sampleRate; // Compatibility value, not readiness authority.
             ALOG("DeusExQuest: real audio ready generation=%llu rate=%u channels=%u state=%d callback=%s; launching initial CPU worker",
                 static_cast<unsigned long long>(pending.audioEndpoint->Generation()),output.sampleRate,output.channels,
@@ -2322,7 +2343,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pendingInitialLaunch_.reset();
             initialPreparationFuture_=std::async(std::launch::async,[launch] {
                 return PrepareInitialRuntime(launch.clientLifetime,launch.clientIdentity,launch.viewport,launch.inputSource,
-                    launch.processLoop,launch.audioEndpoint);
+                    launch.processLoop,launch.audioEndpoint,launch.audioTransport);
             });
         }catch(const std::exception& error){FailInitialPreparation(error.what(),false);}
     }
@@ -2582,6 +2603,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void RevokeNativeClientBinding() {
+        if(nativeAudioTransport_)nativeAudioTransport_->Revoke();
         if(nativeAudioEndpoint_)nativeAudioEndpoint_->Revoke();
         if (nativeClientLifetime_) nativeClientLifetime_->Revoke();
     }
@@ -7016,6 +7038,44 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
+    // Audio owner, not the real-time callback. Pop/move/destroy queue and PCM
+    // references outside the existing callback lock; Apply only copies fixed
+    // prepared state while holding that lock. Never inspect runtime UObjects.
+    void ConsumeNativeAudioCommands() {
+        const auto transport=nativeAudioTransport_;
+        if(!transport)return;
+        if(!transport->Ready()) {
+            QuestVr::AudioVoiceMixer::Retirement retired;
+            {
+                std::lock_guard<std::mutex> lock(audioMutex_);
+                // Pending is not retirement: preserve the prepared identity
+                // so later actual start proof can admit this stream's voices.
+                nativeAudioMixer_.ResetOnOwner(transport->Endpoint()->Observe()==QuestVr::AudioEndpointControl::State::Pending?
+                    transport->Identity():nullptr,retired);
+            }
+            for(std::size_t index=0u;index<QuestVr::AudioOutputTransport::BatchCapacity;++index) {
+                QuestVr::AudioVoiceBatch discarded;
+                if(!transport->PopOnOwner(discarded))break;
+            }
+            return;
+        }
+        for(std::size_t index=0u;index<QuestVr::AudioOutputTransport::BatchCapacity;++index) {
+            QuestVr::AudioVoiceBatch batch;
+            if(!transport->PopOnOwner(batch))break;
+            QuestVr::AudioVoiceMixer::Retirement retired;
+            bool applied{};
+            {
+                std::lock_guard<std::mutex> lock(audioMutex_);
+                applied=transport->Ready()&&nativeAudioTransport_==transport&&nativeAudioMixer_.Apply(batch,retired);
+            }
+            if(!applied) {
+                transport->Revoke();
+                ALOG("DeusExQuest: native audio command admission failed; output transport retired");
+                break;
+            }
+        }
+    }
+
     static aaudio_data_callback_result_t AmbientAudioCallback(
         AAudioStream*,
         void* userData,
@@ -7060,6 +7120,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 app->ambientCursor_ = (app->ambientCursor_ + 1u) % app->ambientSamples_.size();
             }
         }
+        if(context->transport&&context->transport->Ready())
+            app->nativeAudioMixer_.MixAdd(output,static_cast<std::size_t>(numFrames),context->transport->Generation());
         if (app->musicStream_ && app->musicPlaybackActive_.load(std::memory_order_acquire))
             app->musicStream_->Mix(output,static_cast<std::size_t>(numFrames),0.35f);
         for (std::size_t index = 0; index < sampleCount; ++index) {
@@ -7253,7 +7315,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::shared_ptr<QuestVr::AudioEndpointControl> BeginSilentAudioEndpoint(
         const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
         std::uint64_t clientIdentity,std::uint64_t viewportIdentity) {
-        if(ambientStream_||nativeAudioEndpoint_||audioCallbackContext_)
+        if(ambientStream_||nativeAudioEndpoint_||nativeAudioTransport_||audioCallbackContext_)
             throw std::runtime_error("Audio endpoint replacement requires owner teardown");
         if(nativeAudioGeneration_==std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error("Audio endpoint generation exhausted");
@@ -7261,7 +7323,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         auto endpoint=std::make_shared<QuestVr::AudioEndpointControl>(
             ++nativeAudioGeneration_,clientLifetime,clientIdentity,viewportIdentity,requested);
         nativeAudioEndpoint_=endpoint;
-        audioCallbackContext_=std::make_unique<AudioCallbackContext>(AudioCallbackContext{this,endpoint});
+        nativeAudioTransport_=std::make_shared<QuestVr::AudioOutputTransport>(endpoint,clientLifetime,clientIdentity,viewportIdentity);
+        QuestVr::AudioVoiceMixer::Retirement retired;
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            nativeAudioMixer_.ResetOnOwner(nativeAudioTransport_->Identity(),retired);
+        }
+        audioCallbackContext_=std::make_unique<AudioCallbackContext>(AudioCallbackContext{this,endpoint,nativeAudioTransport_});
         AAudioStreamBuilder* builder{};
         const auto created=AAudio_createStreamBuilder(&builder);
         if(created!=AAUDIO_OK||!builder) {
@@ -7321,13 +7389,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void StopAmbientAudio() {
         // A late callback may only see its OWN revoked capability. Keep its
         // immutable context alive until the owner close operation returns.
+        if(nativeAudioTransport_)nativeAudioTransport_->Revoke();
         if(nativeAudioEndpoint_)nativeAudioEndpoint_->Revoke();
         if (ambientStream_ != nullptr) {
             AAudioStream_requestStop(ambientStream_);
             AAudioStream_close(ambientStream_);
             ambientStream_ = nullptr;
         }
+        QuestVr::AudioVoiceMixer::Retirement retired;
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            nativeAudioMixer_.ResetOnOwner(nullptr,retired);
+        }
         audioCallbackContext_.reset();
+        nativeAudioTransport_.reset();
         nativeAudioEndpoint_.reset();
         preparedMapAudioEndpoint_.reset();
         dialogueDecodeAudioEndpoint_.reset();
@@ -8159,10 +8234,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     struct AudioCallbackContext {
         DeusExQuestApp* app{};
         std::shared_ptr<QuestVr::AudioEndpointControl> endpoint;
+        std::shared_ptr<QuestVr::AudioOutputTransport> transport;
     };
     AAudioStream* ambientStream_{};
     std::uint64_t nativeAudioGeneration_{};
     std::shared_ptr<QuestVr::AudioEndpointControl> nativeAudioEndpoint_;
+    std::shared_ptr<QuestVr::AudioOutputTransport> nativeAudioTransport_;
+    QuestVr::AudioVoiceMixer nativeAudioMixer_;
     std::unique_ptr<AudioCallbackContext> audioCallbackContext_;
     std::mutex audioMutex_;
     std::vector<std::int16_t> ambientSamples_;

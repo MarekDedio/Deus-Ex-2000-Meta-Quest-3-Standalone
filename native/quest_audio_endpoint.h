@@ -35,6 +35,12 @@ public:
     bool Ready() const noexcept {return Observe()==State::Ready&&client_->Alive();}
     bool CallbackObserved() const noexcept {return callbackObserved_.load(std::memory_order_acquire);}
     std::int32_t Error() const noexcept {return error_.load(std::memory_order_acquire);}
+    // Identity is not readiness: a transport can be constructed while the real
+    // stream is Pending, but no command may publish until actual start proof.
+    bool MatchesOwner(const std::shared_ptr<NativeClientLifetime>& client,
+        std::uint64_t clientIdentity,std::uint64_t viewportIdentity) const noexcept {
+        return client==client_&&clientIdentity==clientIdentity_&&viewportIdentity==viewportIdentity_;
+    }
     // Called ONLY by the registered per-stream real data callback.
     void ObserveDataCallback(std::int32_t frames) noexcept {
         if(frames>0)callbackObserved_.store(true,std::memory_order_release);
@@ -55,7 +61,7 @@ public:
     }
     AudioOutputFormat RequireReady(const std::shared_ptr<NativeClientLifetime>& client,
         std::uint64_t clientIdentity,std::uint64_t viewportIdentity) const {
-        if(!Ready()||client!=client_||clientIdentity!=clientIdentity_||viewportIdentity!=viewportIdentity_)
+        if(!Ready()||!MatchesOwner(client,clientIdentity,viewportIdentity))
             throw std::runtime_error("Audio endpoint is pending, revoked or belongs to another client/viewport");
         return format_;
     }

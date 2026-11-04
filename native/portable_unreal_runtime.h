@@ -6,6 +6,7 @@
 #include "quest_script_dispatch.h"
 #include "quest_state_frame.h"
 #include "quest_native_client.h"
+#include "quest_audio_transport.h"
 #include "quest_held_item_visual.h"
 #include "quest_linker_load_context.h"
 #include "portable_startup_weapon_types.h"
@@ -845,6 +846,25 @@ PortableNativeClientSessionSnapshot PreparePortableRuntimeClientObjects();
 // Also exposes legacy constructor-only sessions honestly as uninitialized.
 // A registered target alone is not an actual Client or native Viewport.
 PortableNativeClientSessionSnapshot ReadPortableRuntimeClientSession();
+struct PortableAudioOutputSnapshot {
+    bool bound{},ready{},notAudioSubsystem{true};
+    std::uint64_t generation{},clientIdentity{},viewportIdentity{},lookupGeneration{};
+    std::uint32_t clientIndex{},engineIndex{},viewportIndex{};
+    QuestVr::AudioOutputFormat format;
+    std::string clientPath,enginePath,viewportPath,engineAudioPath;
+    std::size_t referenceRetainedBytes{},resourcePcmBytes{},pendingBatches{};
+};
+// Independent real platform output capability, NOT Engine.Audio or a native
+// AudioSubsystem.Init. Requires the actual initialized reciprocal Engine/Client
+// pair, an actual native Client.Viewports member, exact live owner token and a
+// started output transport. Binding runs only at an exclusive CPU boundary.
+// Rebinding is idempotent only for the identical capability and native tuple;
+// a replacement requires Client clear/runtime shutdown, which revokes it first.
+void BindPortableRuntimeAudioOutput(std::shared_ptr<QuestVr::AudioOutputTransport> transport);
+// Empty when unbound. A bound snapshot reauthenticates native provenance and
+// reports external stream revocation as ready=false. PCM has its own resource
+// budget and is never hidden in VM reference-state accounting.
+PortableAudioOutputSnapshot ReadPortableRuntimeAudioOutput();
 struct PortablePlayerSessionSnapshot {
     std::uint64_t clientIdentity{}, viewportIdentity{};
     std::string clientPath, viewportPath, viewportClassPath, playerPath;

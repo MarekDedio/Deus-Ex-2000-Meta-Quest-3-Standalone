@@ -1,5 +1,39 @@
 # Port status
 
+## Latest verified implementation: Quest audio output handoff (2026-11-04)
+
+The [Quest output transport](QUEST-AUDIO-OUTPUT-TRANSPORT.md) now connects an
+exact real AAudio endpoint/Client lifetime to the CPU worker, bounded reserved
+command queue, owner admission and callback stereo PCM mixer. Actual native
+Client.Engine/Engine.Client/Viewports provenance is required before runtime
+binding; target metadata and matching numeric IDs alone are insufficient.
+Teardown revokes before native-root retirement and retains real callback userdata
+through stream close. Existing ambience/music/dialogue remain separate and an
+empty native mixer leaves their output unchanged.
+
+This is NOT an AudioSubsystem UObject/Class, original channel/spatial provider,
+committing Training startup or finished live crate damage/loot/gravity. No new
+APK or headset verification is claimed. The full objective remains unfinished;
+first Training stays the immediate gameplay priority, without other-map work.
+
+Initial host protocol/PCM tests pass326 checks/50 refusals, with24,000 SPSC
+publications/mixed PCM frames; ten repeat runs also pass. Endpoint/WAV158/12,
+generated sound2690/24, owned binding/local sound72543/12 and owned startup
+protocol72880/21 pass. Desktop focused, Android native link and strict ARM64
+checks pass. Full desktop rebuild and CTest pass264 executed/325 registered/
+61 explicit owned-data skips/zero failures in166.68s. The separate owned modes
+above supply their own original-package evidence rather than converting skips
+into passes.
+
+The actual first-Training regression completes in823.155s under concurrent build
+load, retaining267089 instructions/38087 writes and native work14254762/16777216.
+Initial Input/reset/reconciliation/pre-post/rate prefix and non-Entry brush
+tracking finish inside the same nonpublishing root. It reaches exactly the
+existing unsupported post-partition Client/player/detail boundary, with full
+save/state/revision/hash/RNG/client/lookup/Actor/GC rollback and45 owned sources
+unchanged. This is expected-boundary evidence, NOT successful or playable startup.
+The long probe does not pretend a host-confirmed output is hardware readiness.
+
 ## Latest source continuation: audio defaults and voice consumer (2026-11-04)
 
 External PE-as-data reads now trace fresh audio counter initialization through

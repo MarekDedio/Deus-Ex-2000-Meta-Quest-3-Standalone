@@ -56,3 +56,8 @@ its exact later post-partition refusal in591.794s with267089 instructions/
 finds1940 frozen compiler inputs,45 originals,3 selected assets and4 source DLLs
 unchanged, with zero live jobs and no new APK. The expected later refusal is
 not playable startup; no headset acceptance is implied by these host results.
+
+The subsequent [Quest output transport](QUEST-AUDIO-OUTPUT-TRANSPORT.md) adds
+an exact real-output capability and owner/callback PCM handoff. It is separate
+from this routing work and does not yet implement the original AudioSubsystem
+UObject/channel selection or make first Training startup/crates playable.
