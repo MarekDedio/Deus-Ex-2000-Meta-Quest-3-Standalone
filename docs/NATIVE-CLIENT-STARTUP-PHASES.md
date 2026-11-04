@@ -1,0 +1,107 @@
+# Native Client and viewport startup phases
+
+Implementation batch2026-11-04, focused and broad verification passed. Immediate integration
+target is the first `00_Training` map. This is an engine startup prerequisite,
+not an account login or character-creation interface, and not a playable APK.
+
+## Separate identities
+
+`BindPortableRuntimeClient` owns the revocable embedding lifetime;
+`RegisterPortableRuntimeViewport` registers bounded stereo-target metadata.
+Neither operation constructs a game Client or adds a native Viewport UObject.
+
+`PreparePortableRuntimeClientObjects` now explicitly constructs the actual
+Client and performs the audited base Client.Init Engine-pointer store. It
+requires the prepared genuine Engine and a live owner lease, but no registered
+target. It does not require the Player/Actor schema or register Viewport's
+UClass. It creates no Viewport, Canvas, Console, Input, Pawn or window.
+
+`ReadPortableRuntimeClientSession` reports actual native viewports in their
+array order, separately from `registeredTargets`. Its `initialized` value is
+derived from the authenticated Client.Engine/Engine.Client pair, never from a
+synthetic readiness bit, target registration, tracking or possession. A typed
+session-owned payload retains the actual Engine backpointer and client
+identity. GC marks that edge; session byte accounting includes its storage.
+
+`PreparePortableRuntimePlayerObjects(viewportIdentity)` remains the explicit
+native viewport-materialization entry. Its original constructor-only fixture
+profile can operate before Engine preparation, and such a Client is reported
+honestly as uninitialized. The explicit Client-only entry can bind the real
+Engine later without replacing an existing Client or viewport identity.
+Engine construction itself no longer imports half of that pair from an earlier
+constructor-only session: explicit Client.Init owns both edges together.
+
+## Atomic ownership and teardown
+
+Both preparation entries share one staged publication path. Client-only mode
+skips Player/Actor validation and viewport allocation. Requested viewport mode
+validates the real metadata and registered target before staging its UObject,
+payload and array append. Identity/header snapshots, lookup records, map
+capacity and package-byte admission are prepared before publication. A final
+lease/lookup/Engine-authority check precedes nonthrowing publication of the
+indexes, session arrays and reciprocal Engine edge. Session preparation is
+refused inside an active VM root; it cannot create unjournaled native state in
+the middle of a script transaction. Already initialized Client preparation and
+already materialized viewport preparation are idempotent.
+
+Client teardown clears Engine.Client and the typed Client payload, retires
+the concrete objects and clears viewport payloads. Persistent native UClasses
+survive until engine shutdown; active transaction roots are not prematurely
+collected. Actor checkpoints do not serialize these engine-session objects.
+
+## Verification scope
+
+The new owned regression covers zero-target Client initialization, no implicit
+Viewport UClass/instance or player/UI/input allocation, real Engine identity,
+metadata-only registration, explicit ordered viewport appends, idempotence,
+missing-Engine/unknown/stale/revoked refusals, whole checkpoint/lookup/GC
+protection, late Engine construction followed by explicit Client.Init,
+teardown and more than16 initialized sequential client lifetimes.
+The first run exposed a fixture error: untyped ANY_PACKAGE lookup matched
+`Engine.Console.Viewport`, a Property rather than a UClass. The revised
+Class/Engine-Outer lookup then reproduced the real late-Engine half-binding
+failure. Both failed runs are retained. Corrected focused desktop and
+Android-native builds pass, as do strict ARM64 runtime/helper checks. The
+expanded owned regression passes10698 checks/98 refusal controls, including
+the late-Engine upgrade and all18 sequential generations. Console5505/34 and
+input-alias80/10 and Root input300/10 also pass. The actual first-Training
+regression passes its expected-boundary check in675.572s with267089 original
+instructions/38087 writes: Init/ReadInput/laterReset checks remain valid, complete
+save/state/revision/hash/RNG/client/lookup/Actor/GC rollback passes,45 original
+sources are unchanged and immutable Model replacement starts cold. It still
+reaches the same explicit post-partition client/player/detail refusal. No
+startup is published. The full desktop rebuild passes. CTest passes262 executed
+of321 registered, with59 explicit owned-data skips and zero failures in184.54s;
+the relevant owned regressions above ran separately. Final audit verifies1934
+frozen compiler inputs,45 originals,3 selected assets and4 source DLLs unchanged,
+with zero live native jobs and no new APK. These are not playable-world results.
+
+The source contract is in ORIGINAL-QUEST-INPUT-PROVIDER.md: original UClient
+construction creates an empty viewport array, base Init stores Engine, and
+actual NewViewport later appends its instance. PE32 offsets identify the owned
+source behavior only; portable layouts are not inferred from them. Original
+commercial binaries remain read-only data and are never loaded or executed.
+
+## Remaining production integration
+
+This API split does not complete initial GameEngine.Init. The Android demo
+still loads a dormant map. Original initial map startup, explicit viewport
+construction/Canvas/Input/Console/player sequence, concrete audio/render
+readiness, detail callbacks and the final URL/config tail remain required.
+
+Existing startup/sound/decal consumers and transaction viewport guards still
+use the raw target registry; they must migrate to the actual Client array
+with correct ownership and empty-array semantics. This batch does not silently
+equate registered targets with created viewports or claim that migration is
+already complete. Local-player Walking/Falling, tracked pose/aim, original
+weapon routing and committed crate/loot/debris scheduling remain separate live
+Training integration work. See ORIGINAL-PLAYER-WALKING-CONTINUATION.md.
+
+The follow-on lifetime review also identifies rollback hazards not covered by
+this API split: raw HasClient can restore old player pairings after a clear and
+same-ID rebind, while an Input COW before-image can restore retired owner/
+Viewport/initialization references after Clear. Lookup retirement still denies
+ordinary access, but the graph references and retirement invariants need a
+nonthrowing exact-owner/generation guard. Canvas/Console peer restoration and
+authoritative native-None binding require the same review. These are remaining
+implementation requirements, not verified fixes in this batch.

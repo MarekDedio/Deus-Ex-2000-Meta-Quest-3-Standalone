@@ -825,6 +825,26 @@ void RegisterPortableRuntimeViewport(std::uint64_t clientIdentity,
 void ClearPortableRuntimeClient();
 bool HasPortableRuntimeClient();
 std::vector<QuestVr::NativeViewport> ReadPortableRuntimeClientView();
+struct PortableNativeClientSessionSnapshot {
+    struct Viewport { std::uint64_t identity{}; std::string path; };
+    std::uint64_t clientIdentity{},lookupGeneration{};
+    std::uint32_t clientIndex{},engineIndex{};
+    std::string clientPath,clientClassPath,clientOuterPath,enginePath;
+    std::int32_t clientObjectFlags{};
+    // Derived from the authenticated native Client.Engine/Engine.Client pair,
+    // never from target registration, a synthetic ready flag or possession.
+    bool initialized{};
+    std::vector<Viewport> viewports; // Actual native Client array, in order.
+    std::vector<QuestVr::NativeViewport> registeredTargets; // XR metadata only.
+};
+// Constructs the actual Client and executes the audited base Client.Init
+// Engine backpointer store on the exclusive CPU owner. Requires the genuine
+// prepared Engine and live owner lease, but NO registered stereo target.
+// Does not create a Viewport, Canvas, Input, Console, Pawn or open a window.
+PortableNativeClientSessionSnapshot PreparePortableRuntimeClientObjects();
+// Also exposes legacy constructor-only sessions honestly as uninitialized.
+// A registered target alone is not an actual Client or native Viewport.
+PortableNativeClientSessionSnapshot ReadPortableRuntimeClientSession();
 struct PortablePlayerSessionSnapshot {
     std::uint64_t clientIdentity{}, viewportIdentity{};
     std::string clientPath, viewportPath, viewportClassPath, playerPath;

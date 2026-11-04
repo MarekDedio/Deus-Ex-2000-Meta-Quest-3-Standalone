@@ -1,5 +1,14 @@
 # Engine-owned native client and Quest viewport
 
+2026-11-04 continuation: Client construction/base Init and explicit native
+viewport creation now have separate staging entries; see
+NATIVE-CLIENT-STARTUP-PHASES.md for implementation and current verification
+status. The raw target registry below remains embedding metadata, not the
+actual Client viewport UObject array. Consumer migration and the original
+initial startup driver remain pending. Engine construction no longer imports
+only Engine.Client from a constructor-only session: explicit Client.Init owns
+the reciprocal Client.Engine/Engine.Client pair. No playable APK is implied.
+
 Added2026-10-12. This supplies original client/viewport entry state, not player
 possession, accepted world startup or successful native decal rendering. The
 original entry and bootstrap authority is in [DECAL-NATIVE-CONTRACT.md](DECAL-NATIVE-CONTRACT.md)

@@ -1,5 +1,38 @@
 # Port status
 
+## Latest: separate native Client initialization (verified2026-11-04)
+
+Client-only preparation and actual-client snapshots now distinguish genuine
+Client.Engine/Engine.Client ownership from registered stereo-target metadata.
+The common staged publication preserves explicit viewport construction and
+legacy constructor-only fixtures; Client-only mode requires no target and
+does not create a Viewport, Canvas, Console, Input or Pawn. The actual Engine
+backpointer is rooted, accounted and cleared during session teardown.
+
+First desktop/Android-native/strict runtime builds pass, but the first owned
+run exposed a test lookup error: ANY_PACKAGE returned Console.Viewport, a
+Property rather than a UClass. Corrected Class/Outer lookup then reproduced
+the real late-Engine half-binding defect. The Engine constructor's implicit
+one-sided client join is removed; explicit Client.Init now owns both edges.
+Corrected focused desktop/Android-native and strict ARM64 runtime/helper
+builds pass. Owned Client/viewport10698/98, Console5505/34 and alias80/10
+and Root input300/10 regressions pass. Actual first Training retains the same
+explicit later startup refusal in675.572s/267089 instructions/38087 writes.
+Init/read/rate/laterReset checks, full save/state/revision/hash/RNG/client/
+lookup/Actor/GC rollback,45 unchanged original sources and cold Model
+replacement pass. This expected-boundary diagnostic publishes no startup.
+The full desktop rebuild passes. CTest passes262 executed/321 registered/59
+explicit owned-data skips/zero failures in184.54s. Final audit verifies1934
+frozen compiler inputs,45 originals,3 selected assets and4 source DLLs unchanged,
+with zero live native jobs. These are not completed startup or gameplay
+acceptance results.
+
+Actual startup/sound/decal loops still need migration from raw target metadata
+to the real Client array. The initial driver, audio/render/detail, local-player
+movement/aim and committed crate/loot/physics integration remain pending.
+First Training remains the immediate goal, and no new APK has been packaged.
+See NATIVE-CLIENT-STARTUP-PHASES.md for exact scope and verification history.
+
 ## Latest: native viewport session reuse (verified2026-11-03)
 
 The new owned regression reproduced retained payload-slot exhaustion after

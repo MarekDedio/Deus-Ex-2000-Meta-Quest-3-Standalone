@@ -1181,6 +1181,12 @@ std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& dom
 // Actual embedding-owned engine client/render-target registrations. No UObject
 // or map actor is synthesized; the render owner revokes only its atomic lease.
 QuestVr::NativeClientRegistry persistentNativeClient;
+struct RuntimeQuestClientPayload {
+    // Audited UClient.Init stores the actual Engine pointer. No readiness bit:
+    // successful binding is authenticated against the reverse Engine edge.
+    RuntimeObject* engine{};
+    std::uint64_t clientIdentity{};
+};
 struct RuntimeQuestViewportPayload {
     RuntimeObject* viewport{};
     // Actual base native viewport tail, established before platform OpenWindow.
@@ -1191,11 +1197,13 @@ struct RuntimeQuestViewportPayload {
 };
 struct RuntimePlayerSession final : GCObject {
     RuntimeObject* client{};
+    RuntimeQuestClientPayload nativeClient{};
     std::vector<RuntimeObject*> classes, viewports;
     std::array<RuntimeQuestViewportPayload,QuestVr::NativeClientRegistry::MaximumViewports> nativeViewports{};
 protected:
     GCAllocation* Mark(GCAllocation* marklist) override {
         marklist=GC::MarkObject(marklist,client);
+        marklist=GC::MarkObject(marklist,nativeClient.engine);
         for(auto* object:classes) marklist=GC::MarkObject(marklist,object);
         for(auto* object:viewports) marklist=GC::MarkObject(marklist,object);
         for(const auto& native:nativeViewports)marklist=GC::MarkObject(marklist,native.renderDevice);
@@ -1901,6 +1909,7 @@ void ClearNativePlayerObjects() noexcept {
     // the viewport array so sequential sessions can reuse the live-slot bound.
     // In-flight journals retain their own roots; do not collect them here.
     session->nativeViewports={};
+    session->nativeClient={};
     session->client=nullptr;session->viewports.clear();
     // Registered native UClasses outlive every particular renderer client.
     // Keep their engine-owned roots and indexes until engine shutdown, including
@@ -15227,6 +15236,118 @@ std::vector<QuestVr::NativeViewport> ReadPortableRuntimeClientView() {
     return {targets.begin(), targets.end()};
 }
 
+namespace {
+std::int32_t NativeSessionHeader(PortableActorVmHost& host,RuntimeObject* object) {
+    if(!object||!object->cls||!object->lookupName||!object->objectIndex)
+        throw std::runtime_error("Native session UObject has no actual header identity");
+    const auto read=[&](const char* key,QuestVr::Vm::Kind kind) {
+        const auto field=host.DescribeProperty(key);
+        if(field.zero.kind!=kind||field.arrayDimension!=1u||!host.OwnsProperty(object->cls,field))
+            throw std::runtime_error("Native session header declaration has wrong type/ownership");
+        auto value=host.Read(object,field,0u);
+        if(value.kind!=kind)throw std::runtime_error("Native session header value has wrong type");
+        return value;
+    };
+    const auto flags=read("Core.Object.ObjectFlags",QuestVr::Vm::Kind::Int).integer;
+    if(read("Core.Object.Class",QuestVr::Vm::Kind::Object).text!=object->cls->reflection.objectPath||
+        read("Core.Object.Name",QuestVr::Vm::Kind::Name).text!=object->lookupName->ToString()||
+        read("Core.Object.Outer",QuestVr::Vm::Kind::Object).text!=
+            (object->outer?object->outer->reflection.objectPath:std::string{})||
+        flags!=static_cast<std::int32_t>(object->reflection.flags))
+        throw std::runtime_error("Native session reflected/native headers disagree");
+    return flags;
+}
+using NativeViewportPayloads=decltype(RuntimePlayerSession::nativeViewports);
+PortableNativeClientSessionSnapshot DescribeNativeClientSession(PortableActorVmHost& host,
+    RuntimeObject* client,const RuntimeQuestClientPayload& nativeClient,
+    const std::vector<RuntimeObject*>& viewports,const NativeViewportPayloads& payloads,
+    const bool published) {
+    const auto identity=persistentNativeClient.ClientIdentity();
+    if(!identity||!client||client->nativeClientIdentity!=identity||client->nativeViewportIdentity||
+        nativeClient.clientIdentity!=identity||!client->cls||
+        client->cls->reflection.objectPath!="Engine.Client"||!IsDerivedFromPath(client->cls,"Core.Object")||
+        (published&&host.Object(client->reflection.objectPath)!=client))
+        throw std::runtime_error("Native Client lost its actual current session identity");
+    PortableNativeClientSessionSnapshot result;
+    result.clientIdentity=identity;result.clientIndex=client->objectIndex.Index();
+    result.clientPath=client->reflection.objectPath;result.clientClassPath=client->cls->reflection.objectPath;
+    result.clientOuterPath=client->outer?client->outer->reflection.objectPath:std::string{};
+    result.clientObjectFlags=NativeSessionHeader(host,client);
+    if(persistentObjectLookup) {
+        if(!persistentObjectLookup->active)throw std::runtime_error("Native Client lookup was revoked");
+        result.lookupGeneration=persistentObjectLookup->generation;
+        if(published&&client->lookupControl!=persistentObjectLookup)
+            throw std::runtime_error("Native Client lookup belongs to another engine generation");
+    }
+    if(auto* engine=nativeClient.engine) {
+        if(!persistentEngineCollision||!persistentEngineCollision->get()||
+            persistentEngineCollision->get()->engine!=engine||!ActualNativeCollisionObjectValid(engine)||
+            !engine->nativeEngineInstance||host.Object(engine->reflection.objectPath)!=engine||
+            (published&&engine->nativeEngineInstance->values.client!=client))
+            throw std::runtime_error("Native Client.Engine/Engine.Client pair is not authentic");
+        result.enginePath=engine->reflection.objectPath;result.engineIndex=engine->objectIndex.Index();
+        // In staged mode, the caller has authenticated the current old edge;
+        // its no-throw publication below writes the matching new reverse edge.
+        result.initialized=true;
+    } else if(published&&persistentEngineCollision&&persistentEngineCollision->get()&&
+        persistentEngineCollision->get()->engine&&persistentEngineCollision->get()->engine->nativeEngineInstance&&
+        persistentEngineCollision->get()->engine->nativeEngineInstance->values.client==client)
+        throw std::runtime_error("Native Client has a reverse Engine edge but no actual backpointer");
+    result.registeredTargets=ReadPortableRuntimeClientView();
+    if(viewports.size()>QuestVr::NativeClientRegistry::MaximumViewports)
+        throw std::runtime_error("Native Client actual viewport array exceeds its live bound");
+    result.viewports.reserve(viewports.size());
+    for(auto* viewport:viewports) {
+        if(!viewport||viewport->outer!=client||viewport->nativeClientIdentity!=identity||
+            !viewport->nativeViewportIdentity||!viewport->cls||!IsDerivedFromPath(viewport->cls,"Engine.Player")||
+            (published&&host.Object(viewport->reflection.objectPath)!=viewport))
+            throw std::runtime_error("Native Client actual viewport array has a foreign/stale member");
+        static_cast<void>(NativeSessionHeader(host,viewport));
+        if(std::any_of(result.viewports.begin(),result.viewports.end(),[&](const auto& entry) {
+                return entry.identity==viewport->nativeViewportIdentity||entry.path==viewport->reflection.objectPath;
+            })||std::none_of(result.registeredTargets.begin(),result.registeredTargets.end(),[&](const auto& target) {
+                return target.identity==viewport->nativeViewportIdentity;
+            }))throw std::runtime_error("Native Client viewport is duplicated or has no registered target");
+        const auto count=std::count_if(payloads.begin(),payloads.end(),[&](const auto& payload) {
+            return payload.viewport==viewport&&payload.clientIdentity==identity&&
+                payload.viewportIdentity==viewport->nativeViewportIdentity&&payload.renderSlotBound;
+        });
+        if(count!=1)throw std::runtime_error("Native Client viewport has no unique authentic payload");
+        if(published&&persistentObjectLookup&&viewport->lookupControl!=persistentObjectLookup)
+            throw std::runtime_error("Native viewport lookup belongs to another engine generation");
+        result.viewports.push_back({viewport->nativeViewportIdentity,viewport->reflection.objectPath});
+    }
+    for(const auto& payload:payloads)if(payload.viewport&&
+        std::find(viewports.begin(),viewports.end(),payload.viewport)==viewports.end())
+        throw std::runtime_error("Native Client retains a payload outside its actual viewport array");
+    if(identity!=persistentNativeClient.ClientIdentity())
+        throw std::runtime_error("Native Client was revoked during its snapshot");
+    return result;
+}
+std::size_t NativeClientSnapshotBytes(const PortableNativeClientSessionSnapshot& snapshot) {
+    using QuestVr::DecalStateDetail::Add;
+    auto bytes=sizeof(snapshot)+snapshot.viewports.capacity()*sizeof(PortableNativeClientSessionSnapshot::Viewport)+
+        snapshot.registeredTargets.capacity()*sizeof(QuestVr::NativeViewport);
+    for(const auto* text:{&snapshot.clientPath,&snapshot.clientClassPath,&snapshot.clientOuterPath,&snapshot.enginePath})
+        bytes=Add(bytes,text->capacity()+1u);
+    for(const auto& viewport:snapshot.viewports)bytes=Add(bytes,viewport.path.capacity()+1u);
+    return bytes;
+}
+struct NativeSessionPreparationSnapshots {
+    PortableNativeClientSessionSnapshot client;
+    PortablePlayerSessionSnapshot player;
+};
+} // namespace
+
+PortableNativeClientSessionSnapshot ReadPortableRuntimeClientSession() {
+    if(!persistentPlayerSession||!persistentPlayerSession->get()||!persistentPlayerSession->get()->client)
+        throw std::runtime_error("No actual native Client UObject is constructed");
+    const auto& session=*persistentPlayerSession->get();PortableActorVmHost host;
+    auto result=DescribeNativeClientSession(host,session.client,session.nativeClient,session.viewports,session.nativeViewports,true);
+    host.ValidateAdditionalPackageBudget(NativeClientSnapshotBytes(result));
+    return result;
+}
+
 PortablePlayerSessionSnapshot ReadPortableRuntimePlayerSession(const std::uint64_t viewportIdentity) {
     auto* viewport=NativeSessionViewport(viewportIdentity);
     auto* session=persistentPlayerSession->get();
@@ -15268,34 +15389,62 @@ PortablePlayerSessionSnapshot ReadPortableRuntimePlayerSession(const std::uint64
     return result;
 }
 
-PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uint64_t viewportIdentity) {
+namespace {
+NativeSessionPreparationSnapshots PrepareNativeSessionObjects(const std::optional<std::uint64_t> requestedViewport,
+    const bool requireEngine) {
     CollectBirthGarbageAtBoundary collect;
+    if(persistentVmRootCount)throw std::runtime_error("Native session preparation requires an exclusive CPU boundary");
     if(!persistentRuntime || !persistentRuntime->get() || !persistentNativeClient.HasClient())
         throw std::runtime_error("Player UObject preparation requires a genuine live native client");
+    const auto clientIdentity=persistentNativeClient.ClientIdentity();
+    const auto lookupOwner=persistentObjectLookup;
+    const auto lookupGeneration=lookupOwner?lookupOwner->generation:0u;
     const auto registered=persistentNativeClient.ReadOnlyView();
-    if(std::none_of(registered.begin(),registered.end(),[&](const auto& viewport) {return viewport.identity==viewportIdentity;}))
+    if(requestedViewport&&std::none_of(registered.begin(),registered.end(),[&](const auto& viewport) {
+            return viewport.identity==*requestedViewport;
+        }))
         throw std::runtime_error("Player UObject preparation requires a registered live viewport");
-    if(persistentPlayerSession)
+    if(requestedViewport&&persistentPlayerSession)
         for(auto* viewport:persistentPlayerSession->get()->viewports)
-            if(viewport->nativeViewportIdentity==viewportIdentity) return ReadPortableRuntimePlayerSession(viewportIdentity);
+            if(viewport->nativeViewportIdentity==*requestedViewport)
+                return {ReadPortableRuntimeClientSession(),ReadPortableRuntimePlayerSession(*requestedViewport)};
     PortableActorVmHost host;
-    auto* playerClass=host.Object("Engine.Player");auto* objectClass=host.Object("Core.Object");
-    if(!playerClass->classDescriptor || !objectClass->classDescriptor ||
-        !IsDerivedFromPath(playerClass,"Core.Object"))
-        throw std::runtime_error("Native viewport requires original Engine.Player/Core.Object UClass metadata");
+    RuntimeObject* engineClientOwner{};
+    if(persistentEngineCollision) {
+        if(!persistentEngineCollision->get()||!(engineClientOwner=persistentEngineCollision->get()->engine)||
+            !ActualNativeCollisionObjectValid(engineClientOwner)||!engineClientOwner->nativeEngineInstance||
+            host.Object(engineClientOwner->reflection.objectPath)!=engineClientOwner)
+            throw std::runtime_error("Native Client.Init requires the genuine current Engine");
+    }
+    if(requireEngine&&!engineClientOwner)
+        throw std::runtime_error("Native Client.Init requires the prepared actual Engine, not just render metadata");
+    auto* previousClient=persistentPlayerSession?persistentPlayerSession->get()->client:nullptr;
+    auto* previousEngineClient=engineClientOwner?engineClientOwner->nativeEngineInstance->values.client:nullptr;
+    if(previousEngineClient&&previousEngineClient!=previousClient)
+        throw std::runtime_error("Native Engine.Client already belongs to another session");
+    if(previousClient) {
+        auto existing=ReadPortableRuntimeClientSession();
+        if(!requestedViewport&&existing.initialized)
+            return {std::move(existing),{}};
+    }
+    auto* objectClass=host.Object("Core.Object");
+    auto* playerClass=requestedViewport?host.Object("Engine.Player"):nullptr;
+    if(!objectClass->classDescriptor||(playerClass&&(!playerClass->classDescriptor||!IsDerivedFromPath(playerClass,"Core.Object"))))
+        throw std::runtime_error("Native Client/Viewport requires original Core.Object/Player metadata");
     using Kind=QuestVr::Vm::Kind;
     for(const auto& [key,kind]:{
             std::pair{"Core.Object.Class",Kind::Object},std::pair{"Core.Object.Name",Kind::Name},
             std::pair{"Core.Object.Outer",Kind::Object},std::pair{"Core.Object.ObjectFlags",Kind::Int}}) {
         const auto field=host.DescribeProperty(key);
         if(LowerAscii(field.key)!=LowerAscii(key) || field.zero.kind!=kind || field.arrayDimension!=1u ||
-            !host.OwnsProperty(objectClass,field) || !host.OwnsProperty(playerClass,field))
+            !host.OwnsProperty(objectClass,field) || (playerClass&&!host.OwnsProperty(playerClass,field)))
             throw std::runtime_error("Native player UObject identity schema is malformed: "+std::string(key));
     }
-    const auto actorField=host.DescribeProperty("Engine.Player.Actor");
-    if(actorField.zero.kind!=QuestVr::Vm::Kind::Object || actorField.arrayDimension!=1u ||
-        !host.OwnsProperty(playerClass,actorField))
-        throw std::runtime_error("Native viewport requires the actual Engine.Player.Actor declaration");
+    if(playerClass) {
+        const auto actorField=host.DescribeProperty("Engine.Player.Actor");
+        if(actorField.zero.kind!=QuestVr::Vm::Kind::Object||actorField.arrayDimension!=1u||!host.OwnsProperty(playerClass,actorField))
+            throw std::runtime_error("Native viewport requires the actual Engine.Player.Actor declaration");
+    }
     pendingBirthGarbage=true;
     GCRoot<RuntimePlayerSession> staged(persistentPlayerSession ? persistentPlayerSession->get() : GC::Alloc<RuntimePlayerSession>());
     auto* session=staged.get();
@@ -15342,24 +15491,23 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
         cls->references.push_back(base);classes.push_back(cls);index(cls);return cls;
     };
     auto* clientClass=nativeClass("Engine.Client",objectClass);
-    auto* viewportClass=nativeClass("Engine.Viewport",playerClass);
-    const auto clientIdentity=persistentNativeClient.ClientIdentity();
+    auto* viewportClass=playerClass?nativeClass("Engine.Viewport",playerClass):nullptr;
     auto* client=session->client;
     const bool newClient=client==nullptr;
     if(!client) {
         const auto name="QuestClient"+std::to_string(clientIdentity);
         client=allocate(name,name,clientClass,nullptr);client->nativeClientIdentity=clientIdentity;index(client);
     }
-    const auto name="QuestViewport"+std::to_string(viewportIdentity);
-    auto* viewport=allocate(client->reflection.objectPath+'.'+name,name,viewportClass,client);
-    viewport->nativeClientIdentity=clientIdentity;viewport->nativeViewportIdentity=viewportIdentity;
-    const auto freePayload=std::find_if(payloads.begin(),payloads.end(),[](const auto& entry){return !entry.viewport;});
-    if(freePayload==payloads.end())throw std::runtime_error("Quest native viewport payload capacity exhausted");
-    // UViewport native sizeF8 extends UPlayer5C. Original default construction
-    // zeroes [5C,F8), its static constructor is UObject's no-op, and neither
-    // base/native platform constructor writes RenDev+64. Copy that typed
-    // pre-open baseline into the explicit Quest adapter; OpenWindow is separate.
-    *freePayload={viewport,nullptr,clientIdentity,viewportIdentity,true,false};
+    RuntimeObject* viewport{};
+    if(requestedViewport) {
+        const auto name="QuestViewport"+std::to_string(*requestedViewport);
+        viewport=allocate(client->reflection.objectPath+'.'+name,name,viewportClass,client);
+        viewport->nativeClientIdentity=clientIdentity;viewport->nativeViewportIdentity=*requestedViewport;
+        const auto freePayload=std::find_if(payloads.begin(),payloads.end(),[](const auto& entry){return !entry.viewport;});
+        if(freePayload==payloads.end())throw std::runtime_error("Quest native viewport payload capacity exhausted");
+        // Genuine pre-OpenWindow base tail: no claimed renderer or window.
+        *freePayload={viewport,nullptr,clientIdentity,*requestedViewport,true,false};
+    }
     // Concrete native UObject fields are independent of map Actors. Identity
     // fields use their actual loaded declarations, not package table indices.
     for(auto* object:{newClient ? client : nullptr,viewport}) {
@@ -15371,7 +15519,21 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
             object->outer ? object->outer->reflection.objectPath : std::string{});
         object->scriptValues["objectflags"][0u]=QuestVr::Vm::Value::Integer(static_cast<std::int32_t>(object->reflection.flags));
     }
-    index(viewport);viewports.push_back(viewport);
+    if(viewport){index(viewport);viewports.push_back(viewport);}
+    const RuntimeQuestClientPayload nativeClient{engineClientOwner,clientIdentity};
+    NativeSessionPreparationSnapshots result;
+    result.client=DescribeNativeClientSession(host,client,nativeClient,viewports,payloads,false);
+    if(viewport) {
+        auto& player=result.player;
+        player.clientIdentity=clientIdentity;player.viewportIdentity=*requestedViewport;
+        player.clientPath=client->reflection.objectPath;player.viewportPath=viewport->reflection.objectPath;
+        player.viewportClassPath=viewport->cls->reflection.objectPath;player.viewportOuterPath=client->reflection.objectPath;
+        player.clientObjectFlags=result.client.clientObjectFlags;
+        player.viewportObjectFlags=NativeSessionHeader(host,viewport);
+        for(const auto& target:result.client.registeredTargets)if(target.identity==*requestedViewport)player.viewport=target;
+        if(player.viewport.identity!=*requestedViewport||viewport->nativeViewportActor)
+            throw std::runtime_error("New native viewport has no target or fabricated an Actor");
+    }
     auto newOwner=persistentPlayerSession ? std::unique_ptr<GCRoot<RuntimePlayerSession>>{} :
         std::make_unique<GCRoot<RuntimePlayerSession>>(session);
     if(clientIdentity!=persistentNativeClient.ClientIdentity())
@@ -15389,18 +15551,22 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
         allocations.capacity()*sizeof(GCRoot<RuntimeObject>)+allocations.size()*sizeof(GCRootNode)+sizeof(GCRootNode)+sizeof(payloads);
     if(!persistentPlayerSession)extra=Add(extra,sizeof(RuntimePlayerSession)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimePlayerSession>)+sizeof(GCRootNode));
     for(const auto& object:allocations)extra=Add(extra,NativeSessionObjectBytes(object.get()));
+    extra=Add(extra,sizeof(nativeClient)+NativeClientSnapshotBytes(result.client));
+    extra=Add(extra,sizeof(result.player));
+    for(const auto* text:{&result.player.clientPath,&result.player.viewportPath,&result.player.viewportClassPath,
+        &result.player.playerPath,&result.player.viewportOuterPath})extra=Add(extra,text->capacity()+1u);
     if(lookup)extra=Add(extra,lookup->RetainedBytes());
     extra=Add(extra,(persistentQualifiedObjects.bucket_count()+persistentVmObjects.bucket_count()+nextQualified.bucket_count()+
         nextVm.bucket_count()+replacementQualified.bucket_count()+replacementVm.bucket_count())*sizeof(void*));
     host.ValidateAdditionalPackageBudget(extra);
-    RuntimeObject* engineClientOwner{};
-    if(persistentEngineCollision) {
-        engineClientOwner=persistentEngineCollision->get()->engine;
-        if(!engineClientOwner||!engineClientOwner->nativeEngineInstance||
-            (engineClientOwner->nativeEngineInstance->values.client&&
-             engineClientOwner->nativeEngineInstance->values.client!=session->client))
-            throw std::runtime_error("Native Engine.Client already belongs to another session");
-    }
+    // Recheck AFTER every fallible allocation/snapshot/lookup/budget operation.
+    if(clientIdentity!=persistentNativeClient.ClientIdentity()||lookupOwner!=persistentObjectLookup||
+        (lookupOwner&&(!lookupOwner->active||lookupOwner->generation!=lookupGeneration))||
+        (engineClientOwner&&(!persistentEngineCollision||!persistentEngineCollision->get()||
+            persistentEngineCollision->get()->engine!=engineClientOwner||
+            !ActualNativeCollisionObjectValid(engineClientOwner)||
+            engineClientOwner->nativeEngineInstance->values.client!=previousEngineClient)))
+        throw std::runtime_error("Native Client/session authority changed before publication");
     // All allocations/index copies complete before this publication interval.
     PublishRuntimeLookupObjects(lookup,lookupObjects);
     replacementQualified.merge(persistentQualifiedObjects);replacementQualified.merge(nextQualified);
@@ -15408,9 +15574,22 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     if(!persistentQualifiedObjects.empty()||!persistentVmObjects.empty()||!nextQualified.empty()||!nextVm.empty())std::terminate();
     persistentQualifiedObjects.swap(replacementQualified);persistentVmObjects.swap(replacementVm);
     session->classes.swap(classes);session->viewports.swap(viewports);session->nativeViewports=payloads;session->client=client;
+    session->nativeClient=nativeClient;
     if(newOwner) persistentPlayerSession=std::move(newOwner);
+    // UClient.Init's audited actual Engine backpointer is the nativeClient
+    // payload above; this reverse edge is the actual Engine.Client property.
     if(engineClientOwner)engineClientOwner->nativeEngineInstance->values.client=client;
-    return ReadPortableRuntimePlayerSession(viewportIdentity);
+    return result;
+}
+} // namespace
+
+PortableNativeClientSessionSnapshot PreparePortableRuntimeClientObjects() {
+    return PrepareNativeSessionObjects(std::nullopt,true).client;
+}
+PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uint64_t viewportIdentity) {
+    // Preserve the original atomic constructor-only fixture path when Engine
+    // does not yet exist. Production's explicit Client.Init entry is above.
+    return PrepareNativeSessionObjects(viewportIdentity,false).player;
 }
 
 #include "portable_viewport_input.inl"
