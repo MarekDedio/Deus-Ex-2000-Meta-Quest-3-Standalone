@@ -215,6 +215,8 @@ PortableViewportInputSnapshot PreparePortableRuntimeViewportInput(const std::uin
         throw std::runtime_error("Native Input construction is explicitly bound to standalone non-editor mode");
     auto* viewport=NativeSessionViewport(viewportIdentity);
     if(viewport->nativeViewportInput)return ReadPortableRuntimeViewportInput(viewportIdentity);
+    if(persistentVmRootCount)
+        throw std::runtime_error("Native Input construction requires an exclusive CPU boundary");
     if(!persistentInputSchema||!persistentInputSchema->get()||!persistentInputSchema->get()->config||
         !persistentInputClass||!ReadPortableRuntimeInputSchema().configApplied||!persistentEngineCollision||
         !persistentObjectLookup||!persistentObjectLookup->active)

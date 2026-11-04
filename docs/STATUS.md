@@ -1,5 +1,48 @@
 # Port status
 
+## Latest: exact native Client lifetime and actual viewport distance (verified2026-11-04)
+
+A new owned Input regression reproduces a stale-authority defect: after a query,
+Clear plus a fresh lifetime with the same Client/Viewport numeric IDs could pass
+the old HasViewport-only commit check. The failing run is retained. The current
+implementation roots the exact Client/Engine/session/lookup graph
+at Begin, separates structural undo ownership from live publication authority,
+guards native peer/Input beforeimage restoration, and rechecks before config
+rename. It also refuses unjournaled external Input construction in an active
+root. Focused desktop build and alias85/12, Core/graph9712/10, viewport
+Input10698/98, Canvas150/14, Console5505/34 and registry119/39 suites pass;
+Android-native and strict ARM64 pass. Focused final audit finds1937 inputs/45
+originals/3 assets/4 DLLs unchanged and zero live jobs. The corrected broad
+verification below also passes; these are not accepted gameplay or a new APK.
+Remaining actual-array consumers and the original initial startup/player/weapon/
+crate/loot/physics integration remain outstanding.
+
+The distance prepass now uses the authenticated actual Client array, not target
+metadata. Its new owned first-Training test reproduced the old descriptor-only
+selection failure. Corrected coverage registers A,B but creates only native B,
+then appends A and verifies actual B,A order separately from metadata A,B.
+Missing Client/empty array still refuse; genuine viewport Actor=None exits
+without writes. One subsequent test failure counted deferred Clear garbage in
+its next baseline; it now collects at the safe boundary and verifies exactly
+Client plus two viewports retired. Expanded viewport/distance coverage passes
+10788 checks/103 refusals; Android-native and strict ARM64 pass. Both actors are
+None, so positive distinct-Actor order remains unproven. Actual Training passes
+its expected later refusal in620.018s/267089 instructions/38087 writes, retaining
+Init/read/rate/laterReset, complete rollback,45 unchanged sources and cold Model
+replacement. No startup is published. The full desktop rebuild passes; CTest
+finishes262 executed/321 registered/59 explicit skips with exactly one old
+decal-fixture failure in146.09s. Frozen3 final audit finds1937 inputs/45 originals/
+3 assets/4 DLLs unchanged, zero jobs and no new APK. Afterward the decal fixture
+was migrated to actual constructor-only Client/Viewport objects without faking
+Engine initialization or dropping geometry/OUT/RNG coverage. Corrected actor/
+spawn13810 checks/231 rejection controls and Android-native/strict ARM64 pass.
+The corrected full desktop build and CTest pass262 executed/321 registered/59
+explicit owned-data skips/zero failures in159.87s. Final frozen4 audit verifies
+1937 compiler inputs,45 originals,3 assets and4 DLLs unchanged with zero jobs and
+no new APK. A stale fixture comment was clarified afterward, with a separate
+post-comment manifest/audit. The actual Training gate above preceded the
+fixture/revocation-error-text-only correction; no playable startup is claimed.
+
 ## Latest: explicit Quest Client bootstrap (verified2026-11-04)
 
 The existing Quest CPU bootstrap now creates and initializes the actual Client

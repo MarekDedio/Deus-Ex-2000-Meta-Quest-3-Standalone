@@ -6,6 +6,7 @@
 #include "portable_retail_collision.h"
 #include "portable_actor_point_check.h"
 #include "portable_process_loop.h"
+#include "portable_native_client_lease_probe.h"
 #include "quest_input_reconcile.h"
 #include "quest_input_read.h"
 #include "quest_script_command_call.h"
@@ -3235,6 +3236,7 @@ class PortableActorVmHost final : public QuestVr::Vm::Host {
     using Function = QuestVr::Vm::Function;
     using Evaluation = QuestVr::Vm::Evaluation;
     using Reference = QuestVr::Vm::Reference;
+#include "portable_native_client_root.inl"
 public:
     PortableActorVmHost() {
         if (!persistentRuntime || !persistentRuntime->get())
@@ -3697,6 +3699,7 @@ public:
         if(persistentVmRootCount==std::numeric_limits<std::size_t>::max())
             throw std::runtime_error("Portable VM root inventory exhausted");
         if(processLoopControl_)throw std::runtime_error("Process loop lease survived its previous VM root");
+        if(nativeClientRoot_)throw std::runtime_error("Native Client lease survived its previous VM root");
         if(persistentLiveModelReaders)throw std::runtime_error("VM root refused during an active live Model query lease");
         if(nativeModelReaders_)throw std::runtime_error("Native Model read lease survived its root");
         if(nativeRootSerial_==std::numeric_limits<std::uint64_t>::max())throw std::runtime_error("Native Model root lease serial exhausted");
@@ -3743,6 +3746,10 @@ public:
         beforeLevelClock_.reset();
         beforeLevelTickContext_.reset();
         RetireOriginalTickLease();
+        // Stage roots/byte admission before marking the transaction active.
+        // No fallible work follows installation at this final Begin boundary.
+        auto clientRoot=CaptureNativeClientRootForBegin();
+        nativeClientRoot_.swap(clientRoot);
         transaction_ = true;
         ++persistentVmRootCount;
     }
@@ -3766,8 +3773,7 @@ public:
             waitingPreview_->available = true;
             return;
         }
-        if (clientDependent_ && !persistentNativeClient.HasViewport())
-            throw std::runtime_error("Native client lifetime revoked during script transaction");
+        ValidateRootNativeClientLease();
         ValidateSoundClientLease();
         if(brushGeometryPreview_||retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_||startupMoverPreview_) {
             ValidateStateBudget();Rollback();return;
@@ -3801,8 +3807,7 @@ public:
         }
         // Immutable asset preparation above may take time on the CPU owner.
         // Recheck the render-owner lease at the actual publication boundary.
-        if (clientDependent_ && !persistentNativeClient.HasViewport())
-            throw std::runtime_error("Native client lifetime revoked before script publication");
+        ValidateRootNativeClientLease();
         ValidateSoundClientLease();
         if(retailCollisionRoot_) retailCollisionRoot_->PrepareCommit();
         ValidateProcessLoopLease();
@@ -3836,6 +3841,7 @@ public:
         ClearMoveHits();nativeDurableMoved_.clear();
         std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
+        RetireRootNativeClientLease();
         RetireProcessLoopRoot();
     }
     void Rollback() noexcept override {
@@ -3939,14 +3945,10 @@ public:
             entry.first->touchEventSent = entry.second.touchSent;
             entry.first->committedLifecycle = entry.second.lifecycle;
             entry.first->worldRemoved = entry.second.removed;
-            entry.first->nativePlayerBinding = entry.second.playerBinding;
-            entry.first->nativePlayer = persistentNativeClient.HasClient() ? entry.second.player : nullptr;
-            entry.first->nativeViewportActor = persistentNativeClient.HasClient() ? entry.second.viewportActor : nullptr;
+            RestoreRootNativeSessionEdgesNoThrow(entry.first,entry.second);
             entry.first->nativeRootWindow=entry.second.rootWindow;
             entry.first->nativePlayerFlagBase=entry.second.flagBase;
             entry.first->nativePlayerFlagBaseBound=entry.second.flagBaseBound;
-            entry.first->nativeCanvasPeer=entry.second.canvasPeer;
-            entry.first->nativeViewportConsole=entry.second.viewportConsole;
             entry.first->uniqueObjectCounter=entry.second.uniqueCounter;
             entry.first->nativeWindowPropertyRoots.swap(entry.second.windowPropertyRoots);
             entry.first->nativeWindowState.swap(entry.second.windowState);
@@ -4006,6 +4008,7 @@ public:
         for(auto& root:provisionalFlagBases_)RetireRuntimeFlagBaseObject(root.get());
         provisionalFlagBases_.clear();
         beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
+        RetireRootNativeClientLease();
         RetireProcessLoopRoot();
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
@@ -4875,6 +4878,7 @@ public:
 #include "portable_flag_base_host.inl"
 #include "portable_viewport_canvas_host.inl"
 #include "portable_viewport_console_host.inl"
+#include "portable_native_client_lease_probe_host.inl"
 #include "portable_system_host.inl"
 #include "portable_script_command_packet.inl"
 #include "portable_viewport_exec_host.inl"
@@ -11881,6 +11885,7 @@ private:
         defaults.Retain(systemNameArenaCredit);
         defaults.Retain(runtimeNameArenaCredit);
         defaults.Retain(NativePlayerSessionBytes());
+        defaults.Retain(NativeClientRootRetainedBytes());
         defaults.Retain(QuestInputSourceStorageBytes());
         defaults.Retain(ProcessLoopBindingBytes());
         if(processLoopControl_)defaults.Retain(sizeof(processLoopControl_)+sizeof(processLoopRuntime_)+sizeof(processLoopGeneration_));
@@ -15648,6 +15653,16 @@ PortableInputExecProbeResult ProbePortableRuntimeInputQueryLease(std::uint64_t v
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
     }
     return result;
+}
+
+PortableNativeClientGraphLeaseProbeResult ProbePortableRuntimeNativeClientGraphLease(
+    std::uint64_t identity,const std::function<void()>& afterMutation,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    try {PortableActorVmHost host;return host.ProbeNativeClientGraphLease(identity,afterMutation,limits);}
+    catch(const std::exception& error) {
+        PortableNativeClientGraphLeaseProbeResult result;
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();return result;
+    }
 }
 
 QuestVr::Vm::Result SetPortableRuntimePlayer(const std::uint64_t viewportIdentity,

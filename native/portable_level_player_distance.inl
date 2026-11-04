@@ -26,16 +26,11 @@
             if(!persistentEngineCollision||engine!=persistentEngineCollision->get()->engine||!engine||
                 !engine->nativeEngineInstance||engine->nativeEngineInstance->currentLevel!=nativeLevel)
                 throw std::runtime_error("Original distance prepass lacks actual native Level.Engine");
-            auto* client=engine->nativeEngineInstance->values.client;
-            if(!client||!persistentPlayerSession||client!=persistentPlayerSession->get()->client||
-                !persistentNativeClient.HasClient()||client->nativeClientIdentity!=persistentNativeClient.ClientIdentity()||
-                Object(client->reflection.objectPath)!=client)
+            auto* client=RequireActualEngineClient(nativeLevel);
+            if(!client)
                 throw std::runtime_error("Original distance prepass lacks a live actual Engine.Client");
-            const auto viewports=persistentNativeClient.ReadOnlyView();
-            if(viewports.empty())throw std::runtime_error("Original distance prepass cannot dereference empty native Viewports[0]");
-            auto* viewport=NativeSessionViewport(viewports.front().identity);
-            if(viewport->outer!=client)throw std::runtime_error("Original distance first viewport has another Client owner");
-            clientDependent_=true;
+            auto* viewport=ActualClientViewportAt(client,0u);
+            if(!viewport)throw std::runtime_error("Original distance prepass cannot dereference empty native Viewports[0]");
             return reinterpret_cast<std::uintptr_t>(viewport->nativeViewportActor);
         };
         q.isPlayerPawn=[&](auto value){return IsDerivedFromPath(actor(value)->cls,"Engine.PlayerPawn");};

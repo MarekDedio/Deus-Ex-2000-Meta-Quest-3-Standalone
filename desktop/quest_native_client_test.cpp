@@ -163,9 +163,14 @@ void Revocation() {
     const auto lifetime = std::make_shared<Lifetime>();
     registry.Bind(lifetime, 501u);
     registry.Register(501u, View(801u));
+    const auto retained=registry.RetainBoundLifetime();
+    Require(retained==lifetime&&registry.MatchesLifetime(retained),
+        "Root capture lost the exact live binding token");
     std::thread renderer([lifetime] { lifetime->Revoke(); lifetime->Revoke(); });
     renderer.join();
     Require(!lifetime->Alive(), "Renderer revocation was not visible to CPU owner");
+    Require(registry.RetainBoundLifetime()==retained&&!registry.MatchesLifetime(retained),
+        "Revocation confused retained structural provenance with live authority");
     Require(!registry.HasClient() && registry.IsBound() && !registry.HasViewport() && registry.Count() == 0u &&
         registry.ClientIdentity() == 0u && registry.ReadOnlyView().empty(),
         "Revoked client or viewport remained observable");
@@ -174,6 +179,8 @@ void Revocation() {
     Reject(registry, [&] { registry.Bind(std::make_shared<Lifetime>(), 502u); },
         "Revoked binding replaced without explicit clear");
     registry.Clear();
+    Require(!registry.RetainBoundLifetime()&&!registry.MatchesLifetime(retained),
+        "Clear retained binding provenance or accepted an old root token");
     Reject(registry, [&] { registry.Bind(lifetime, 503u); }, "Clear resurrected revoked token");
     const auto replacement = std::make_shared<Lifetime>();
     registry.Bind(replacement, 504u);

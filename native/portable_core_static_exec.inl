@@ -297,6 +297,7 @@
         auto prepared=storage.backend.Prepare(nativeConfigBytes_,*nativeConfigExpected_,QuestVr::ConfigFile::PublicationMode::CommitAllowed);
         // File preparation may block long enough for a platform lifetime to
         // be revoked. Refuse BEFORE rename and let Prepared cancel its stage.
+        ValidateRootNativeClientLease();
         ValidateNativeInputMutationLeases();
         const auto result=prepared.Publish();
         if(!result.Published())throw std::runtime_error("Native app-owned config was not published");

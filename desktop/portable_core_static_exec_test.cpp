@@ -4,6 +4,9 @@
 #include "portable_object_lookup.h"
 #include "portable_unreal_runtime.h"
 #include "portable_viewport_input.h"
+#include "portable_viewport_canvas.h"
+#include "portable_viewport_console.h"
+#include "portable_native_client_lease_probe.h"
 #include "quest_save_bundle.h"
 
 #include <algorithm>
@@ -154,7 +157,7 @@ bool SameStorage(const PortableUserConfigStorageSnapshot& a,const PortableUserCo
 struct Fixture {
     const fs::path& root;const std::vector<PortablePackageTables>& packages;const PortablePackageTables& map;const Temporary& temporary;
     std::shared_ptr<QuestVr::NativeClientLifetime> lifetime;
-    void Start() {
+    void Start(bool nativePeers=false) {
         Require(InitializePortableRuntime(packages).passed,"Cannot initialize Core SET owned source graph");
         Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
             PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
@@ -170,9 +173,13 @@ struct Fixture {
         for(const auto viewport:{Viewport,OtherViewport}) {
             RegisterPortableRuntimeViewport(Client,{viewport,1440u,1440u,3u,2u});
             const auto session=PreparePortableRuntimePlayerObjects(viewport);
+            if(nativePeers)Require(PreparePortableRuntimeViewportCanvas(viewport,(root/"System"/"DeusEx.ini").string()).execution.passed(),
+                "Cannot construct actual Canvas before diagnostic Input");
             const auto input=PreparePortableRuntimeViewportInput(viewport,PortableInputLoggingProfile::Ordinary);
             Require(!session.bound&&input.classPath=="Extension.InputExt"&&input.prepared&&input.constructed&&!input.initialized&&
                 input.objectFlags==0x4000u&&input.ownerViewportPath==session.viewportPath,"Core SET fixture fabricated Init/player binding or wrong Input authority");
+            if(nativePeers)Require(PreparePortableRuntimeViewportConsole(viewport,(root/"System"/"DeusEx.ini").string()).execution.passed(),
+                "Cannot initialize actual Console after diagnostic Canvas/Input constructors");
         }
     }
     void Stop() {if(lifetime)lifetime->Revoke();ClearPortableRuntimeClient();lifetime.reset();ShutdownPortableRuntime();GC::Collect();}
@@ -308,6 +315,89 @@ void CommitAndCold(Fixture& fixture,Temporary& temporary,const Source& seed) {
     }
     seed.Unchanged();
 }
+void NativeGraphLeaseControls(Fixture& fixture,Temporary& temporary) {
+    // Honest owned constructor profile: no fake Pawn, begun flag, Init receipt,
+    // source cursor or physical-state writes. Positive initialized/paired graphs
+    // are observed by the same probe when real startup supplies them later.
+    for(unsigned mode=0u;mode<4u;++mode) {
+        fixture.Stop();fixture.Start(true);
+        GC::Collect();const auto gc=GC::GetStats();
+        const auto lookup=ReadPortableRuntimeObjectLookup();const auto revision=GetPortableRuntimeWorldRevision();
+        const auto save=temporary.Checkpoint("Before.sav");const auto schema=ReadPortableRuntimeInputSchema();
+        const auto storage=ReadPortableRuntimeUserConfigStorage();const auto leaves=temporary.ConfigLeaves();
+        std::optional<Bytes> file;std::optional<fs::file_time_type> modified;
+        if(fs::exists(storage.targetPath)){file=Read(storage.targetPath);modified=fs::last_write_time(storage.targetPath);}
+        const auto session=ReadPortableRuntimePlayerSession(Viewport);
+        const auto canvas=ReadPortableRuntimeViewportCanvas(Viewport);const auto console=ReadPortableRuntimeViewportConsole(Viewport);
+        const auto input=ReadPortableRuntimeViewportInput(Viewport);
+        std::function<void()> callback;
+        if(mode)callback=[&] {
+            if(mode==1u){fixture.lifetime->Revoke();return;}
+            ClearPortableRuntimeClient();
+            if(mode==3u) {
+                fixture.lifetime=std::make_shared<QuestVr::NativeClientLifetime>();
+                BindPortableRuntimeClient(fixture.lifetime,Client);
+                for(const auto viewport:{Viewport,OtherViewport})
+                    RegisterPortableRuntimeViewport(Client,{viewport,1440u,1440u,3u,2u});
+            }
+            // Captured observation/root/journal owners must keep the graph alive
+            // even though Clear severed its original owning peer edges.
+            GC::Collect();
+        };
+        const auto result=ProbePortableRuntimeNativeClientGraphLease(Viewport,callback,Limits());
+        Require(result.completed&&result.afterCaptured&&!result.execution.passed()&&!result.execution.committed&&
+            result.execution.error=="Non-publishing native Client graph lease probe completed; rollback required"&&
+            result.peerWrites==3u&&result.callbackCompleted==(mode!=0u)&&result.mutation.handled&&
+            result.mutation.instanceImports==2u&&result.mutation.defaultImports==1u&&result.during.inputMutation&&
+            result.mutation.publication==PortableConfigPublication::None,
+            "Native graph lease diagnostic failed before actual peer before-images/Core SET/COW or published config: "+result.execution.error);
+        const auto& before=result.before;const auto& after=result.after;
+        Require(!before.playerPresent&&!before.playerBinding&&!before.playerPointer&&!before.viewportActor&&
+            before.viewportCanvas&&before.canvasViewport&&before.viewportConsole&&before.consoleOwner&&before.viewportInput&&
+            before.inputOwner&&before.inputOwnerIsViewport&&!before.inputRetired&&!before.inputInitialized&&!before.inputReceipt&&
+            before.inputPhysicalDefault&&!before.inputMutation&&!before.cursorSource&&!before.cursorSequence&&!before.cursorRejections,
+            "Owned graph lease fixture invented player/Init/physical state or omitted actual constructor peers");
+        if(mode<2u) {
+            Require(before==after,"Ordinary/revoke-only rollback did not restore exact structurally owned peer/Input COW before-image");
+            Require(ReadPortableRuntimeObjectLookup().objects==lookup.objects,
+                "Revoke-only rollback unindexed still-owned native objects");
+            if(mode==0u) {
+                SameInput(input,ReadPortableRuntimeViewportInput(Viewport));
+                Require(ReadPortableRuntimePlayerSession(Viewport).viewportPath==session.viewportPath&&
+                    ReadPortableRuntimeViewportCanvas(Viewport).viewportPath==canvas.viewportPath&&
+                    ReadPortableRuntimeViewportConsole(Viewport).ownerViewportPath==console.ownerViewportPath,
+                    "Ordinary failed root lost its still-live native session pairing");
+            }
+            GC::Collect();const auto current=GC::GetStats();
+            Require(current.numObjects==gc.numObjects&&current.memoryUsage==gc.memoryUsage,
+                "Ordinary/revoke-only graph rollback leaked or prematurely collected native objects");
+        } else {
+            Require(!after.playerPointer&&!after.viewportActor&&!after.viewportCanvas&&!after.canvasViewport&&
+                !after.viewportConsole&&!after.consoleOwner&&!after.viewportInput&&after.inputRetired&&!after.inputOwner&&
+                !after.inputOwnerIsViewport&&!after.inputViewport&&!after.inputInitialized&&!after.inputReceipt&&
+                after.inputPhysicalDefault&&!after.cursorSource&&!after.cursorSequence&&!after.cursorRejections&&!after.inputMutation,
+                "Clear/rebind rollback resurrected retired peer/Input owner, Init receipt, cursor or physical baseline");
+            for(const auto& path:{session.clientPath,session.viewportPath,canvas.objectPath,console.objectPath,input.objectPath})
+                Require(!FindPortableRuntimeObject({path,0u,0u,true,false}),"Clear rollback resurrected a retired native lookup identity");
+            Require(HasPortableRuntimeClient()==(mode==3u)&&ReadPortableRuntimeClientView().size()==(mode==3u?2u:0u),
+                "Graph rollback altered externally cleared/rebound target metadata");
+            GC::Collect();const auto current=GC::GetStats();
+            // Exactly Client + two Viewport/Canvas/Console/Input instances retire.
+            // Their existing native classes and the session owner survive.
+            Require(current.numObjects+9u==gc.numObjects&&ReadPortableRuntimeObjectLookup().objects+9u==lookup.objects,
+                "Clear graph rollback retained retired instances or discarded persistent native classes");
+        }
+        SameSchema(schema,ReadPortableRuntimeInputSchema());
+        Require(SameStorage(storage,ReadPortableRuntimeUserConfigStorage())&&GetPortableRuntimeWorldRevision()==revision&&
+            temporary.Checkpoint("After.sav")==save&&temporary.ConfigLeaves()==leaves,
+            "Graph lease rollback changed Input defaults/config backend, actor checkpoint, revision or files");
+        if(file)Require(Read(storage.targetPath)==*file&&fs::last_write_time(storage.targetPath)==*modified,
+            "Graph lease diagnostic changed committed User.ini bytes/mtime");
+        else Require(!fs::exists(storage.targetPath),"Graph lease diagnostic created User.ini");
+        ++refusals;
+    }
+    fixture.Stop();
+}
 } // namespace
 
 int main(int argc,char** argv) {
@@ -326,7 +416,8 @@ int main(int argc,char** argv) {
         sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
         Fixture fixture{root,packages,map,temporary,{}};fixture.Start();
         Require(!ReadPortableRuntimeUserConfigStorage().owned&&!fs::exists(temporary.config/"User.ini"),"Initial Core SET seed binding physically wrote config");
-        Warnings(temporary);RollbackControls(temporary);CommitAndCold(fixture,temporary,seed);fixture.Stop();
+        Warnings(temporary);RollbackControls(temporary);CommitAndCold(fixture,temporary,seed);
+        NativeGraphLeaseControls(fixture,temporary);fixture.Stop();
         GC::Collect();const auto final=GC::GetStats();Require(final.numObjects==initial.numObjects&&final.memoryUsage==initial.memoryUsage,
             "Core SET shutdown retained native config/default/Input/session GC ownership");
         for(const auto& source:sources)source.Unchanged();

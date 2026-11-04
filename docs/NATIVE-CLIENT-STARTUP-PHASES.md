@@ -96,19 +96,19 @@ still loads a dormant map. Original initial map startup, explicit viewport
 construction/Canvas/Input/Console/player sequence, concrete audio/render
 readiness, detail callbacks and the final URL/config tail remain required.
 
-Existing startup/sound/decal consumers and transaction viewport guards still
-use the raw target registry; they must migrate to the actual Client array
-with correct ownership and empty-array semantics. This batch does not silently
-equate registered targets with created viewports or claim that migration is
-already complete. Local-player Walking/Falling, tracked pose/aim, original
+Startup/sound/decal consumers still need actual-array migration. The subsequent
+root-lifetime checkpoint replaces raw commit guards with exact graph/lifetime
+authority and migrates the distance prepass to the actual Client array; see
+NATIVE-CLIENT-ROOT-LIFETIME.md. It does not equate registered targets with created
+viewports or claim that all consumers are migrated. Local-player Walking/Falling, tracked pose/aim, original
 weapon routing and committed crate/loot/debris scheduling remain separate live
 Training integration work. See ORIGINAL-PLAYER-WALKING-CONTINUATION.md.
 
-The follow-on lifetime review also identifies rollback hazards not covered by
-this API split: raw HasClient can restore old player pairings after a clear and
-same-ID rebind, while an Input COW before-image can restore retired owner/
-Viewport/initialization references after Clear. Lookup retirement still denies
-ordinary access, but the graph references and retirement invariants need a
-nonthrowing exact-owner/generation guard. Canvas/Console peer restoration and
-authoritative native-None binding require the same review. These are remaining
-implementation requirements, not verified fixes in this batch.
+The follow-on root-lifetime checkpoint addresses the identified raw HasClient
+rollback hazard after Clear/same-ID rebind, Input COW owner resurrection and
+Canvas/Console peer restoration with nonthrowing structural-owner predicates.
+Its owned fixture is genuinely unpossessed/uninitialized: positive player/Init
+receipt/nonzero physical-state retirement remains unproven, as does revocation
+during config backend preparation. Lookup refusal alone is not used as proof
+that retired graph references are safe. See the follow-on document for the exact
+verified scope and remaining production requirements.

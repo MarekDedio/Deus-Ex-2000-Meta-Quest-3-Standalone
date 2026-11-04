@@ -304,6 +304,80 @@ void ClientOnly(const fs::path& root,const std::vector<PortablePackageTables>& p
         "Teardown failed to retire actual Client/viewports, retained targets, or changed actor checkpoint");
     ShutdownPortableRuntime();GC::Collect();
 }
+void ActualArrayDistance(const fs::path& root,const std::vector<PortablePackageTables>& packages,
+    const PortablePackageTables& map,Temporary& temporary) {
+    constexpr std::uint64_t clientIdentity=8201u,firstIdentity=8202u,secondIdentity=8203u;
+    Require(InitializePortableRuntime(packages).passed&&
+        PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+        PreparePortableRuntimeNativeInputClasses().prepared&&PreparePortableRuntimeObjectLookup().prepared&&
+        PreparePortableRuntimeEngineCollision((root/"System"/"DeusEx.ini").string()).prepared&&
+        LoadPortableRuntimeMap(map).passed,"Cannot prepare actual first Training Engine/Level for viewport-array distance controls");
+    auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientIdentity);
+    const auto client=PreparePortableRuntimeClientObjects();
+    Require(client.initialized&&client.viewports.empty()&&client.registeredTargets.empty(),
+        "Distance fixture did not start with actual empty initialized Client");
+    const auto run=[&](bool succeeds,const char* stage,const char* expectedError="") {
+        const auto before=temporary.Snapshot("ActualArrayDistanceBefore");
+        const auto gc=GC::GetStats();const auto lookup=ReadPortableRuntimeObjectLookup();const auto revision=GetPortableRuntimeWorldRevision();
+        const auto result=AdvancePortableLevelPlayerDistance();
+        if(succeeds)Require(result.execution.passed()&&result.execution.committed&&result.pass.completed&&
+            result.pass.noActor&&!result.pass.networkSkipped&&!result.pass.notPlayerPawn&&!result.pass.noPlayer&&
+            result.pass.steps==2u&&!result.pass.visits&&!result.pass.nullSlots&&!result.pass.writes&&
+            result.pass.playerPath.empty()&&!result.execution.writes,
+            std::string("Actual unpossessed viewport did not take genuine no-Actor distance exit: ")+stage+": "+result.execution.error);
+        else {
+            Require(!result.execution.passed()&&!result.execution.committed&&!result.pass.completed&&!result.execution.writes&&
+                (std::string(expectedError).empty()||result.execution.error.find(expectedError)!=std::string::npos),
+                std::string("Missing actual distance dereference became success or selected a metadata-only viewport: ")+stage+": "+result.execution.error);
+            ++refusals;
+        }
+        GC::Collect();SameGc(gc,std::string("Distance array control leaked/retired native objects: ")+stage);
+        Require(SameLookup(lookup,ReadPortableRuntimeObjectLookup())&&GetPortableRuntimeWorldRevision()==revision&&
+            temporary.Snapshot("ActualArrayDistanceAfter")==before&&!GetPortableRuntimeUnsavedScriptState(),
+            std::string("Distance array control changed world/lookup/checkpoint: ")+stage);
+        Dormant();
+    };
+    constexpr auto emptyError="Original distance prepass cannot dereference empty native Viewports[0]";
+    run(false,"zero targets/zero actual viewports",emptyError);
+    RegisterPortableRuntimeViewport(clientIdentity,{firstIdentity,1440u,1440u,3u,2u});
+    RegisterPortableRuntimeViewport(clientIdentity,{secondIdentity,1600u,1600u,3u,2u});
+    const auto descriptors=ReadPortableRuntimeClientSession();
+    Require(descriptors.viewports.empty()&&descriptors.registeredTargets.size()==2u&&
+        descriptors.registeredTargets[0u].identity==firstIdentity&&descriptors.registeredTargets[1u].identity==secondIdentity,
+        "Descriptor A,B registration fabricated actual viewports or changed metadata order");
+    // This must still be an actual empty-array dereference, NOT selection of
+    // the raw first descriptor A followed by a missing native A error.
+    run(false,"descriptors A,B/zero actual viewports",emptyError);
+    const auto second=PreparePortableRuntimePlayerObjects(secondIdentity);
+    const auto onlySecond=ReadPortableRuntimeClientSession();
+    Require(!second.bound&&second.playerPath.empty()&&onlySecond.viewports.size()==1u&&
+        onlySecond.viewports[0u].identity==secondIdentity&&onlySecond.viewports[0u].path==second.viewportPath&&
+        onlySecond.registeredTargets.size()==2u&&onlySecond.registeredTargets[0u].identity==firstIdentity,
+        "Explicit native B did not remain independent from the first registered target A");
+    Refused([&]{(void)ReadPortableRuntimePlayerSession(firstIdentity);},"Metadata-only A borrowed actual B's native player session");
+    run(true,"descriptors A,B/actual B only");SameClient(onlySecond,ReadPortableRuntimeClientSession());
+    const auto first=PreparePortableRuntimePlayerObjects(firstIdentity);
+    const auto reversed=ReadPortableRuntimeClientSession();
+    Require(!first.bound&&reversed.clientIndex==client.clientIndex&&reversed.engineIndex==client.engineIndex&&
+        reversed.viewports.size()==2u&&reversed.viewports[0u].identity==secondIdentity&&reversed.viewports[0u].path==second.viewportPath&&
+        reversed.viewports[1u].identity==firstIdentity&&reversed.viewports[1u].path==first.viewportPath&&
+        reversed.registeredTargets.size()==2u&&reversed.registeredTargets[0u].identity==firstIdentity&&
+        reversed.registeredTargets[1u].identity==secondIdentity,
+        "Actual viewport append order B,A was replaced by descriptor order A,B");
+    run(true,"descriptors A,B/actual B,A");SameClient(reversed,ReadPortableRuntimeClientSession());
+    lifetime->Revoke();run(false,"revoked exact Client lifetime");
+    const auto beforeClearGc=GC::GetStats();const auto beforeClearLookup=ReadPortableRuntimeObjectLookup();
+    ClearPortableRuntimeClient();EngineClient(client.enginePath,"");
+    // Clear intentionally defers collection until a safe outer boundary. Do
+    // not charge that legitimate retirement to the following refusal probe.
+    GC::Collect();
+    Require(GC::GetStats().numObjects+3u==beforeClearGc.numObjects&&
+        ReadPortableRuntimeObjectLookup().objects+3u==beforeClearLookup.objects,
+        "Distance teardown did not retire exactly Client plus two actual viewports");
+    run(false,"cleared actual Engine.Client","Original distance prepass lacks a live actual Engine.Client");
+    ShutdownPortableRuntime();GC::Collect();
+}
 void Owned(const fs::path& root,const std::vector<PortablePackageTables>& packages,const PortablePackageTables& map,Temporary& temporary) {
     constexpr std::uint64_t client=4101u,viewport=4102u,otherViewport=4103u;
     Require(InitializePortableRuntime(packages).passed,"Cannot initialize owned viewport Input fixture");
@@ -482,6 +556,7 @@ int main(int argc,char** argv) {
         }
         sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
         ClientOnly(root,packages,temporary);SameGc(baseline,"Fresh Client-only fixture retained roots after explicit shutdown");
+        ActualArrayDistance(root,packages,map,temporary);SameGc(baseline,"Actual-array distance fixture retained roots after shutdown");
         Owned(root,packages,map,temporary);ShutdownPortableRuntime();GC::Collect();SameGc(baseline,"Input/session/native Class roots survived explicit runtime shutdown");
         for(const auto& source:sources)source.Unchanged();
         std::cout<<"PASS owned viewport Input integration: "<<checks<<" checks, "<<refusals

@@ -119,6 +119,39 @@ void Original(const fs::path& root,Temporary& temp) {
     Require(GetPortableRuntimeWorldRevision()==revision&&temp.Save("revoked.sav")==save&&
         std::tie(index.objects,index.retainedBytes,index.generation)==std::tie(afterRevoke.objects,afterRevoke.retainedBytes,afterRevoke.generation),
         "Query-only lease failure changed saved world or native lookup state");
+    ClearPortableRuntimeClient();
+    auto originalGeneration=std::make_shared<QuestVr::NativeClientLifetime>();
+    BindPortableRuntimeClient(originalGeneration,Client);
+    RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
+    PreparePortableRuntimePlayerObjects(Viewport);
+    PreparePortableRuntimeViewportInput(Viewport,PortableInputLoggingProfile::Ordinary);
+    RegisterPortableRuntimeViewport(Client,{Viewport+1u,1024u,1152u,3u,2u});
+    PreparePortableRuntimePlayerObjects(Viewport+1u);
+    bool constructionRefused{};
+    const auto noInRootBirth=ProbePortableRuntimeInputQueryLease(Viewport,[&] {
+        try { (void)PreparePortableRuntimeViewportInput(Viewport+1u,PortableInputLoggingProfile::Ordinary); }
+        catch(const std::exception& error) {
+            constructionRefused=std::string(error.what()).find("exclusive CPU boundary")!=std::string::npos;
+        }
+    },Limits());
+    Require(constructionRefused&&noInRootBirth.completed&&noInRootBirth.execution.passed()&&
+        noInRootBirth.execution.committed,
+        "External Input construction escaped its exclusive boundary or broke an otherwise valid root");++refusals;
+    std::shared_ptr<QuestVr::NativeClientLifetime> replacement;
+    const auto replaced=ProbePortableRuntimeInputQueryLease(Viewport,[&] {
+        ClearPortableRuntimeClient();
+        replacement=std::make_shared<QuestVr::NativeClientLifetime>();
+        BindPortableRuntimeClient(replacement,Client);
+        RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
+        GC::Collect(); // An active root must retain its OLD concrete graph.
+    },Limits());
+    Require(replaced.completed&&replaced.command.output=="LeftMouse"&&
+        !replaced.execution.passed()&&!replaced.execution.committed&&HasPortableRuntimeClient()&&
+        ReadPortableRuntimeClientView().size()==1u,
+        "Query-only root accepted a replacement raw binding with the same numeric Client/Viewport IDs");++refusals;
+    Require(GetPortableRuntimeWorldRevision()==revision&&temp.Save("replaced.sav")==save,
+        "Clear/rebind lease failure changed the saved Training world");
+    ClearPortableRuntimeClient();
     std::cout<<"Actual constructed Input alias nativeWork="<<first.execution.nativeWork->used<<" writes="<<first.execution.writes
         <<"; original configured alias/ParseLine/key-query/output path, NOT initialized input/controller events\n";
 }

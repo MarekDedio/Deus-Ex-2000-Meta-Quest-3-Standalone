@@ -542,9 +542,9 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     engine.Property("PlayerReplicationInfo", "ObjectProperty", pawn, engineCore, 1u, actor);
     const auto hiddenFlag = engine.Property("bHidden", "BoolProperty", actor, engineCore);
     const auto boundPlayer = engine.Property("Player", "ObjectProperty", playerPawn, engineCore, 1u, player);
-    // Only the Login fixture prepares an actual native Client/Viewport. Keep
-    // existing generated schemas/identities unchanged in all older variants.
-    if (loginVariant) engine.Property("Actor", "ObjectProperty", player, engineCore, 1u, actor);
+    // Login and decal fixtures prepare actual native Client/Viewport objects.
+    // Keep the other generated schema variants and their identities unchanged.
+    if (loginVariant||decalSchema) engine.Property("Actor", "ObjectProperty", player, engineCore, 1u, actor);
     const auto bindPlayer = engine.Function("BindPlayer", playerPawn, engineCore);
     const auto playerInput = engine.Property("Input", "ObjectProperty", bindPlayer, engineCore, 1u, player, 0x80u);
     engine.FunctionCode(bindPlayer, Join({Assign(Ref(0x01u, boundPlayer), Ref(0x00u, playerInput)), Return()}));
@@ -2880,6 +2880,12 @@ void DecalGuardSynthetic() {
         const QuestVr::NativeViewport viewport{201u, 1024u, 1152u, 3u, 2u};
         auto currentViewport=viewport;
         RegisterPortableRuntimeViewport(101u, viewport);
+        // Concrete constructor-only session, not an initialized Engine or
+        // possession. Render-target metadata alone is not a native graph.
+        const auto nativeSession=PreparePortableRuntimePlayerObjects(viewport.identity);
+        Require(!nativeSession.bound&&nativeSession.playerPath.empty()&&
+            !ReadPortableRuntimeClientSession().initialized,
+            "Decal fixture fabricated original Client.Init or a possessed player");
         const auto bound = [&]() {
             const auto views = ReadPortableRuntimeClientView();
             Require(HasPortableRuntimeClient() && views.size() == 1u && views[0].identity == currentViewport.identity &&
@@ -2926,6 +2932,8 @@ void DecalGuardSynthetic() {
             BindPortableRuntimeClient(lifetime,102u);
             currentViewport={202u,viewport.width,viewport.height,viewport.swapchainImages,viewport.eyeCount};
             RegisterPortableRuntimeViewport(102u,currentViewport); bound();
+            Require(!PreparePortableRuntimePlayerObjects(currentViewport.identity).bound,
+                "Replacement decal session fabricated player possession");
             Call("Decal0", "SetTexture", {Object("Texture0")});
             const auto revision = GetPortableRuntimeWorldRevision();
             const auto gc = GC::GetStats();
@@ -2975,6 +2983,9 @@ void DecalNativeSynthetic() {
         auto lifetime = std::make_shared<QuestVr::NativeClientLifetime>();
         BindPortableRuntimeClient(lifetime, 401u);
         RegisterPortableRuntimeViewport(401u, {402u, 1024u, 1152u, 3u, 2u});
+        const auto nativeSession=PreparePortableRuntimePlayerObjects(402u);
+        Require(!nativeSession.bound&&!ReadPortableRuntimeClientSession().initialized,
+            "Native decal constructor fixture fabricated Init/player state");
         return lifetime;
     };
     const auto expectGraph = [](const QuestVr::ScriptSavedState& saved, std::size_t records, std::size_t listSize) {

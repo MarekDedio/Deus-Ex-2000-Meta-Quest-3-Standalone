@@ -109,6 +109,11 @@ public:
     // Retain the distinction between absence and a revoked binding. Native
     // consumers must not turn revocation into a legitimate empty recipient set.
     bool IsBound() const noexcept { return static_cast<bool>(lifetime_); }
+    // Retained identity only. Alive/MatchesLifetime must still authenticate
+    // every use; a retained revoked token never supplies target authority.
+    std::shared_ptr<NativeClientLifetime> RetainBoundLifetime() const noexcept {
+        return lifetime_;
+    }
     bool MatchesLifetime(const std::shared_ptr<NativeClientLifetime>& lifetime) const noexcept {
         return lifetime_==lifetime&&HasClient();
     }

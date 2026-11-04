@@ -153,7 +153,10 @@
                 throw std::runtime_error("Native Input lease was revoked before config/state publication");
     }
     void RollbackNativeInputJournal() noexcept {
-        for(auto& entry:beforeNativeInputInstances_)entry.owner.get()->nativeInputInstance.swap(entry.payload);
+        for(auto& entry:beforeNativeInputInstances_) {
+            entry.owner.get()->nativeInputInstance.swap(entry.payload);
+            PreserveRetiredRootInputNoThrow(entry.owner.get(),entry.viewport.get());
+        }
         for(auto& entry:beforeNativeInputDefaults_)entry.owner.get()->preparedNativeDefaults.swap(entry.payload);
         if(beforeNativeInputConfig_) {
             if(!persistentInputSchema||!persistentInputSchema->get())std::terminate();
