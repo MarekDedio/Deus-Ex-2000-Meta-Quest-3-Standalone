@@ -187,6 +187,16 @@ StaticConstructor, PostEditChange, SetViewport or the bounded Update read.
 Init's zero block ends before that counter. Its source allocation/default-tail
 initialization must be authenticated rather than guessing counter0.
 
+Follow-on source evidence now closes the fresh default/null-template counter
+profile and the ordinary channel-consumer skeleton. See
+ORIGINAL-AUDIO-DEFAULTS-AND-CHANNEL-UPDATE.md: the parent-default copy/zero-tail
+chain establishes fresh counter0, while Update independently retires completed
+handles, advances audio-clock elapsed, follows retained Actor locations and
+preserves detached one-shot positions before real voice creation. Arbitrary
+template/copy state, full spatial/backend semantics and concrete Quest provider
+publication remain separate. The preceding unknown-counter statements describe
+the earlier constructor-only audit, not a requirement to guess its value now.
+
 Ignored bounded evidence: native-audio-playsound-contract-20261104.md and
 adjacent native-audio-playsound-*-20261104 logs under artifacts. Remaining source
 work includes actual Update voice start/completion/owner following/spatial gain,

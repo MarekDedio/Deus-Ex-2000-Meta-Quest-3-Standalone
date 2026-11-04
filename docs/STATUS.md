@@ -1,5 +1,24 @@
 # Port status
 
+## Latest source continuation: audio defaults and voice consumer (2026-11-04)
+
+External PE-as-data reads now trace fresh audio counter initialization through
+Core's genuine native Class/default/null-template allocation chain, rather than
+guessing a zero missing from Galaxy's instance constructor. They also establish
+Update's independent bounded audio-clock delta, channel Id-based ascending scan,
+completed-handle stop/continue, owner-following versus detached cached position,
+priority refresh, on-demand resource registration and actual backend voice-start
+sites. Core/Engine/Galaxy hashes remain unchanged. See
+ORIGINAL-AUDIO-DEFAULTS-AND-CHANNEL-UPDATE.md for exact scope/source boundaries.
+
+This continuation changes documentation/evidence only, not compiler inputs.
+No new build/tests, native Audio UObject/channel provider, audible effects,
+playable startup or APK are claimed. Exact spatial/backend/pitch/clock adaptation,
+prepared assets, transaction-reserved publication and a concrete Quest owner
+consumer still require implementation; passing prior startup diagnostics does
+not complete them. The gameplay priority remains first Training crates/loot/
+gravity, without other-map integration detours.
+
 ## Latest: original startup uses actual Engine.Client (verified2026-11-04)
 
 The original standalone GameInfo config branch now authenticates actual
