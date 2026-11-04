@@ -1,7 +1,9 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
+#include "portable_object_lookup.h"
 #include "quest_level_clock.h"
+#include "quest_runtime_script_packages.h"
 #include "quest_script_state.h"
 
 #include <algorithm>
@@ -10,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -24,8 +27,11 @@
 #include <vector>
 
 // Generated real v68 packages exercise production metadata, bytecode, native
-// routing and transactional callbacks. No retail executable, fake PlayerPawn
-// possession, synthetic renderer/audio output or manual callback dispatch.
+// routing and transactional callbacks. The owned hybrid variant uses genuine
+// native Engine/Client/Viewport ownership with explicit generated PlayerPawn
+// subclasses and their test Possess/ClientHearSound overrides. It does not
+// establish original Login/Possess/startup or audible output. No retail
+// executable, synthetic renderer/audio output or manual callback dispatch.
 namespace {
 using Bytes=std::vector<std::uint8_t>;
 using Value=QuestVr::Vm::Value;
@@ -304,7 +310,9 @@ Bytes EmptyModel(bool outside) {
     U32(body,outside?1u:0u);U32(body,0);return body;
 }
 
-Tables Build(Fixture& fixture,bool outside=true) {
+Tables Build(Fixture& fixture,bool outside=true,bool ownedEngine=false) {
+    PortablePackageTables coreTable,engineTable;
+    if(!ownedEngine) {
     Package core;core.stem="Core";const auto cp=core.ImportPackage("Core");
     const auto object=core.Export("Object"),meta=core.Export("Class",0,object);
     core.Property("Class","ClassProperty",object,cp,meta);core.Property("Name","NameProperty",object,cp);
@@ -312,7 +320,7 @@ Tables Build(Fixture& fixture,bool outside=true) {
     const auto vector=core.Export("Vector",core.Import("Struct",cp),0,object),rotator=core.Export("Rotator",core.Import("Struct",cp),0,object);
     for(const auto* name:{"X","Y","Z"}) core.Property(name,"FloatProperty",vector,cp);
     for(const auto* name:{"Pitch","Yaw","Roll"}) core.Property(name,"IntProperty",rotator,cp);
-    core.ClassBody(object);core.ClassBody(meta);core.StructBody(vector);core.StructBody(rotator);const auto coreTable=fixture.Write(core);
+    core.ClassBody(object);core.ClassBody(meta);core.StructBody(vector);core.StructBody(rotator);coreTable=fixture.Write(core);
 
     Package engine;engine.stem="Engine";const auto ec=engine.ImportPackage("Core"),eo=engine.Import("Object",ec);
     const auto ev=engine.Import("Vector",eo,"Struct"),er=engine.Import("Rotator",eo,"Struct");
@@ -373,10 +381,13 @@ Tables Build(Fixture& fixture,bool outside=true) {
     for(auto cls:{actor,zone,info,level,model,sound,pawn,playerPawn,player}) engine.ClassBody(cls);
     Bytes levelDefaults;engine.FloatTag(levelDefaults,"TimeDilation",1.0f);engine.FloatTag(levelDefaults,"TimeSeconds",0.0f);
     engine.ClassBody(info,std::move(levelDefaults));
-    const auto engineTable=fixture.Write(engine);
+    engineTable=fixture.Write(engine);
+    }
 
     Package classes;classes.stem="SoundClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
-    const auto ca=classes.Import("Actor",ce),cpa=classes.Import("Pawn",ce),cs=classes.Import("Sound",ce),co=classes.Import("Object",cc);
+    const auto ca=classes.Import("Actor",ce),cpawn=classes.Import("Pawn",ce);
+    const auto cpa=ownedEngine?classes.Import("PlayerPawn",ce):cpawn;
+    const auto cs=classes.Import("Sound",ce),co=classes.Import("Object",cc);
     const auto cv=classes.Import("Vector",co,"Struct"),probe=classes.Export("Probe",0,ca),listener=classes.Export("Listener",0,cpa);
     const auto splicer=classes.Export("SpliceListener",0,listener),moving=classes.Export("MovingListener",0,listener),failing=classes.Export("FailingListener",0,listener);
     const auto soundField=classes.Property("TestSound","ObjectProperty",probe,cc,cs),link=classes.Property("Link","ObjectProperty",probe,cc,ca);
@@ -397,9 +408,17 @@ Tables Build(Fixture& fixture,bool outside=true) {
     const auto seenId=classes.Property("SeenId","IntProperty",listener,cc),seenSound=classes.Property("SeenSound","ObjectProperty",listener,cc,cs);
     const auto seenLocation=classes.Property("SeenLocation","StructProperty",listener,cc,cv),seenParameters=classes.Property("SeenParameters","StructProperty",listener,cc,cv);
     const auto replacement=classes.Property("ReplacementNext","ObjectProperty",listener,cc,cpa);
-    const auto importedNext=classes.Import("nextPawn",cpa,"ObjectProperty"),importedLocation=classes.Import("Location",ca,"StructProperty");
+    const auto importedNext=classes.Import("nextPawn",cpawn,"ObjectProperty"),importedLocation=classes.Import("Location",ca,"StructProperty");
     const auto replace=classes.Function("SetReplacement",listener,cc),replaceInput=classes.Property("Input","ObjectProperty",replace,cc,cpa,0x80u);
     classes.FunctionCode(replace,Join({Assign(Ref(0x01u,replacement),Ref(0x00u,replaceInput)),Return()}));
+    if(ownedEngine) {
+        // This is an explicit test UClass override, not a skipped retail
+        // callback or a flag claiming original world/player startup completed.
+        // SetPortableRuntimePlayer must genuinely select and execute it.
+        const auto possessions=classes.Property("Possessions","IntProperty",listener,cc);
+        classes.Function("Possess",listener,cc,
+            Join({Assign(Ref(0x01u,possessions),Native(146u,{Ref(0x01u,possessions),Integer(1)})),Return()}),0u,0x802u);
+    }
     for(auto cls:{listener,splicer,moving,failing}) {
         const auto fn=classes.Function("ClientHearSound",cls,cc,{},0u,0x902u);
         const auto inputActor=classes.Property("Actor","ObjectProperty",fn,cc,ca,0x80u),inputId=classes.Property("Id","IntProperty",fn,cc,0,0x80u);
@@ -454,7 +473,10 @@ Tables Build(Fixture& fixture,bool outside=true) {
     for(unsigned i=0u;i<16u;++i)Index(worldBody,0); // Separate +0x9C..+0xD8 pointers, not FirstDeleted+0x100.
     Index(worldBody,0); // Original v68 serialized native travel-map count.
     map.Body(world,std::move(worldBody));
-    map.Body(worldModel,EmptyModel(outside));return {{coreTable,engineTable,classesTable},fixture.Write(map,true)};
+    map.Body(worldModel,EmptyModel(outside));
+    std::vector<PortablePackageTables> scripts;
+    if(!ownedEngine) {scripts.push_back(std::move(coreTable));scripts.push_back(std::move(engineTable));}
+    scripts.push_back(classesTable);return {std::move(scripts),fixture.Write(map,true)};
 }
 
 void Initialize(const Tables& tables) {
@@ -498,7 +520,9 @@ void ZeroRecipientsAndIdentity(Fixture& fixture,const Tables& tables) {
     const auto id=Channel(Call("Driver","Play"));Require(id!=0u,"Real source UObject has a reserved None sound channel");
     Require(Channel(Call("Driver","Play"))==id&&Channel(Call("Driver","PlayOpcode"))==id&&Channel(Call("Driver","PlayVirtual"))==id,
         "Repeated/final/native/virtual sound calls changed the source UObject channel");
-    Require(Channel(Call("Driver","PlaySimulated"))==id,"No-client simulated local sound did not return the same stable channel");
+    const auto missingEngine=Refused(fixture,"Driver","PlaySimulated");
+    Require(missingEngine.error.find("Actual Engine.Client")!=std::string::npos,
+        "Generated local call did not require genuine native Level.Engine authority");
     const auto otherId=Channel(Call("Other","Play"));Require(otherId!=id,"Distinct live source UObjects share a sound channel");
     Require(Channel(Call("Driver","PlayOther"))==otherId,"Context used FFrame.Object rather than opcode receiver for channel identity");
     const auto slotZero=Channel(Call("Driver","PlaySound",{Object("SoundA"),{Value::Byte(0),{}}}));
@@ -541,8 +565,10 @@ void GenuineRecipientsAndRollback(Fixture& fixture,const Tables& tables) {
 
 void CallerAndOwnership(Fixture& fixture,const Tables& tables) {
     Initialize(tables);Listen("First");const auto baseline=fixture.Snapshot("LocalBaseline");
-    const auto id=Channel(Call("Driver","PlaySimulated"));Require(fixture.Snapshot("LocalAfter")==baseline,"Simulated caller incorrectly used nonlocal PawnList");
-    const auto normal=Channel(Call("Driver","Play"));Require(normal==id,"Caller selection changed channel identity");Packet("First",normal);
+    const auto local=Refused(fixture,"Driver","PlaySimulated");
+    Require(local.error.find("Actual Engine.Client")!=std::string::npos&&fixture.Snapshot("LocalAfter")==baseline,
+        "Simulated caller incorrectly used nonlocal PawnList or accepted missing native Engine");
+    const auto normal=Channel(Call("Driver","Play"));Packet("First",normal);
     Initialize(tables);Listen("First");Call("Driver","GotoState",{{Value::Text(Kind::Name,"Speaking"),{}}});
     const auto resumed=ResumePortableActorState(Path("Driver"));Require(resumed.passed()&&resumed.committed,"Original State caller sound failed: "+resumed.error);
     const auto stateId=Read("Driver","StateChannel");Require(stateId.kind==Kind::Int&&stateId.integer!=0,"State program did not retain returned sound channel");
@@ -558,12 +584,13 @@ void CallerAndOwnership(Fixture& fixture,const Tables& tables) {
     // None sound leaves return bytes untouched before ownership/routing work.
     const auto silent=Call("Driver","PlaySound",{Object("")});Require(silent.value.kind==Kind::Nothing,"PlaySound(None) wrote a synthetic zero return");
     Initialize(tables);Listen("First");auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,17u);
-    const auto emptyClient=fixture.Snapshot("EmptyClient");Channel(Call("Driver","PlaySimulated"));
-    Require(fixture.Snapshot("AfterEmptyClient")==emptyClient,"Client with zero viewports was not legitimate empty local selection");
+    const auto noEngine=Refused(fixture,"Driver","PlaySimulated");
+    Require(noEngine.error.find("Actual Engine.Client")!=std::string::npos,"A render-owner token fabricated native Engine.Client authority");
     RegisterPortableRuntimeViewport(17u,{31u,1024u,1024u,3u,2u});Refused(fixture,"Driver","PlaySimulated");
     const auto prepared=PreparePortableRuntimePlayerObjects(31u);Require(!prepared.bound&&prepared.playerPath.empty(),"Viewport preparation fabricated a PlayerPawn");
-    const auto unbound=fixture.Snapshot("UnboundViewport");Channel(Call("Driver","PlaySimulated"));
-    Require(fixture.Snapshot("AfterUnboundViewport")==unbound,"Actual unbound native viewport fabricated local recipient effects");
+    const auto detached=Refused(fixture,"Driver","PlaySimulated");
+    Require(detached.error.find("Actual Engine.Client")!=std::string::npos,
+        "Constructor-only viewport bypassed missing actual Engine/Client initialization");
     lifetime->Revoke();Refused(fixture,"Driver","PlaySimulated");fixture.Unchanged();
 }
 
@@ -731,16 +758,190 @@ void NativeLevelClock(Fixture& fixture,const Tables& tables) {
     const auto after=GC::GetStats();Require(after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage,"Native level clock fixture leaked UObject roots");
     fixture.Unchanged();
 }
+
+std::uint64_t SourceHash(const std::filesystem::path& path) {
+    std::ifstream file(path,std::ios::binary);Require(bool(file),"Cannot fingerprint owned sound source: "+path.string());
+    std::array<char,16384u> buffer{};std::uint64_t hash=14695981039346656037ull;std::uintmax_t total{};
+    while(file) {
+        file.read(buffer.data(),static_cast<std::streamsize>(buffer.size()));const auto count=file.gcount();
+        total+=static_cast<std::uintmax_t>(count);Require(total<=512u*1024u*1024u,"Owned sound source exceeds fingerprint bound");
+        for(std::streamsize index=0;index<count;++index) {
+            hash^=static_cast<unsigned char>(buffer[static_cast<std::size_t>(index)]);hash*=1099511628211ull;
+        }
+    }
+    Require(file.eof()&&!file.bad(),"Cannot finish owned sound fingerprint");return hash;
+}
+struct OwnedSource {
+    std::filesystem::path path;std::uintmax_t size{};std::filesystem::file_time_type modified;std::uint64_t hash{};
+    explicit OwnedSource(const std::filesystem::path& source):path(std::filesystem::canonical(source)),
+        size(std::filesystem::file_size(path)),modified(std::filesystem::last_write_time(path)),hash(SourceHash(path)) {}
+    void Unchanged() const {
+        Require(std::filesystem::file_size(path)==size&&std::filesystem::last_write_time(path)==modified&&SourceHash(path)==hash,
+            "Owned sound source bytes, size or mtime changed: "+path.string());
+    }
+};
+bool SameLookup(const PortableObjectLookupState& first,const PortableObjectLookupState& second) {
+    return first.prepared==second.prepared&&first.objects==second.objects&&
+        first.generation==second.generation&&first.retainedBytes==second.retainedBytes;
+}
+bool Within(const std::filesystem::path& child,const std::filesystem::path& parent) {
+    const auto fold=[](std::string value) {
+        for(auto& character:value)if(character>='A'&&character<='Z')character=static_cast<char>(character-'A'+'a');
+        return value;
+    };
+    auto component=child.begin();
+    for(auto expected=parent.begin();expected!=parent.end();++component,++expected)
+        if(component==child.end()||fold(component->string())!=fold(expected->string()))return false;
+    return true;
+}
+void OwnedActualClientRouting(const std::filesystem::path& root) {
+    // ScriptSaveSchema derives its game root from the actual Actor UClass's
+    // source. Put verified byte-identical copies beside the generated test map
+    // in this isolated game root; never write a fixture into the owned install
+    // or weaken production save-source authority. Owned mode does not generate
+    // small Core/Engine substitutes at all.
+    Fixture fixture;const auto hybrid=Build(fixture,true,true);
+    Require(!Within(fixture.directory,root)&&!Within(root,fixture.directory),
+        "Owned sound fixture overlaps the commercial installation");
+    std::vector<OwnedSource> sources,copies;std::vector<PortablePackageTables> packages;
+    const auto copy=[&](const std::string& leaf) {
+        Require(!leaf.empty()&&leaf.find_first_of("/\\:")==std::string::npos,"Invalid isolated owned source leaf");
+        sources.emplace_back(root/"System"/leaf);
+        const auto target=fixture.directory/"System"/leaf;
+        Require(!std::filesystem::exists(target)&&std::filesystem::copy_file(sources.back().path,target),
+            "Cannot create isolated byte-identical owned sound source");
+        copies.emplace_back(target);
+        Require(copies.back().size==sources.back().size&&copies.back().hash==sources.back().hash,
+            "Copied owned sound package differs from the protected source");
+        return target;
+    };
+    const auto ini=copy("DeusEx.ini");
+    for(const auto* name:QuestVr::RuntimeScriptPackages) {
+        packages.push_back(LoadPortablePackageTables(copy(std::string(name)+".u").string()));
+    }
+    Require(hybrid.scripts.size()==1u&&fixture.sources.size()==2u,"Owned hybrid generated a Core/Engine substitute or changed helper inventory");
+    packages.push_back(hybrid.scripts.front());
+    const auto initialize=[&] {
+        ShutdownPortableRuntime();GC::Collect();
+        Require(InitializePortableRuntime(packages).passed&&
+            PreparePortableRuntimeNativeEngineClasses().prepared&&
+            PreparePortableRuntimeNativeMetadataClasses().prepared&&
+            PreparePortableRuntimeNativeConfigClasses().prepared&&
+            PreparePortableRuntimeNativePackages().prepared&&PreparePortableRuntimeObjectLookup().prepared&&
+            PreparePortableRuntimeEngineCollision(ini.string()).prepared&&
+            LoadPortableRuntimeMap(hybrid.map).passed,"Cannot prepare genuine owned Engine and hybrid local-sound map");
+    };
+    constexpr std::uint64_t clientId=8301u,firstId=8302u,secondId=8303u;
+    const auto empty=[&](const char* label) {
+        const auto before=fixture.Snapshot("OwnedEmptyBefore");const auto gc=GC::GetStats();
+        const auto lookup=ReadPortableRuntimeObjectLookup();const auto revision=GetPortableRuntimeWorldRevision();
+        const auto result=Call("Driver","PlaySimulated");const auto id=Channel(result);const auto after=GC::GetStats();
+        Require(!result.writes&&after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage&&
+            SameLookup(lookup,ReadPortableRuntimeObjectLookup())&&GetPortableRuntimeWorldRevision()==revision&&
+            fixture.Snapshot("OwnedEmptyAfter")==before,
+            std::string("Genuine empty local listener selection mutated state: ")+label);
+        return id;
+    };
+    const auto targets=[&] {
+        RegisterPortableRuntimeViewport(clientId,{firstId,1440u,1440u,3u,2u});
+        RegisterPortableRuntimeViewport(clientId,{secondId,1600u,1600u,3u,2u});
+    };
+    const auto bind=[&](bool registerTargets=true) {
+        auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);
+        const auto client=PreparePortableRuntimeClientObjects();
+        Require(client.initialized&&client.viewports.empty()&&client.registeredTargets.empty(),
+            "Local sound did not start with the actual initialized Client's empty array");
+        if(registerTargets)targets();
+        return lifetime;
+    };
+    const auto append=[&](std::uint64_t identity) {
+        const auto viewport=PreparePortableRuntimePlayerObjects(identity);
+        Require(!viewport.bound&&viewport.playerPath.empty(),"Explicit viewport construction fabricated a local sound listener");
+        return viewport;
+    };
+    const auto pair=[&](std::uint64_t identity,const std::string& actor) {
+        const auto result=SetPortableRuntimePlayer(identity,Path(actor));
+        Require(result.passed()&&result.committed,"Genuine test SetPlayer/Possess failed: "+result.error);
+        Same(Read(actor,"Possessions"),Value::Integer(1),"SetPlayer did not execute the actual generated Possess override");
+        const auto viewport=ReadPortableRuntimePlayerSession(identity);
+        Require(viewport.bound&&viewport.playerPath==Path(actor),"Local sound fixture did not establish actual paired native edges");
+    };
+
+    initialize();
+    const auto noClient=empty("actual Engine.Client=None");
+    Require(Channel(Call("Driver","Play"))==noClient,"Local zero-listener route changed source channel identity");
+    auto lifetime=bind(false);
+    Require(empty("initialized actual Client, zero targets and zero viewports")==noClient,
+        "Initialized empty Client changed source channel identity");
+    targets();
+    const auto metadataOnly=ReadPortableRuntimeClientSession();
+    Require(metadataOnly.viewports.empty()&&metadataOnly.registeredTargets.size()==2u,
+        "Target descriptors fabricated actual native viewports");
+    Require(empty("descriptor A,B but zero actual viewports")==noClient,"Descriptor-only listener selection changed channel identity");
+    const auto second=append(secondId);
+    const auto onlySecond=ReadPortableRuntimeClientSession();
+    Require(onlySecond.viewports.size()==1u&&onlySecond.viewports[0u].identity==secondId&&
+        onlySecond.viewports[0u].path==second.viewportPath&&onlySecond.registeredTargets[0u].identity==firstId,
+        "Actual viewport B was replaced by registered target A");
+    empty("descriptor A,B and actual B with Actor=None");
+    append(firstId);
+    const auto reversed=ReadPortableRuntimeClientSession();
+    Require(reversed.viewports.size()==2u&&reversed.viewports[0u].identity==secondId&&
+        reversed.viewports[1u].identity==firstId&&reversed.registeredTargets[0u].identity==firstId&&
+        reversed.registeredTargets[1u].identity==secondId,"Actual B,A order was replaced by descriptor order A,B");
+    empty("actual B,A both with Actor=None");
+    pair(secondId,"Second");pair(firstId,"First");
+    const auto both=Channel(Call("Driver","PlaySimulated"));Packet("Second",both);Packet("First",both);
+    lifetime->Revoke();Refused(fixture,"Driver","PlaySimulated");
+    ClearPortableRuntimeClient();GC::Collect();
+    lifetime=bind();append(secondId);append(firstId);
+    empty("Clear and same numeric Client/Viewport IDs do not revive old actors");
+    Same(Read("First","Heard"),Value::Integer(1),"Fresh same-ID lifetime reused the retired first listener");
+    Same(Read("Second","Heard"),Value::Integer(1),"Fresh same-ID lifetime reused the retired second listener");
+
+    // The first actual viewport is B even though target metadata starts A.
+    // Its synchronous callback moves the source out of A's hearing radius.
+    initialize();lifetime=bind();append(secondId);append(firstId);pair(secondId,"Mover");pair(firstId,"First");
+    const auto moved=Channel(Call("Driver","PlaySimulated"));Packet("Mover",moved);
+    Same(Read("Driver","Location"),Value::Vector({4000,0,0}),"Local callback did not synchronously move the actual source");
+    Same(Read("First","Heard"),Value::Integer(0),"Local loop used metadata order or cached source location across callback");
+
+    initialize();lifetime=bind();append(secondId);append(firstId);pair(secondId,"First");pair(firstId,"Failure");
+    const auto lookup=ReadPortableRuntimeObjectLookup();const auto failed=Refused(fixture,"Driver","PlaySimulated");
+    Require(failed.error.find("999")!=std::string::npos,"Local callback rollback stopped before intentional late refusal");
+    Same(Read("First","Heard"),Value::Integer(0),"Later local callback failure retained an earlier recipient's effects");
+    Require(SameLookup(lookup,ReadPortableRuntimeObjectLookup())&&ReadPortableRuntimePlayerSession(secondId).playerPath==Path("First")&&
+        ReadPortableRuntimePlayerSession(firstId).playerPath==Path("Failure"),
+        "Local callback rollback changed lookup or established native player pairs");
+    fixture.Unchanged();for(const auto& source:sources)source.Unchanged();for(const auto& source:copies)source.Unchanged();
+    ShutdownPortableRuntime();GC::Collect();
+}
 } // namespace
 
-int main() {
+int main(int argc,char** argv) {
     try {
-        const auto baseline=GC::GetStats().numObjects;Fixture fixture;const auto tables=Build(fixture);
-        ZeroRecipientsAndIdentity(fixture,tables);GenuineRecipientsAndRollback(fixture,tables);CallerAndOwnership(fixture,tables);
-        BlockedBspHearing();NativeLevelClock(fixture,tables);
+        std::cout.setf(std::ios::unitbuf);
+        bool owned{};std::filesystem::path root;
+        for(int argument=1;argument<argc;++argument) {
+            const std::string value=argv[argument];
+            if(value=="--owned")owned=true;
+            else if(value=="--game-root"&&argument+1<argc) {root=argv[++argument];owned=true;}
+            else throw std::runtime_error("Usage: portable_sound_routing_test [--owned] [--game-root OWNED_GAME_ROOT] (or DEUSEX_GAME_ROOT)");
+        }
+        if(owned&&root.empty()) {const auto* configured=std::getenv("DEUSEX_GAME_ROOT");if(configured&&*configured)root=configured;}
+        if(owned&&root.empty()) {std::cout<<"SKIP owned local-sound Client/Viewport integration: use --game-root or DEUSEX_GAME_ROOT.\n";return 77;}
+        const auto baseline=GC::GetStats().numObjects;
+        if(owned)OwnedActualClientRouting(std::filesystem::canonical(root));
+        else {
+            Fixture fixture;const auto tables=Build(fixture);
+            ZeroRecipientsAndIdentity(fixture,tables);GenuineRecipientsAndRollback(fixture,tables);CallerAndOwnership(fixture,tables);
+            BlockedBspHearing();NativeLevelClock(fixture,tables);
+        }
         ShutdownPortableRuntime();GC::Collect();Require(GC::GetStats().numObjects==baseline,"Sound routing fixture leaked rooted UObjects");
-        std::cout<<"PASS PlaySound264 production routing: "<<checks<<" checks, "<<refusals
-            <<" refusal controls; real UObject channels, caller/native Level ownership, live PawnList callbacks and complete rollback."
+        std::cout<<"PASS "<<(owned?"owned actual-Client local ":"generated nonlocal ")<<"PlaySound264 production routing: "<<checks<<" checks, "<<refusals
+            <<" refusal controls; real UObject channels, caller/native Level ownership, "
+            <<(owned?"live actual-Client viewport callbacks":"live PawnList callbacks")<<" and complete rollback."
+              " Owned mode uses generated test Possess/ClientHearSound overrides, not original Login/Possess/startup."
               " No rendered/audio-queue or complete-crate gameplay claim.\n";return 0;
     } catch(const std::exception& error) {ShutdownPortableRuntime();std::cerr<<"Sound routing integration failed: "<<error.what()<<'\n';return 1;}
 }

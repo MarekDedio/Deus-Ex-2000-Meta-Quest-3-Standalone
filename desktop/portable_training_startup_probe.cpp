@@ -142,6 +142,16 @@ bool SameSession(const PortablePlayerSessionSnapshot& a,const PortablePlayerSess
         a.viewportOuterPath==b.viewportOuterPath&&a.clientObjectFlags==b.clientObjectFlags&&a.viewportObjectFlags==b.viewportObjectFlags&&
         SameViewport(a.viewport,b.viewport)&&a.bound==b.bound;
 }
+bool SameNativeClient(const PortableNativeClientSessionSnapshot& a,const PortableNativeClientSessionSnapshot& b) {
+    return a.clientIdentity==b.clientIdentity&&a.lookupGeneration==b.lookupGeneration&&
+        a.clientIndex==b.clientIndex&&a.engineIndex==b.engineIndex&&a.clientPath==b.clientPath&&
+        a.clientClassPath==b.clientClassPath&&a.clientOuterPath==b.clientOuterPath&&a.enginePath==b.enginePath&&
+        a.clientObjectFlags==b.clientObjectFlags&&a.initialized==b.initialized&&
+        a.viewports.size()==b.viewports.size()&&a.registeredTargets.size()==b.registeredTargets.size()&&
+        std::equal(a.viewports.begin(),a.viewports.end(),b.viewports.begin(),[](const auto& left,const auto& right) {
+            return left.identity==right.identity&&left.path==right.path;
+        })&&std::equal(a.registeredTargets.begin(),a.registeredTargets.end(),b.registeredTargets.begin(),SameViewport);
+}
 struct ActorIdentity {
     std::string path,classPath;std::uint32_t objectIndex{},classIndex{},outerIndex{};
 };
@@ -656,6 +666,14 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         <<" failures="<<inputConfig.configFailures<<" warnings="<<inputConfig.configWarnings
         <<"; real native CDO payloads, NOT an Input instance or live controller acceptance\n";
     auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,Client);
+    // Match the genuine Quest bootstrap: Client.Init establishes both native
+    // Engine/Client edges before targets and NewViewport. Raw XR registration
+    // alone is not authority for original startup or local sound listeners.
+    const auto initializedClient=PreparePortableRuntimeClientObjects();
+    Require(initializedClient.initialized&&initializedClient.clientIdentity==Client&&
+        initializedClient.clientIndex&&initializedClient.engineIndex&&!initializedClient.enginePath.empty()&&
+        initializedClient.viewports.empty()&&initializedClient.registeredTargets.empty(),
+        "Cannot initialize the actual empty Engine.Client before original startup viewport construction");
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");
     const auto canvas=PreparePortableRuntimeViewportCanvas(Viewport,ini);
@@ -714,6 +732,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         "Fresh Training unexpectedly owns a native collision hash or a consumed shared RNG stream");
     const auto client=ReadPortableRuntimeClientView();const auto session=ReadPortableRuntimePlayerSession(Viewport);
     Require(HasPortableRuntimeClient()&&client.size()==1u&&!session.bound,"Actual client/viewport preparation is inconsistent");
+    const auto nativeClient=ReadPortableRuntimeClientSession();
+    Require(nativeClient.initialized&&nativeClient.clientIndex==initializedClient.clientIndex&&
+        nativeClient.engineIndex==initializedClient.engineIndex&&nativeClient.enginePath==initializedClient.enginePath&&
+        nativeClient.viewports.size()==1u&&nativeClient.viewports[0u].identity==Viewport&&
+        nativeClient.viewports[0u].path==session.viewportPath&&nativeClient.registeredTargets.size()==1u&&
+        SameViewport(nativeClient.registeredTargets[0u],client[0u]),
+        "NewViewport changed the initialized Client/Engine owner or failed to populate its actual native array");
     const auto engineClient=ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Client");
     Require(engineClient.kind==Kind::Object&&engineClient.text==session.clientPath,
         "Actual Engine.Client is not the prepared native Client UObject");
@@ -767,7 +792,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         const auto views=ReadPortableRuntimeClientView();
         Require(lifetime->Alive()&&HasPortableRuntimeClient()&&views.size()==client.size()&&
             std::equal(views.begin(),views.end(),client.begin(),SameViewport)&&
-            SameSession(session,ReadPortableRuntimePlayerSession(Viewport)),"Startup diagnostic changed client/viewport/player ownership");
+            SameSession(session,ReadPortableRuntimePlayerSession(Viewport))&&
+            SameNativeClient(nativeClient,ReadPortableRuntimeClientSession()),
+            "Startup diagnostic changed actual Client/Engine/viewport/player ownership or array order");
         Require(!Declared("Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&
             Declared("Engine.LevelInfo.Game",Kind::Object).text.empty(),"Startup diagnostic retained begun-world/GameInfo publication");
         GC::Collect();const auto actual=GC::GetStats();

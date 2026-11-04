@@ -61,18 +61,21 @@ accepted Training music/dialogue must survive unrelated input work.
 
 ## Concrete existing bootstrap and commit seams
 
-Independent read-only review confirms StartAmbientAudio is currently called
+Historical pre-endpoint review confirmed StartAmbientAudio was called
 only from CompleteInitialPreparation AFTER the exclusive runtime worker's
-PrepareInitialRuntime has returned. A real audio capability needed during
-original startup therefore cannot be supplied by that late call. Split actual
-device initialization from content attachment: open/start a real initially
+PrepareInitialRuntime had returned. A real audio capability needed during
+original startup therefore could not be supplied by that late call. The required
+split separates actual device initialization from content attachment: open/start a real initially
 silent48kHz stereo/I16 stream on its owning thread, validate negotiated format,
 then hand a revocable ready endpoint to the CPU worker before original startup.
 Attach prepared ambience/music/dialogue later without closing the endpoint.
 An initialized silent output is not a fabricated disabled/absent subsystem.
+The real endpoint-first split is now implemented by b6fdc6f; see
+QUEST-AUDIO-ENDPOINT-STARTUP.md for the current code and verification. This
+does not implement the native Audio UObject/channel interface below.
 Readiness must come from successful real AAudio open/start, not just a nonzero
-audioSampleRate_: StartAmbientAudio assigns that field before builder creation,
-which can still fail. Audio disconnect/error must revoke its own generation;
+audioSampleRate_: the historical StartAmbientAudio assigned that field before
+builder creation, which could still fail. Audio disconnect/error must revoke its own generation;
 an otherwise live client/render session does not prove the stream remains live.
 
 The proposed endpoint needs its own audio generation/lifetime in addition to
@@ -128,6 +131,68 @@ The audio thread consumes opaque lifetime-safe voice identities/data, never
 RuntimeObject pointers. Main independently retained bounded caller/body source
 in artifacts/input-reset-runtime-audio-*-20261102.log; a separate read-only
 source review confirms this contract and unchanged owned source hashes.
+
+## PlaySound channel selection and the actual native packet (2026-11-04)
+
+Further external objdump reads authenticate Galaxy export index19/ordinal20,
+PlaySoundW thunk10601221 ->10608100..10608308. Its actual UObject vtable slot+74
+contains that thunk. Engine APawn.execClientHearSound export index1883/ordinal1884,
+10302752 ->103DFC40..103DFDFB, calls actual Engine.Audio virtual+74 at103DFDE8.
+Both source DLL hashes above remained unchanged. No commercial code was run.
+
+ClientHearSound evaluates its five inputs, then decodes Parameters.X/Z with
+Double0.01 and individual Float spills before receiver eligibility checks.
+Parameters.Y supplies Radius. Actual non-PlayerPawn, Player=None, non-Viewport
+Player, and Engine.Audio=None are legitimate source exits, not permission to
+manufacture an absent Quest provider. An eligible source Actor with UObject
+pending-kill flag0x80 becomes None; reflected bDeleteMe is not that flag.
+Radius==Float0 becomes1600; other values are not normalized by this wrapper.
+The provider receives Actor/Id/Sound/unchanged Location/Volume/Radius/Pitch;
+its Int return is ignored by the callback.
+
+The concrete Galaxy selection is not simply "take a free voice":
+
+1. Assert Radius!=0 before the Viewport=None or Sound=None early return0.
+2. For SLOT_None `(Id & 0xE)==0`, decrement a subsystem counter and replace
+   the entire Id with DWORD(counter<<4). Its initial value remains unaudited.
+3. Use actual Viewport.Actor, or its nonnull PlayerPawn.ViewTarget, for listener
+   position. Initial priority is `(1-distance/radius)*volume`, without clamping.
+   The original x87 accumulation/spill/comparison precision is significant;
+   a host Float implementation is not yet an authenticated equivalent.
+4. Scan live slots ascending. An Id match ignoring bit0 wins immediately,
+   except incoming bit0 forbids that override and returns0. Otherwise a running
+   priority >= stored Float priority selects that slot and lowers the running
+   threshold to its priority. Later ties win; a later same-Id still overrides
+   an earlier priority candidate. No backend-active filter is applied.
+5. If no candidate, return0. Otherwise StopSound(selected) first. Internal
+   Sound=-1 means stop-only and return1. Ordinary Sound fills semantic fields
+   with the INITIAL calculated priority, not the minimum scan threshold, and
+   starts with empty backend state and the authenticated Float-1 field.
+
+This body does not start playback. The later Update/backend path must consume
+the channel inventory. StopSoundId10601186 ->10607EF0 stops only the FIRST
+matching Id slot (ignoring bit0), not every match. Constructor10601226 ->10604A20
+explicitly initializes32 records, but the separately configurable live count
+and SLOT_None counter initialization are not established by that constructor
+read. The fixed constructor capacity is not a license to invent the live count.
+
+A further bounded read identifies EffectsChannels as the actual native Config
+IntProperty at+64 (StaticConstructor10604BB0, property construction10605177..51AF).
+PostEditChange10605AD0 clamps signed count to[0,32] at10605B22..5B40. Init106056DB
+reads that count for backend1060EBC0 without doing that clamp itself. The complete
+config/default/post-load invocation chain remains unestablished; a clamp's
+presence does not prove it ran before Init. The owned INI selects16 channels.
+No explicit initial counter+8FC store was proved in constructor, Init,
+StaticConstructor, PostEditChange, SetViewport or the bounded Update read.
+Init's zero block ends before that counter. Its source allocation/default-tail
+initialization must be authenticated rather than guessing counter0.
+
+Ignored bounded evidence: native-audio-playsound-contract-20261104.md and
+adjacent native-audio-playsound-*-20261104 logs under artifacts. Remaining source
+work includes actual Update voice start/completion/owner following/spatial gain,
+pitch/resource handling, configured EffectsChannels/counter initialization,
+changed-viewport resource/init/failure behavior, and exact priority math. This
+audit is not a provider, audible crate effect, startup completion or new APK.
 
 Artifacts input-read-audio-*-20261102.log/json retain the exact export/vtable,
 bounded bodies and before/after source fingerprints. No renderer/audio

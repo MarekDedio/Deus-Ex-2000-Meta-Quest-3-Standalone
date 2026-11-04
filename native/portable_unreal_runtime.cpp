@@ -5470,8 +5470,14 @@ public:
         return {value.vector[0u],value.vector[1u],value.vector[2u]};
     }
     void ValidateSoundClientLease() {
-        if (soundClientIdentity_ && (!persistentNativeClient.HasClient() ||
-            persistentNativeClient.ClientIdentity()!=soundClientIdentity_))
+        if (!soundClientIdentity_) return;
+        // Numeric render-owner IDs can be reused after Clear. Sound routing
+        // retains the exact native Client graph/lifetime captured by this root,
+        // just like every other actual Engine.Client consumer.
+        ValidateRootNativeClientLease();
+        if (!nativeClientRoot_ || !nativeClientRoot_->client ||
+            nativeClientRoot_->clientIdentity!=soundClientIdentity_ ||
+            nativeClientRoot_->client->nativeClientIdentity!=soundClientIdentity_)
             throw std::runtime_error("Native sound client lease is revoked or stale");
     }
     void CheckHearSoundNative(RuntimeObject* source,RuntimeObject* listener,const Value& sound,
@@ -5546,20 +5552,16 @@ public:
         if (context->boolean) {
             // Source NetMode==3 also selects this retail branch, but requires
             // the as-yet unsupported native network-client services above.
-            if (persistentNativeClient.IsBound()) {
-                if (!persistentNativeClient.HasClient())
-                    throw std::runtime_error("Native sound client binding was revoked");
-                soundClientIdentity_=persistentNativeClient.ClientIdentity();
+            if (auto* client=RequireActualEngineClient(actor->nativeXLevel)) {
+                soundClientIdentity_=client->nativeClientIdentity;
                 std::size_t index{};
                 for (;;) {
                     ValidateSoundClientLease();
-                    const auto viewports=persistentNativeClient.ReadOnlyView();
-                    if (index>=viewports.size()) break;
-                    const auto identity=viewports[index++].identity;
-                    LifecycleStep();
-                    // A descriptor without its actual UViewport is unknown,
-                    // not an invented None Actor. Construction is explicit.
-                    auto* viewport=NativeSessionViewport(identity);
+                    // This is the live Client UObject array, never registered
+                    // XR target metadata or a snapshot retained across an
+                    // earlier recipient's synchronous script callback.
+                    auto* viewport=ActualClientViewportAt(client,index++);
+                    if (!viewport) break;
                     auto* listener=viewport->nativeViewportActor;
                     if (listener && listener->nativeXLevel==actor->nativeXLevel)
                         CheckHearSoundNative(actor,listener,values[0u],packet,execution);

@@ -75,7 +75,7 @@ a UFunction with FUNC_Simulated0x100. `FFrame.Node` at VA0x103e237b is not the
 called PlaySound declaration, nor a Pawn/bNetOwner/bSimulatedPawn predicate.
 Otherwise routing seeds from the current **source.Level.PawnList**, not the
 native Actors[0] used for NetMode, then scans live nextPawn for bIsPlayer.
-Viewport routing uses ordered registered viewports, nonnull Viewport.Actor,
+Viewport routing uses the live native Client viewport array, nonnull Viewport.Actor,
 and matching source/listener native Level. Recorder/network state is a separate
 native dependency and must not silently be assumed absent. Specifically, a
 nonnull native XLevel.DemoRecDriver with ServerConnection=None and actual
@@ -138,12 +138,17 @@ must not happen inside a real-time native callback or XR frame.
   refuse until actual network services exist. Hardware standalone is not itself
   a reason to misinterpret an unknown recorder as absent.
 - Nonlocal routing consumes the real source.Level.PawnList/bIsPlayer and rereads
-  nextPawn after each synchronous callback. Local routing reads ordered actual
-  session Viewport.Actor and native Level membership. No client, a live client
-  with zero viewports or an actual viewport with Actor=None are genuine empty
-  cases and still return the original stable channel. A descriptor lacking its
-  actual UViewport, or a revoked/stale binding, refuses rather than pretending
-  to have no listeners. Client leases are rechecked through root commit.
+  nextPawn after each synchronous callback. Local routing requires the actual
+  current Level.Engine and initialized reciprocal Engine.Client/Client.Engine
+  edges, then rereads that Client's live viewport array after each callback.
+  A genuine Engine.Client=None, initialized Client with an empty native array,
+  or actual viewport with Actor=None is an empty local-recipient case and still
+  returns the original stable channel. XR target descriptors supply neither
+  membership nor order: metadata A,B with actual B,A visits B first. Missing
+  native Engine authority or a detached constructor-only Client refuses; raw
+  target registration is not a fallback provider. The exact retained Client
+  graph and irreversible lifetime, not numeric IDs alone, remain authenticated
+  through callback delivery and both root commit boundaries.
 - Each listener gets current source Location/Instigator and real PlayerPawn
   ViewTarget. New quest_sound_hearing.h uses integer dyadic PC64 geometry,
   z/y/x summation, strict initial range and separate Float spill for inclusive

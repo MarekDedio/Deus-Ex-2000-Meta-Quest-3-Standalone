@@ -242,6 +242,8 @@ foreach(SOUND_INTEGRATION portable_sound_routing portable_crate_destruction port
     add_test(NAME ${SOUND_INTEGRATION} COMMAND ${SOUND_INTEGRATION}_test)
 endforeach()
 set_tests_properties(portable_crate_destruction PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME portable_sound_routing_owned COMMAND portable_sound_routing_test --owned)
+set_tests_properties(portable_sound_routing_owned PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(quest_npc_animation_test quest_npc_animation_test.cpp visual_renderer.cpp)
 target_compile_features(quest_npc_animation_test PRIVATE cxx_std_20)
 target_link_libraries(quest_npc_animation_test PRIVATE quest_portable_host)

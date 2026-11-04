@@ -1,5 +1,42 @@
 # Port status
 
+## Latest: actual Client-array local sound (verified2026-11-04)
+
+Local/simulated PlaySound264 now authenticates actual Level.Engine and the
+initialized reciprocal Engine.Client/Client.Engine pair, then rereads that
+Client's live native viewport array across synchronous callbacks. Raw target
+metadata no longer selects listener count/order; numeric IDs alone no longer
+prove the sound lease. Nonlocal PawnList routing/packet/hearing math is unchanged.
+
+The first owned hybrid test exposed a save-source-root fixture mismatch. It is
+retained as a failed run; the fixture now uses verified byte-identical copies of
+the38 original script packages/INI beside its generated helper/map in an isolated
+temporary root. No production save validation or original installation was
+changed. Corrected generated2688 checks/24 refusals and owned72420/two pass.
+Owned positives use genuine Engine/Client/Viewports and actual SetPlayer with
+explicit generated test Possess/ClientHearSound overrides, not original player
+startup or audible output. They prove metadata A,B versus actual B,A order,
+synchronous source mutation, packet delivery, late callback rollback, empty
+arrays, Actor=None, revocation and fresh same-ID binding without revived actors.
+
+Focused desktop build, production Android native link and strict ARM64 runtime
+pass. The first-Training startup CLI now explicitly initializes the actual empty
+Client before registration/NewViewport and checks exact Client/Engine/index/array
+preservation across rollback. Its refreshed owned run and full desktop/CTest
+gate pass: full rebuild,263 executed/323 registered/60 explicit owned-data skips/
+zero failures in236.60s. The actual Training check retains the exact later
+post-partition refusal in591.794s/267089 instructions/38087 writes, native work
+14254758/16777216, Init/reconciliation/pre-post/rate ReadInput/later Reset and
+keys255/Byte13/Float15. Full save/state/revision/hash/RNG/client/lookup/Actor/GC
+rollback and all45 owned sources remain unchanged; no startup is published.
+Final audit verifies1940 frozen compiler inputs,45 originals,3 selected assets
+and4 source DLLs unchanged, zero live jobs and no new APK. The original
+committing startup/native audible channels/live weapon/
+crate/loot/gravity/frame integration remain open. See NATIVE-SOUND-CLIENT-ARRAY.md.
+The audio continuation document additionally records authenticated original
+PlaySound channel selection/ClientHearSound packet and concrete remaining native
+provider work; those source audits do not implement an audio subsystem.
+
 ## Latest: real audio endpoint before startup worker (verified2026-11-04)
 
 The Quest owner now opens a real initially silent AAudio output before launching
