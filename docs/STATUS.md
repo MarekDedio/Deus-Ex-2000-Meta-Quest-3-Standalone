@@ -1,5 +1,22 @@
 # Port status
 
+## Latest: real audio endpoint before startup worker (verified2026-11-04)
+
+The Quest owner now opens a real initially silent AAudio output before launching
+CPU preparation, defers launch until actual started-state/positive-callback proof,
+uses independent irreversible endpoint generations/error callbacks, and attaches
+prepared content later without reopening. Delayed map/music/dialogue output
+requires the same live generation. Optional WAV is bounded/stereo-resampled to
+the real output format. No Engine.Audio UObject or native channel provider is
+fabricated. Focused host158/12 and production Android build/link pass. The initial
+host target lookup failed before required CMake regeneration; that failed run is
+retained. Strict ARM64 helper/full desktop build pass, and CTest passes263
+executed/322 registered/59 explicit owned-data skips/zero failures in163.01s.
+Final audit verifies1940 frozen inputs,45 originals,3 assets and4 DLLs unchanged,
+with zero live jobs and no new APK. All headset checks remain unverified; no
+playable startup is claimed. See
+QUEST-AUDIO-ENDPOINT-STARTUP.md for scope and remaining native audio integration.
+
 ## Latest: exact native Client lifetime and actual viewport distance (verified2026-11-04)
 
 A new owned Input regression reproduces a stale-authority defect: after a query,
