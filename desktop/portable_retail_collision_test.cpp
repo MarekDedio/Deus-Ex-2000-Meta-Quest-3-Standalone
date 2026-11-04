@@ -554,6 +554,8 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly,bool rawShap
         PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared,
         "Cannot prepare actual Engine/metadata/config/Package/lookup/Cylinder prerequisites");
     auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,2801u);
+    Require(PreparePortableRuntimeClientObjects().initialized,
+        "Collision startup fixture cannot initialize the actual native Client.Engine pair");
     RegisterPortableRuntimeViewport(2801u,{2802u,1024u,1152u,3u,2u});
     const auto playerObjects=PreparePortableRuntimePlayerObjects(2802u);
     Require(!playerObjects.bound,"Collision test forced player possession");

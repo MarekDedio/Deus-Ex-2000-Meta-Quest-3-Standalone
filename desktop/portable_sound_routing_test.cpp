@@ -23,6 +23,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -93,6 +95,10 @@ Code Ref(std::uint8_t op,std::int32_t reference) {
 }
 Code Integer(std::int32_t value) {Code code{{0x1du},5u};U32(code.raw,static_cast<std::uint32_t>(value));return code;}
 Code Real(float value) {Code code{{0x1eu},5u};Float(code.raw,value);return code;}
+Code Text(const std::string& value) {
+    Code code{{0x1fu},value.size()+2u};
+    code.raw.insert(code.raw.end(),value.begin(),value.end());code.raw.push_back(0u);return code;
+}
 Code Byte(std::uint8_t value) {return {{0x24u,value},2u};}
 Code Vector(Point value) {
     Code code{{0x23u},13u};
@@ -149,13 +155,14 @@ struct Package {
         return reference;
     }
     std::int32_t Property(const std::string& name,const std::string& type,std::int32_t owner,
-        std::int32_t core,std::int32_t target=0,std::uint32_t flags=0u,std::uint32_t dimension=1u) {
+        std::int32_t core,std::int32_t target=0,std::uint32_t flags=0u,std::uint32_t dimension=1u,
+        std::int32_t secondary=0) {
         const auto reference=Export(name,Import(type,core),0,owner,true);
-        builders.at(static_cast<std::size_t>(reference-1))=[type,target,flags,dimension](std::int32_t next,std::int32_t) {
+        builders.at(static_cast<std::size_t>(reference-1))=[type,target,flags,dimension,secondary](std::int32_t next,std::int32_t) {
             Bytes body{0u};Index(body,0);Index(body,next);U32(body,dimension);U32(body,flags);Index(body,0);
             if(flags&0x20u) U16(body,0u); // CPF_Net replication offset precedes subtype data.
             if(type=="ObjectProperty"||type=="StructProperty"||type=="ByteProperty") Index(body,target);
-            else if(type=="ClassProperty") {Index(body,target);Index(body,0);}
+            else if(type=="ClassProperty") {Index(body,target);Index(body,secondary);}
             return body;
         };return reference;
     }
@@ -310,7 +317,8 @@ Bytes EmptyModel(bool outside) {
     U32(body,outside?1u:0u);U32(body,0);return body;
 }
 
-Tables Build(Fixture& fixture,bool outside=true,bool ownedEngine=false) {
+Tables Build(Fixture& fixture,bool outside=true,bool ownedEngine=false,bool startup=false) {
+    Require(!startup||ownedEngine,"Startup Client fixture requires original Engine data");
     PortablePackageTables coreTable,engineTable;
     if(!ownedEngine) {
     Package core;core.stem="Core";const auto cp=core.ImportPackage("Core");
@@ -434,20 +442,70 @@ Tables Build(Fixture& fixture,bool outside=true,bool ownedEngine=false) {
         classes.FunctionCode(fn,Join({body,Return()}),0u,0x902u);
     }
     for(auto cls:{probe,listener,splicer,moving,failing}) {classes.ClassBody(cls);}
+    if(startup) {
+        // Explicit generated lifecycle/Login overrides isolate native startup
+        // Client semantics. They do not replace retail callbacks in production.
+        const auto gameInfo=classes.Import("GameInfo",ce),levelInfo=classes.Import("LevelInfo",ce);
+        const auto classType=classes.Import("Class",cc),playerPawn=classes.Import("PlayerPawn",ce);
+        const auto worldLevel=classes.Export("WorldLevel",0,levelInfo),worldProbe=classes.Export("WorldProbe",0,probe);
+        const auto loginPawn=classes.Export("LoginPawn",0,playerPawn);classes.ClassBody(loginPawn);
+        const auto actorLevel=classes.Import("Level",ca,"ObjectProperty");
+        const auto defaultGame=classes.Import("DefaultGameType",levelInfo,"ClassProperty");
+        const auto gameField=classes.Import("Game",levelInfo,"ObjectProperty");
+        for(const auto& [name,field,type,target]:std::vector<std::tuple<std::string,std::int32_t,std::string,std::int32_t>>{
+            {"SetWorldGameType",defaultGame,"ClassProperty",classType},{"SetWorldGame",gameField,"ObjectProperty",gameInfo}}) {
+            const auto fn=classes.Function(name,worldProbe,cc);
+            const auto input=classes.Property("Input",type,fn,cc,target,0x80u,1u,type=="ClassProperty"?gameInfo:0);
+            classes.FunctionCode(fn,Join({Assign(Context(Ref(0x01u,actorLevel),Ref(0x01u,field)),Ref(0x00u,input)),Return()}));
+        }
+        for(auto cls:{worldLevel,worldProbe}) {
+            for(const auto* event:{"PreBeginPlay","BeginPlay","PostBeginPlay","SetInitialState","PostPostBeginPlay"})
+                classes.Function(event,cls,cc,Return(),0u,0x802u);
+            classes.ClassBody(cls);
+        }
+        for(const auto* name:{"LocalGame","ServerGame","OverrideGame","FailureGame","MalformedGame"}) {
+            const auto game=classes.Export(name,0,gameInfo);
+            for(const auto* event:{"PreBeginPlay","BeginPlay","PostBeginPlay","SetInitialState","PostPostBeginPlay"})
+                classes.Function(event,game,cc,Return(),0u,0x802u);
+            const auto init=classes.Function("InitGame",game,cc,Return(),0u,0x802u);
+            classes.Property("Options","StrProperty",init,cc,0,0x400080u);
+            classes.Property("Error","StrProperty",init,cc,0,0x400180u);
+            const auto seenClass=classes.Property("LoginClass","ClassProperty",game,cc,classType,0u,1u,playerPawn);
+            const auto draw=classes.Property("LoginDraw","IntProperty",game,cc);
+            const auto login=classes.Function("Login",game,cc,{},0u,0x802u);
+            const auto portal=classes.Property("Portal","StrProperty",login,cc,0,0x400080u);
+            const auto options=classes.Property("Options","StrProperty",login,cc,0,0x400080u);
+            const auto error=classes.Property("Error","StrProperty",login,cc,0,0x400180u);
+            const auto selected=classes.Property("SpawnClass","ClassProperty",login,cc,classType,0x80u,1u,
+                std::string_view(name)=="MalformedGame"?ca:playerPawn);
+            classes.Property("ReturnValue","ObjectProperty",login,cc,playerPawn,0x580u);
+            Code body=Join({Assign(Ref(0x01u,seenClass),Ref(0x00u,selected)),
+                Assign(Ref(0x01u,draw),Native(167u,{Integer(1000)})),
+                Assign(Ref(0x00u,error),Text("small")),Assign(Ref(0x00u,error),Text(std::string(512u,'L')))});
+            for(unsigned piece=1u;piece<8u;++piece)
+                body=Join({body,Assign(Ref(0x00u,error),Native(112u,{Ref(0x00u,error),Text(std::string(512u,'L'))}))});
+            body=Join({body,Assign(Ref(0x00u,error),Native(112u,{Ref(0x00u,error),Ref(0x00u,portal)})),
+                Assign(Ref(0x00u,error),Native(112u,{Ref(0x00u,error),Ref(0x00u,options)}))});
+            if(std::string_view(name)=="FailureGame")body=Join({body,Native(999u)});
+            classes.FunctionCode(login,Join({body,Return(Token(0x2au))}),0u,0x802u);
+            classes.ClassBody(game);
+        }
+    }
     const auto classesTable=fixture.Write(classes);
 
     Package map;map.stem="SoundFixture";const auto me=map.ImportPackage("Engine"),mc=map.ImportPackage("SoundClasses");
     const auto world=map.Export("MyLevel",map.Import("Level",me)),worldModel=map.Export("WorldModel",map.Import("Model",me));
     const auto soundA=map.Export("SoundA",map.Import("Sound",me)),soundB=map.Export("SoundB",map.Import("Sound",me));
     map.ActorBody(soundA,{});map.ActorBody(soundB,{});
-    const auto levelActor=map.Export("Level0",map.Import("LevelInfo",me)),alternateInfo=map.Export("AlternateInfo",map.Import("LevelInfo",me));
-    const auto driver=map.Export("Driver",map.Import("Probe",mc)),other=map.Export("Other",map.Import("Probe",mc));
+    const auto levelActor=map.Export("Level0",map.Import(startup?"WorldLevel":"LevelInfo",startup?mc:me)),alternateInfo=map.Export("AlternateInfo",map.Import("LevelInfo",me));
+    const auto driver=map.Export("Driver",map.Import(startup?"WorldProbe":"Probe",mc)),other=map.Export("Other",map.Import("Probe",mc));
     const auto first=map.Export("First",map.Import("Listener",mc)),second=map.Export("Second",map.Import("Listener",mc));
     const auto third=map.Export("Third",map.Import("Listener",mc)),splice=map.Export("Splicer",map.Import("SpliceListener",mc));
     const auto move=map.Export("Mover",map.Import("MovingListener",mc)),failure=map.Export("Failure",map.Import("FailingListener",mc));
     const auto basePawn=map.Export("BasePawn",map.Import("Pawn",me)),plainPlayer=map.Export("PlainPlayer",map.Import("PlayerPawn",me));
     const auto orphan=map.Export("Orphan",map.Import("Probe",mc));
-    const std::vector<std::int32_t> actors{levelActor,driver,other,first,second,third,splice,move,failure,basePawn,plainPlayer};
+    const std::vector<std::int32_t> actors=startup?std::vector<std::int32_t>{levelActor,driver}:
+        std::vector<std::int32_t>{levelActor,driver,other,first,second,third,splice,move,failure,basePawn,plainPlayer};
     auto authored=actors;authored.push_back(alternateInfo);authored.push_back(orphan);
     for(auto reference:authored) {
         Bytes tags;
@@ -459,7 +517,7 @@ Tables Build(Fixture& fixture,bool outside=true,bool ownedEngine=false) {
         map.VectorTag(tags,"Location",reference==other?Point{10,0,0}:reference==driver?Point{0,0,0}:Point{1,0,0});
         map.FloatTag(tags,"TransientSoundVolume",1.0f);map.FloatTag(tags,"TransientSoundRadius",800.0f);
         if(reference==levelActor||reference==alternateInfo) {
-            map.BoolTag(tags,"bBegunPlay",true);map.ByteTag(tags,"NetMode",reference==alternateInfo?3u:0u);
+            map.BoolTag(tags,"bBegunPlay",!startup);map.ByteTag(tags,"NetMode",reference==alternateInfo?3u:0u);
             map.FloatTag(tags,"TimeDilation",1.0f);map.FloatTag(tags,"TimeSeconds",0.0f);
         }
         if(reference==driver||reference==other||reference==orphan) {map.ObjectTag(tags,"TestSound",reference==other?soundB:soundA);map.ObjectTag(tags,"Link",other);}
@@ -794,13 +852,139 @@ bool Within(const std::filesystem::path& child,const std::filesystem::path& pare
         if(component==child.end()||fold(component->string())!=fold(expected->string()))return false;
     return true;
 }
-void OwnedActualClientRouting(const std::filesystem::path& root) {
+void OwnedStartupClientRouting(Fixture& fixture,const Tables& hybrid,const std::function<void()>& initialize) {
+    constexpr std::uint64_t clientId=8401u,firstId=8402u,secondId=8403u;
+    constexpr auto terminal="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back";
+    initialize();
+    PortableWorldStartupProbeOptions options;
+    options.defaultGameClass="SoundClasses.LocalGame";options.defaultServerGameClass="SoundClasses.ServerGame";
+    const auto probe=[&](const PortableWorldStartupProbeOptions& input,const QuestVr::Vm::Limits& limits=QuestVr::Vm::Limits{}) {
+        const auto before=fixture.Snapshot("StartupClientBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto order=ReadPortableWorldActorOrder();const auto lookup=ReadPortableRuntimeObjectLookup();
+        GC::Collect();const auto gc=GC::GetStats();
+        const auto result=ProbePortableWorldStartup(input,limits);
+        Require(!result.execution.passed()&&!result.execution.committed&&!result.execution.error.empty(),
+            "Startup Client diagnostic published incomplete startup");
+        Require(fixture.Snapshot("StartupClientAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
+            ReadPortableWorldActorOrder()==order&&SameLookup(lookup,ReadPortableRuntimeObjectLookup()),
+            "Startup Client diagnostic retained native order/lookup/clock/RNG/script/revision state");
+        GC::Collect();const auto after=GC::GetStats();
+        Require(after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage,
+            "Startup Client diagnostic leaked roots/births/native tracker allocations");
+        Require(!Read("Level0","bBegunPlay").boolean&&Read("Level0","Game").text.empty(),
+            "Startup Client diagnostic left a begun world or GameInfo");
+        ++refusals;return result;
+    };
+    const auto selected=[&](const PortableWorldStartupProbeResult& result,const char* game,bool tracker) {
+        Require(result.phase==PortableWorldStartupPhase::ClientSetup&&result.gameInfoPath==Path(std::string(game)+"0")&&
+            result.execution.error==terminal&&result.playerLogins.empty()&&
+            result.brushTracker.attempted==tracker&&result.brushTracker.completed==tracker,
+            std::string("Actual Engine.Client presence/array selected the wrong GameInfo/Login/tracker path: ")+game+": "+result.execution.error);
+    };
+    selected(probe(options),"ServerGame",false);
+    auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);
+    selected(probe(options),"ServerGame",false); // Raw owner token is not Engine.Client.
+    RegisterPortableRuntimeViewport(clientId,{firstId,1440u,1440u,3u,2u});
+    selected(probe(options),"ServerGame",false); // Nor is target metadata.
+    ClearPortableRuntimeClient();GC::Collect();
+    lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);
+    const auto client=PreparePortableRuntimeClientObjects();
+    Require(client.initialized&&client.viewports.empty()&&client.registeredTargets.empty(),
+        "Startup fixture did not establish actual initialized empty Client");
+    selected(probe(options),"LocalGame",true);
+    RegisterPortableRuntimeViewport(clientId,{firstId,1440u,1440u,3u,2u});
+    selected(probe(options),"LocalGame",true);
+    RegisterPortableRuntimeViewport(clientId,{secondId,1600u,1600u,3u,2u});
+    selected(probe(options),"LocalGame",true); // Two descriptors still mean zero SpawnPlayActor calls.
+    auto url=options;url.urlGameClass="SoundClasses.OverrideGame";selected(probe(url),"OverrideGame",true);
+    Call("Driver","SetWorldGameType",{{Value::Text(Kind::Object,"SoundClasses.ServerGame"),{}}});
+    selected(probe(options),"ServerGame",true);selected(probe(url),"OverrideGame",true);
+    Call("Driver","SetWorldGameType",{{Value::Text(Kind::Object,{}),{}}});
+
+    const auto second=PreparePortableRuntimePlayerObjects(secondId);
+    Require(!second.bound,"Startup fixture fabricated a possessed viewport");
+    auto missing=probe(options);
+    Require(missing.phase==PortableWorldStartupPhase::ClientSetup&&missing.playerLogins.empty()&&
+        missing.execution.error=="Original SpawnPlayActor requires explicit decoded URL/config sources",
+        "Actual nonempty Client array bypassed the required Login source");
+    const auto first=PreparePortableRuntimePlayerObjects(firstId);const auto reversed=ReadPortableRuntimeClientSession();
+    Require(!first.bound&&reversed.viewports.size()==2u&&reversed.viewports[0u].identity==secondId&&
+        reversed.viewports[1u].identity==firstId&&reversed.registeredTargets[0u].identity==firstId&&
+        reversed.registeredTargets[1u].identity==secondId,"Startup actual B,A array became metadata A,B");
+    options.playerLogin.emplace();auto& source=*options.playerLogin;
+    source.portal=u"generated-portal";source.urlOptions={u"class=SoundClasses.LoginPawn",u"X=one",u"X=two"};
+    source.userDefaultPlayerClass=u"Engine.PlayerPawn";source.iniUrlClass=u"Engine.PlayerPawn";
+    const auto expectedError=[](const PortablePlayerLoginSource& input) {
+        std::string text(4096u,'L');
+        for(const auto c:input.portal){Require(c<128u,"Startup Login oracle expects ASCII Portal");text+=static_cast<char>(c);}
+        for(const auto& option:input.urlOptions) {
+            text+='?';for(const auto c:option){Require(c<128u,"Startup Login oracle expects ASCII options");text+=static_cast<char>(c);}
+        }
+        return text;
+    };
+    const auto logins=[&](const PortableWorldStartupProbeResult& result,const std::string& cls) {
+        Require(result.execution.error==terminal&&result.phase==PortableWorldStartupPhase::ClientSetup&&
+            result.playerLogins.size()==2u&&result.playerLogins[0u].viewportIdentity==secondId&&
+            result.playerLogins[1u].viewportIdentity==firstId&&result.brushTracker.completed,
+            "Startup loop did not visit the actual B,A viewport array: "+result.execution.error);
+        for(const auto& login:result.playerLogins)
+            Require(login.attempted&&login.loginEntered&&login.loginReturned&&!login.paired&&login.playerPath.empty()&&
+                login.selectedClass==cls&&login.error==expectedError(source),
+                "Actual startup Login lost class/Portal/ordered Options/growing OUT/real None result");
+        Require(ReadPortableRuntimePlayerSession(secondId).playerPath.empty()&&
+            ReadPortableRuntimePlayerSession(firstId).playerPath.empty(),"Rolled-back Login retained a player pair");
+    };
+    const auto entered=probe(options);logins(entered,"SoundClasses.LoginPawn");
+    const auto repeated=probe(options);logins(repeated,"SoundClasses.LoginPawn");
+    Require(repeated.playerLogins==entered.playerLogins&&repeated.execution.writes==entered.execution.writes,
+        "Warm rollback changed actual Login observations/write count");
+    const auto loginBody=LoadPortableFunctionScript(hybrid.scripts.front(),FindPortableExport(hybrid.scripts.front(),"LocalGame.Login"));
+    Require(entered.execution.writes>1u,"Actual Login lacks a final growing OUT write witness");
+    QuestVr::Vm::Limits tight;tight.writes=entered.execution.writes-1u;
+    const auto copyback=probe(options,tight);
+    Require(copyback.execution.status==QuestVr::Vm::Status::Budget&&copyback.playerLogins.size()==2u&&
+        copyback.playerLogins[0u].loginReturned&&copyback.playerLogins[1u].loginEntered&&
+        !copyback.playerLogins[1u].loginReturned&&copyback.playerLogins[1u].error.empty()&&
+        copyback.execution.function=="SoundClasses.LocalGame.Login"&&copyback.execution.opcode==0x2au&&
+        copyback.execution.offset==loginBody.logicalSize-1u,
+        "Final Login OUT copyback cut did not undo both real viewport callbacks at the original return boundary");
+    source.urlOptions={u"CLASS=Engine.Actor",u"X=fallback"};logins(probe(options),"Engine.PlayerPawn");
+    source.urlOptions={u"CLASS=",u"X=ini-fallback"};source.userDefaultPlayerClass=u"Engine.Actor";
+    logins(probe(options),"Engine.PlayerPawn");
+    source.urlOptions={u"CLASS=Missing.Player"};const auto unknown=probe(options);
+    Require(unknown.playerLogins.size()==1u&&!unknown.playerLogins[0u].loginEntered&&
+        unknown.playerLogins[0u].selectedClass.empty()&&unknown.execution.error.find("StaticLoadClass of an unmaterialized class/package is not implemented")!=std::string::npos,
+        "Unknown actual class load silently fell through to a default player");
+    source.urlOptions.clear();source.userDefaultPlayerClass.reset();source.iniUrlClass.reset();const auto noClass=probe(options);
+    Require(noClass.playerLogins.size()==1u&&!noClass.playerLogins[0u].loginEntered&&
+        noClass.execution.error=="Original SpawnPlayActor fatal LoadPlayerClass: no valid PlayerPawn class",
+        "Missing class sources fabricated a native player class");
+    source.userDefaultPlayerClass=u"Engine.PlayerPawn";source.iniUrlClass=u"Engine.PlayerPawn";
+    auto failure=options;failure.urlGameClass="SoundClasses.FailureGame";const auto failed=probe(failure);
+    Require(failed.playerLogins.size()==1u&&failed.playerLogins[0u].loginEntered&&!failed.playerLogins[0u].loginReturned&&
+        failed.playerLogins[0u].error.empty()&&failed.execution.function=="SoundClasses.FailureGame.Login"&&
+        failed.execution.error.find("999")!=std::string::npos,"Late actual Login refusal leaked unfinished OUT storage");
+    auto malformed=options;malformed.urlGameClass="SoundClasses.MalformedGame";const auto bad=probe(malformed);
+    Require(bad.playerLogins.size()==1u&&!bad.playerLogins[0u].loginEntered&&
+        bad.execution.error=="SpawnPlayActor Login class/result constraints are not PlayerPawn",
+        "Malformed actual Login secondary class constraint reached script dispatch");
+    lifetime->Revoke();const auto revoked=probe(options);
+    Require(revoked.gameInfoPath.empty()&&revoked.playerLogins.empty()&&
+        revoked.execution.error=="Portable native session UObject is revoked or stale",
+        "Revoked actual Client bypassed its exact native root lease refusal: "+revoked.execution.error);
+    ClearPortableRuntimeClient();GC::Collect();
+    lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);
+    RegisterPortableRuntimeViewport(clientId,{firstId,1440u,1440u,3u,2u});
+    options.playerLogin.reset();selected(probe(options),"ServerGame",false);
+    std::cout<<"OWNED STARTUP CLIENT: actual Engine None/empty Client/metadata-only/native B,A; original same-root Login protocol, generated test Game callbacks/None/long OUT, final-copyback rollback and exact native ownership; NOT playable startup.\n";
+}
+void OwnedActualClientRouting(const std::filesystem::path& root,bool startup=false) {
     // ScriptSaveSchema derives its game root from the actual Actor UClass's
     // source. Put verified byte-identical copies beside the generated test map
     // in this isolated game root; never write a fixture into the owned install
     // or weaken production save-source authority. Owned mode does not generate
     // small Core/Engine substitutes at all.
-    Fixture fixture;const auto hybrid=Build(fixture,true,true);
+    Fixture fixture;const auto hybrid=Build(fixture,true,true,startup);
     Require(!Within(fixture.directory,root)&&!Within(root,fixture.directory),
         "Owned sound fixture overlaps the commercial installation");
     std::vector<OwnedSource> sources,copies;std::vector<PortablePackageTables> packages;
@@ -831,6 +1015,11 @@ void OwnedActualClientRouting(const std::filesystem::path& root) {
             PreparePortableRuntimeEngineCollision(ini.string()).prepared&&
             LoadPortableRuntimeMap(hybrid.map).passed,"Cannot prepare genuine owned Engine and hybrid local-sound map");
     };
+    if(startup) {
+        OwnedStartupClientRouting(fixture,hybrid,initialize);
+        fixture.Unchanged();for(const auto& source:sources)source.Unchanged();for(const auto& source:copies)source.Unchanged();
+        ShutdownPortableRuntime();GC::Collect();return;
+    }
     constexpr std::uint64_t clientId=8301u,firstId=8302u,secondId=8303u;
     const auto empty=[&](const char* label) {
         const auto before=fixture.Snapshot("OwnedEmptyBefore");const auto gc=GC::GetStats();
@@ -921,27 +1110,29 @@ void OwnedActualClientRouting(const std::filesystem::path& root) {
 int main(int argc,char** argv) {
     try {
         std::cout.setf(std::ios::unitbuf);
-        bool owned{};std::filesystem::path root;
+        bool owned{},startup{};std::filesystem::path root;
         for(int argument=1;argument<argc;++argument) {
             const std::string value=argv[argument];
             if(value=="--owned")owned=true;
+            else if(value=="--startup"){startup=true;owned=true;}
             else if(value=="--game-root"&&argument+1<argc) {root=argv[++argument];owned=true;}
-            else throw std::runtime_error("Usage: portable_sound_routing_test [--owned] [--game-root OWNED_GAME_ROOT] (or DEUSEX_GAME_ROOT)");
+            else throw std::runtime_error("Usage: portable_sound_routing_test [--owned | --startup] [--game-root OWNED_GAME_ROOT] (or DEUSEX_GAME_ROOT)");
         }
         if(owned&&root.empty()) {const auto* configured=std::getenv("DEUSEX_GAME_ROOT");if(configured&&*configured)root=configured;}
-        if(owned&&root.empty()) {std::cout<<"SKIP owned local-sound Client/Viewport integration: use --game-root or DEUSEX_GAME_ROOT.\n";return 77;}
+        if(owned&&root.empty()) {std::cout<<"SKIP owned Engine/Client/Viewport integration: use --game-root or DEUSEX_GAME_ROOT.\n";return 77;}
         const auto baseline=GC::GetStats().numObjects;
-        if(owned)OwnedActualClientRouting(std::filesystem::canonical(root));
+        if(owned)OwnedActualClientRouting(std::filesystem::canonical(root),startup);
         else {
             Fixture fixture;const auto tables=Build(fixture);
             ZeroRecipientsAndIdentity(fixture,tables);GenuineRecipientsAndRollback(fixture,tables);CallerAndOwnership(fixture,tables);
             BlockedBspHearing();NativeLevelClock(fixture,tables);
         }
         ShutdownPortableRuntime();GC::Collect();Require(GC::GetStats().numObjects==baseline,"Sound routing fixture leaked rooted UObjects");
-        std::cout<<"PASS "<<(owned?"owned actual-Client local ":"generated nonlocal ")<<"PlaySound264 production routing: "<<checks<<" checks, "<<refusals
+        std::cout<<"PASS "<<(startup?"owned startup Client":owned?"owned actual-Client local PlaySound264":"generated nonlocal PlaySound264")<<" production routing: "<<checks<<" checks, "<<refusals
             <<" refusal controls; real UObject channels, caller/native Level ownership, "
             <<(owned?"live actual-Client viewport callbacks":"live PawnList callbacks")<<" and complete rollback."
-              " Owned mode uses generated test Possess/ClientHearSound overrides, not original Login/Possess/startup."
-              " No rendered/audio-queue or complete-crate gameplay claim.\n";return 0;
+              <<(startup?" Owned startup mode uses generated GameInfo lifecycle/Login overrides and real script None; not retail JC startup.":
+                  " Owned sound mode uses generated test Possess/ClientHearSound overrides, not original Login/Possess/startup.")
+              <<" No rendered/audio-queue or complete-crate gameplay claim.\n";return 0;
     } catch(const std::exception& error) {ShutdownPortableRuntime();std::cerr<<"Sound routing integration failed: "<<error.what()<<'\n';return 1;}
 }

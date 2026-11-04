@@ -9335,7 +9335,7 @@ public:
                 else {
                     // Original LoadMap selects ini DefaultGame by Client
                     // presence, not viewport count, tracking or PlayerPawn.
-                    const bool localClient = persistentNativeClient.HasClient();
+                    const bool localClient = RequireActualEngineClient(CurrentClockLevel()) != nullptr;
                     const auto& configured = localClient ? options.defaultGameClass : options.defaultServerGameClass;
                     if (configured.empty()) throw std::runtime_error(localClient ?
                         "World startup has no map GameInfo class or configured local DefaultGame" :
@@ -9472,15 +9472,11 @@ public:
         visit(Phase::ClientSetup, info, 0u);
         // Original helper1038BF10 rereads the live ascending viewport array.
         // A client is not proof of a Pawn, and tracking is not a predicate.
-        if(persistentNativeClient.HasClient()) {
-            clientDependent_=true;
-            const auto clientIdentity=persistentNativeClient.ClientIdentity();
+        if(auto* client=RequireActualEngineClient(CurrentClockLevel())) {
             for(std::size_t slot=0u;;++slot) {
                 LifecycleStep();
-                if(!persistentNativeClient.HasClient() || persistentNativeClient.ClientIdentity()!=clientIdentity)
-                    throw std::runtime_error("Native client lifetime changed during original player setup");
-                const auto viewports=persistentNativeClient.ReadOnlyView();
-                if(slot>=viewports.size())break;
+                auto* viewport=ActualClientViewportAt(client,slot);
+                if(!viewport)break;
                 if(!options.playerLogin)
                     throw std::runtime_error("Original SpawnPlayActor requires explicit decoded URL/config sources");
                 if(result.playerLogins.empty()) {
@@ -9491,7 +9487,7 @@ public:
                 }
                 if(result.playerLogins.size()==QuestVr::NativeClientRegistry::MaximumViewports)
                     throw std::runtime_error("Original player setup exceeds the native viewport registry bound");
-                auto& login=result.playerLogins.emplace_back();login.viewportIdentity=viewports[slot].identity;
+                auto& login=result.playerLogins.emplace_back();login.viewportIdentity=viewport->nativeViewportIdentity;
                 const auto stringBytes=login.selectedClass.capacity()+login.gamePath.capacity()+
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;

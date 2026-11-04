@@ -3117,8 +3117,13 @@ void VerifyOriginalDecalCheckpoint(const std::filesystem::path& root,
     std::cout<<"ORIGINAL DECAL CHECKPOINT codec10/envelope13: real Shadow births, original floor geometry, ordered duplicates/mismatches, cold rooted replacement/GC, symbolic refusals, Detach rollback/revision, legacy reset; NOT Attach/startup/render completion\n";
 }
 
-void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
+void VerifyOriginalWorldStartupProbe(const std::filesystem::path& root,const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+        PreparePortableRuntimeObjectLookup().prepared&&
+        PreparePortableRuntimeEngineCollision((root/"System"/"DeusEx.ini").string()).prepared,
+        "Original world prefix cannot prepare genuine native Engine/Client prerequisites");
     // An explicitly owned synthetic stereo target exercises the actual live
     // client guard. This is not a Quest viewport or player-possession claim.
     std::array<std::uint32_t, 8u * 8u * 2u> testStereoTarget{};
@@ -3126,6 +3131,8 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
     auto clientLifetime = std::make_shared<QuestVr::NativeClientLifetime>();
     Require(!HasPortableRuntimeClient(), "Original world probe inherited an unowned client");
     BindPortableRuntimeClient(clientLifetime, 1u);
+    Require(PreparePortableRuntimeClientObjects().initialized,
+        "Original world prefix cannot initialize actual native Client.Engine ownership");
     RegisterPortableRuntimeViewport(1u, {1u, 8u, 8u, 1u, 2u});
     struct ClientScope {
         std::shared_ptr<QuestVr::NativeClientLifetime> lifetime;
@@ -3457,7 +3464,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
             VerifyOriginalShadowDecalGeometry(root,checkpoint,temporary.directory);
             VerifyOriginalDecalCheckpoint(root,checkpoint,temporary.directory);
-            VerifyOriginalWorldStartupProbe(checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return;
+            VerifyOriginalWorldStartupProbe(root,checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return;
         }
         if (startupOnly) { VerifyOriginalInitGame(root,checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return; }
         if (std::string(map) == "00_Training") {

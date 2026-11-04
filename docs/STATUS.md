@@ -1,5 +1,40 @@
 # Port status
 
+## Latest: original startup uses actual Engine.Client (verified2026-11-04)
+
+The original standalone GameInfo config branch now authenticates actual
+Level.Engine.Client and reciprocal Client.Engine ownership. The post-partition
+player loop rereads the actual live native viewport array rather than XR target
+metadata. An initialized empty Client selects local DefaultGame and runs zero
+Logins while retaining non-Entry tracker setup; genuine Engine.Client=None
+selects DefaultServerGame without that Client-only branch. URL/map precedence
+is unchanged. No missing Engine/revoked lifetime becomes a headless success.
+
+Generated Spawn callback coverage now uses explicit URL game selection and
+refuses its missing Engine at the actual Client boundary. The prior native
+Login packet/class/long OUT/late-copyback positives move to an owned hybrid
+with real original Engine/Client/Viewports and explicit generated test Game
+lifecycle/Login overrides. Corrected owned startup72880 checks/21 refusals,
+generated Spawn13404/221, generated sound2690/24 and owned sound72421/two pass.
+The first two startup fixture runs failed only their final expected revocation
+message: actual UObject lookup refuses before the later root-publication lease.
+Those failures are retained, and the corrected assertion requires the observed
+exact refusal plus empty Game/Login observations/full undo; no guard was relaxed.
+
+Focused desktop builds, production Android native link and strict ARM64 runtime
+pass. Two older owned world/collision fixtures now explicitly initialize actual
+Client.Engine ownership instead of relying on raw target binding. Full desktop
+rebuild/CTest pass263 executed/324 registered/61 explicit owned-data skips/zero
+failures in174.68s. Actual first Training retains the exact later post-partition
+refusal in522.945s/267089 instructions/38087 writes and native work14254762/
+16777216. Init/reconciliation/pre-post/rate ReadInput/later Reset retain keys255/
+Byte13/Float15. Full save/state/revision/hash/RNG/client/lookup/Actor/GC rollback,
+45 unchanged owned sources and cold Model replacement pass; no startup is
+published. Final audit finds1940 frozen inputs,45 originals,3 assets and4 DLLs
+unchanged, zero live jobs and no new APK. No committing startup,
+published retail player possession, native audible channels, player physics or live crates/
+loot/gravity are implied. See STARTUP-ACTUAL-CLIENT-ARRAY.md.
+
 ## Latest: actual Client-array local sound (verified2026-11-04)
 
 Local/simulated PlaySound264 now authenticates actual Level.Engine and the
