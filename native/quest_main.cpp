@@ -768,11 +768,33 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             // This CPU worker receives only an immutable description of the
             // owner's real targets. It must never inspect GL/OpenXR handles.
             BindPortableRuntimeClient(clientLifetime, clientIdentity);
+            // Explicit actual Client construction/base Init precedes target
+            // registration and native viewport materialization. This is only
+            // the existing dormant-demo bootstrap seam, NOT the complete
+            // original initial GameEngine.Init/map/NewViewport driver.
+            const auto nativeClient=PreparePortableRuntimeClientObjects();
+            if(!nativeClient.initialized||nativeClient.clientIdentity!=clientIdentity||
+                nativeClient.enginePath!=collisionEngine.enginePath||nativeClient.engineIndex!=collisionEngine.engineIndex||
+                !nativeClient.viewports.empty()||!nativeClient.registeredTargets.empty())
+                throw std::runtime_error("Quest bootstrap Client.Init did not bind the actual Engine with empty viewport/target arrays");
+            ALOG("DeusExQuest: actual Client/base Init ready client=%s engine=%s nativeViewports=%zu targets=%zu; original initial driver remains separate",
+                nativeClient.clientPath.c_str(),nativeClient.enginePath.c_str(),nativeClient.viewports.size(),nativeClient.registeredTargets.size());
             RegisterPortableRuntimeViewport(clientIdentity, viewport);
-            // Original engine-owned Client/Viewport precede map Login. This
-            // materializes only the genuine registered stereo session objects;
-            // Actor remains None until original Login/SetPlayer/Possess works.
+            const auto registeredClient=ReadPortableRuntimeClientSession();
+            if(!registeredClient.initialized||registeredClient.clientIndex!=nativeClient.clientIndex||
+                !registeredClient.viewports.empty()||registeredClient.registeredTargets.size()!=1u||
+                registeredClient.registeredTargets[0u].identity!=viewport.identity)
+                throw std::runtime_error("Quest target registration changed actual Client/viewport state");
+            // Retain the current dormant-demo viewport-materialization point.
+            // Actor stays None; this neither runs Login/Possess nor relocates
+            // Input.Init into the separate later LoadMap.ResetInput site.
             const auto playerSession=PreparePortableRuntimePlayerObjects(viewport.identity);
+            const auto materializedClient=ReadPortableRuntimeClientSession();
+            if(materializedClient.clientIndex!=nativeClient.clientIndex||!materializedClient.initialized||
+                materializedClient.viewports.size()!=1u||materializedClient.viewports[0u].identity!=viewport.identity||
+                materializedClient.viewports[0u].path!=playerSession.viewportPath||playerSession.bound||
+                playerSession.clientPath!=nativeClient.clientPath)
+                throw std::runtime_error("Quest native viewport materialization changed its Client or fabricated player possession");
             BindPortableRuntimeQuestInputSource(viewport.identity,inputSource);
             ALOG("DeusExQuest: native player session objects ready client=%s viewport=%s class=%s bound=%s",
                 playerSession.clientPath.c_str(),playerSession.viewportPath.c_str(),

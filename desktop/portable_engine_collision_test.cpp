@@ -631,17 +631,46 @@ void Original(const fs::path& root,bool questStartup) {
     const auto cold=PreparePortableRuntimeEngineCollision(ini);
     Require(cold.prepared&&cold.boundLevelPath.empty()&&!cold.levelIndex&&ReadPortableRuntimeObjectLookup().generation!=oldGeneration,
         "Cold collision session reused a previous lookup generation or invented a map binding");
-    // Mirror the production CPU bootstrap order with the exact shared source
-    // set: collision Engine, real registered Client/Viewport, then first map.
-    // These are metadata leases, never fabricated GL/OpenXR handles or a Pawn.
+    // Mirror the existing dormant-demo CPU bootstrap with the exact shared
+    // source set: actual Engine, explicit zero-target Client/base Init, target
+    // metadata, then actual Viewport materialization and dormant first map.
+    // This is not the complete original initial GameEngine.Init driver.
     std::shared_ptr<QuestVr::NativeClientLifetime> clientLifetime;
     if(questStartup) {
-        std::cout<<"QUEST-SCOPE Engine-before-map client/viewport bootstrap\n";
+        std::cout<<"QUEST-SCOPE Engine/zero-target Client.Init/descriptor/actual viewport dormant bootstrap\n";
+        Require(cold.prepared&&cold.engineIndex&&!cold.enginePath.empty()&&cold.boundLevelPath.empty()&&
+            !HasPortableRuntimeClient()&&ReadPortableRuntimeClientView().empty(),
+            "Production-order Client bootstrap lacks its prior actual Engine or already has target/client state");
+        const auto noClient=ReadPortableRuntimeDeclaredScriptProperty(cold.enginePath,"Engine.Engine.Client");
+        Require(noClient.kind==Kind::Object&&noClient.text.empty(),
+            "Actual Engine construction implicitly initialized a Client before the explicit stage");
         clientLifetime=std::make_shared<QuestVr::NativeClientLifetime>();
         BindPortableRuntimeClient(clientLifetime,1901u);
+        Refused([&] {(void)ReadPortableRuntimeClientSession();},
+            "Embedding lifetime registration fabricated an actual Client UObject");
+        const auto nativeClient=PreparePortableRuntimeClientObjects();
+        Require(nativeClient.initialized&&nativeClient.clientIdentity==1901u&&nativeClient.clientIndex&&
+            nativeClient.enginePath==cold.enginePath&&nativeClient.engineIndex==cold.engineIndex&&
+            nativeClient.viewports.empty()&&nativeClient.registeredTargets.empty()&&ReadPortableRuntimeClientView().empty(),
+            "Production-order Client.Init failed genuine Engine binding or fabricated a viewport/target");
+        const auto engineClient=ReadPortableRuntimeDeclaredScriptProperty(cold.enginePath,"Engine.Engine.Client");
+        Require(engineClient.kind==Kind::Object&&engineClient.text==nativeClient.clientPath,
+            "Production-order Client.Init did not publish the actual reciprocal Engine.Client edge");
         RegisterPortableRuntimeViewport(1901u,{1902u,1024u,1152u,3u,2u});
+        const auto registeredClient=ReadPortableRuntimeClientSession();
+        Require(registeredClient.initialized&&registeredClient.clientIndex==nativeClient.clientIndex&&
+            registeredClient.viewports.empty()&&registeredClient.registeredTargets.size()==1u&&
+            registeredClient.registeredTargets[0u].identity==1902u,
+            "Production descriptor registration implicitly created an actual native Viewport");
+        Refused([&] {(void)ReadPortableRuntimePlayerSession(1902u);},
+            "Production registered descriptor masqueraded as an actual native player session");
         const auto session=PreparePortableRuntimePlayerObjects(1902u);
-        Require(!session.bound&&!session.clientPath.empty()&&!session.viewportPath.empty(),
+        const auto materializedClient=ReadPortableRuntimeClientSession();
+        Require(!session.bound&&session.playerPath.empty()&&session.clientPath==nativeClient.clientPath&&!session.viewportPath.empty()&&
+            materializedClient.initialized&&materializedClient.clientIndex==nativeClient.clientIndex&&
+            materializedClient.engineIndex==cold.engineIndex&&materializedClient.viewports.size()==1u&&
+            materializedClient.viewports[0u].identity==1902u&&materializedClient.viewports[0u].path==session.viewportPath&&
+            materializedClient.registeredTargets.size()==1u&&GetPortableRuntimeMapActors(true).empty(),
             "Production-order Client/Viewport preparation forced player possession or lost its genuine objects");
         SameSession(cold,ReadPortableRuntimeEngineCollision());
     }
@@ -665,6 +694,11 @@ void Original(const fs::path& root,bool questStartup) {
             !Declared("00_Training.LevelInfo0","Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean,
             "Production CPU bootstrap self-checks changed dormant Training or forced original startup");
         clientLifetime->Revoke();ClearPortableRuntimeClient();
+        const auto clearedClient=ReadPortableRuntimeDeclaredScriptProperty(cold.enginePath,"Engine.Engine.Client");
+        Require(clearedClient.kind==Kind::Object&&clearedClient.text.empty(),
+            "Production-order teardown retained the actual Engine.Client edge");
+        Refused([&] {(void)ReadPortableRuntimeClientSession();},
+            "Production-order teardown retained its actual Client payload");
         SameSession(coldBound,ReadPortableRuntimeEngineCollision());
     }
     for(const auto& source:sources)source.Unchanged();

@@ -84,6 +84,13 @@ commercial binaries remain read-only data and are never loaded or executed.
 
 ## Remaining production integration
 
+The Quest CPU bootstrap now explicitly prepares the actual zero-target Client
+before registering target metadata, checks that registration creates no native
+viewport, and then explicitly materializes the viewport without a Pawn. The
+matching owned first-Training Engine regression passes42656 checks/34 refusals
+using the exact38-package Quest source set; Android-native linking also passes.
+This verifies the existing dormant-demo seam, not original initial startup.
+
 This API split does not complete initial GameEngine.Init. The Android demo
 still loads a dormant map. Original initial map startup, explicit viewport
 construction/Canvas/Input/Console/player sequence, concrete audio/render

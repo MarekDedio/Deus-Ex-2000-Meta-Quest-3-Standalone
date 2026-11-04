@@ -1,5 +1,16 @@
 # Port status
 
+## Latest: explicit Quest Client bootstrap (verified2026-11-04)
+
+The existing Quest CPU bootstrap now creates and initializes the actual Client
+with empty viewport/target arrays, registers target metadata without creating a
+viewport, then explicitly materializes that viewport without possession. The
+matching owned first-Training Engine regression passes42656 checks/34 refusals
+with the exact38-package Quest set, warm/cold saves and loader/GC controls.
+Desktop focused and Android-native builds pass. This remains dormant-map demo
+integration, not the original initial startup driver or playable crate physics.
+No new APK is packaged for this internal prerequisite alone.
+
 ## Latest: separate native Client initialization (verified2026-11-04)
 
 Client-only preparation and actual-client snapshots now distinguish genuine
