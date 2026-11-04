@@ -6,7 +6,8 @@
 #include "quest_script_dispatch.h"
 #include "quest_state_frame.h"
 #include "quest_native_client.h"
-#include "quest_audio_transport.h"
+#include "quest_audio_endpoint.h"
+#include "quest_audio_voice_protocol.h"
 #include "quest_held_item_visual.h"
 #include "quest_linker_load_context.h"
 #include "portable_startup_weapon_types.h"
@@ -21,6 +22,8 @@
 #include <set>
 #include <optional>
 #include <utility>
+
+namespace QuestVr {class AudioOutputTransport;}
 
 struct PortableRuntimeSummary {
     bool passed{};
@@ -847,12 +850,13 @@ PortableNativeClientSessionSnapshot PreparePortableRuntimeClientObjects();
 // A registered target alone is not an actual Client or native Viewport.
 PortableNativeClientSessionSnapshot ReadPortableRuntimeClientSession();
 struct PortableAudioOutputSnapshot {
-    bool bound{},ready{},notAudioSubsystem{true};
+    bool bound{},ready{},mixerAttached{},notAudioSubsystem{true};
     std::uint64_t generation{},clientIdentity{},viewportIdentity{},lookupGeneration{};
     std::uint32_t clientIndex{},engineIndex{},viewportIndex{};
     QuestVr::AudioOutputFormat format;
     std::string clientPath,enginePath,viewportPath,engineAudioPath;
     std::size_t referenceRetainedBytes{},resourcePcmBytes{},pendingBatches{};
+    std::array<QuestVr::AudioVoiceFeedback,QuestVr::AudioVoiceCapacity> voices;
 };
 // Independent real platform output capability, NOT Engine.Audio or a native
 // AudioSubsystem.Init. Requires the actual initialized reciprocal Engine/Client
@@ -863,7 +867,10 @@ struct PortableAudioOutputSnapshot {
 void BindPortableRuntimeAudioOutput(std::shared_ptr<QuestVr::AudioOutputTransport> transport);
 // Empty when unbound. A bound snapshot reauthenticates native provenance and
 // reports external stream revocation as ready=false. PCM has its own resource
-// budget and is never hidden in VM reference-state accounting.
+// budget and is never hidden in VM reference-state accounting. Each feedback
+// voice/state pair is one coherent acquire word; the array is not a frozen
+// audio-frame snapshot. Historical feedback does not override ready=false,
+// and a matching numeric voice/generation alone is never output authority.
 PortableAudioOutputSnapshot ReadPortableRuntimeAudioOutput();
 struct PortablePlayerSessionSnapshot {
     std::uint64_t clientIdentity{}, viewportIdentity{};

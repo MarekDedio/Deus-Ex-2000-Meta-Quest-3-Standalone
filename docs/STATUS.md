@@ -1,5 +1,30 @@
 # Port status
 
+## Latest verified: runtime-visible voice feedback (2026-11-04)
+
+The [playback-feedback connection](QUEST-AUDIO-PLAYBACK-FEEDBACK.md) makes actual
+owner Pending/positive-PCM Playing/natural Finished words readable through the
+exact output identity by the native runtime. A second mixer cannot steal the
+capability; denied transfer preserves existing voices and successful detach/
+destruction clears its claim. Numeric generations alone do not alias feedback.
+The startup future-get boundary now checks the actual attached consumer. This
+is still output infrastructure, NOT the original AudioSubsystem/native channel
+policy, committed Training startup or live crate damage/loot/gravity.
+
+Host373 checks/50 refusals and ten strengthened three-thread SPSC/feedback repeat
+runs pass. The reader must witness actual mixed Playing, not vacuously sample
+only Empty. Endpoint/WAV158/12, generated sound2690/24, owned binding/sound72548/12
+and owned startup Client protocol72880/21 pass. Desktop focused/full and production
+Android native builds plus strict ARM64 runtime/helper checks pass. Final CTest
+passes264 executed/325 registered/61 explicit owned-data skips/zero failures
+in79.14s; the earlier suite also passed in121.58s. Only the host stress test was
+strengthened between those runs; frozen production inputs remained identical.
+
+The real-Training result below belongs to the earlier transport commit; that
+nonpublishing startup branch is unchanged and was not rerun for feedback-only
+snapshot/ownership work. Native audio/rooted channel COW and initial driver/live
+gameplay are still required. No new APK or headset validation is claimed.
+
 ## Latest verified implementation: Quest audio output handoff (2026-11-04)
 
 The [Quest output transport](QUEST-AUDIO-OUTPUT-TRANSPORT.md) now connects an

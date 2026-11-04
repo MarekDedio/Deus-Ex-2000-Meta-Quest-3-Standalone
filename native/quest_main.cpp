@@ -2255,6 +2255,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             !nativeAudioTransport_||nativeAudioTransport_!=preparation.audioTransport||!nativeAudioTransport_->Ready())) {
             preparation.passed=false;preparation.error="Audio output endpoint/transport changed or failed during initial preparation";
         }
+        if(preparation.passed) {
+            try {
+                const auto output=ReadPortableRuntimeAudioOutput();
+                if(!output.bound||!output.ready||!output.mixerAttached||
+                    output.generation!=nativeAudioTransport_->Generation())
+                    throw std::runtime_error("Initial audio output lost its actual runtime binding or exclusive PCM consumer");
+                ALOG("DeusExQuest: output feedback bound generation=%llu mixer=attached; not an original AudioSubsystem initialization",
+                    static_cast<unsigned long long>(output.generation));
+            }catch(const std::exception& error){preparation.passed=false;preparation.error=error.what();}
+        }
         if (!preparation.passed) {
             // Future get above is the ownership barrier. Shutdown is never
             // performed concurrently with an original-runtime CPU worker.
@@ -7046,12 +7056,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if(!transport)return;
         if(!transport->Ready()) {
             QuestVr::AudioVoiceMixer::Retirement retired;
+            bool reset{};
             {
                 std::lock_guard<std::mutex> lock(audioMutex_);
                 // Pending is not retirement: preserve the prepared identity
                 // so later actual start proof can admit this stream's voices.
-                nativeAudioMixer_.ResetOnOwner(transport->Endpoint()->Observe()==QuestVr::AudioEndpointControl::State::Pending?
+                reset=nativeAudioMixer_.ResetOnOwner(transport->Endpoint()->Observe()==QuestVr::AudioEndpointControl::State::Pending?
                     transport->Identity():nullptr,retired);
+            }
+            if(!reset) {
+                transport->Revoke();
+                ALOG("DeusExQuest: native audio consumer ownership failed; output transport retired");
+                return;
             }
             for(std::size_t index=0u;index<QuestVr::AudioOutputTransport::BatchCapacity;++index) {
                 QuestVr::AudioVoiceBatch discarded;
@@ -7327,7 +7343,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         QuestVr::AudioVoiceMixer::Retirement retired;
         {
             std::lock_guard<std::mutex> lock(audioMutex_);
-            nativeAudioMixer_.ResetOnOwner(nativeAudioTransport_->Identity(),retired);
+            if(!nativeAudioMixer_.ResetOnOwner(nativeAudioTransport_->Identity(),retired))
+                throw std::runtime_error("Real output transport already has another PCM consumer");
         }
         audioCallbackContext_=std::make_unique<AudioCallbackContext>(AudioCallbackContext{this,endpoint,nativeAudioTransport_});
         AAudioStreamBuilder* builder{};
@@ -7399,7 +7416,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         QuestVr::AudioVoiceMixer::Retirement retired;
         {
             std::lock_guard<std::mutex> lock(audioMutex_);
-            nativeAudioMixer_.ResetOnOwner(nullptr,retired);
+            if(!nativeAudioMixer_.ResetOnOwner(nullptr,retired))std::terminate();
         }
         audioCallbackContext_.reset();
         nativeAudioTransport_.reset();

@@ -1,5 +1,6 @@
 #pragma once
 #include "quest_audio_endpoint.h"
+#include "quest_audio_voice_protocol.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -45,6 +46,15 @@ class AudioOutputIdentity final {
     const std::uint64_t generation_;
     const std::uint32_t rate_;
     const std::shared_ptr<AudioPcmBudget> budget_;
+    // Exact capability owns feedback even when the runtime cannot inspect the
+    // owner's mixer. Only one mixer may publish to a capability at a time.
+    mutable std::atomic<const AudioVoiceMixer*> mixer_{};
+    mutable std::array<std::atomic<std::uint64_t>,AudioVoiceCapacity> feedback_{};
+    AudioVoiceFeedback Feedback(std::size_t slot) const noexcept {
+        if(slot>=feedback_.size())return {};
+        const auto word=feedback_[slot].load(std::memory_order_acquire);
+        return {word>>2u,static_cast<AudioVoicePlayback>(word&3u)};
+    }
 };
 class PreparedAudioPcm final {
     friend class AudioOutputTransport;
@@ -69,9 +79,7 @@ private:
     const std::shared_ptr<const AudioOutputIdentity> output_;
 };
 
-inline constexpr std::size_t AudioVoiceCapacity=32u;
 inline constexpr std::size_t AudioBatchCommandCapacity=64u;
-inline constexpr std::uint64_t AudioVoiceIdentityMaximum=std::numeric_limits<std::uint64_t>::max()>>2u;
 inline constexpr std::uint64_t AudioPhaseOne=std::uint64_t{1u}<<32u;
 inline constexpr std::size_t AudioMaximumClipFrames=4u<<20u;
 enum class AudioVoiceOperation : std::uint8_t {Play,Stop,Update};
@@ -89,11 +97,20 @@ struct AudioVoiceBatch {
     std::array<AudioVoiceCommand,AudioBatchCommandCapacity> commands;
     std::shared_ptr<const AudioOutputIdentity> output;
 };
-enum class AudioVoicePlayback : std::uint8_t {Empty,Pending,Playing,Finished};
-struct AudioVoiceFeedback {std::uint64_t voice{};AudioVoicePlayback playback{AudioVoicePlayback::Empty};};
-
 class AudioVoiceMixer final {
 public:
+    AudioVoiceMixer()=default;
+    AudioVoiceMixer(const AudioVoiceMixer&)=delete;
+    AudioVoiceMixer& operator=(const AudioVoiceMixer&)=delete;
+    // Owner teardown only, after joining/excluding the real callback. The
+    // destructor cannot leave a dangling consumer claim on a retained output.
+    ~AudioVoiceMixer() {
+        if(output_) {
+            for(std::size_t index=0u;index<AudioVoiceCapacity;++index)
+                PublishFeedback(index,0u,AudioVoicePlayback::Empty);
+            output_->mixer_.store(nullptr,std::memory_order_release);
+        }
+    }
     // Owner-side retirement storage. Destroy this AFTER releasing the existing
     // callback lock; replaced PCM can be large. Callback completion never drops
     // a shared_ptr, frees PCM or changes ownership of any decoder/resource.
@@ -116,7 +133,8 @@ public:
     }
     // Caller owns the same lock used by MixAdd. Admission precedes every write.
     bool Apply(const AudioVoiceBatch& batch,Retirement& retired) noexcept {
-        if(!output_||batch.output!=output_||!batch.generation||batch.generation!=output_->generation_||
+        if(!output_||output_->mixer_.load(std::memory_order_acquire)!=this||
+            batch.output!=output_||!batch.generation||batch.generation!=output_->generation_||
             !batch.count||batch.count>AudioBatchCommandCapacity||!retired.Empty())
             return false;
         for(std::size_t index=0u;index<batch.count;++index) {
@@ -152,18 +170,25 @@ public:
         }
         return true;
     }
-    void ResetOnOwner(std::shared_ptr<const AudioOutputIdentity> output,Retirement& retired) noexcept {
+    bool ResetOnOwner(std::shared_ptr<const AudioOutputIdentity> output,Retirement& retired) noexcept {
         if(!retired.Empty())std::terminate();
+        if(output_&&output_->mixer_.load(std::memory_order_acquire)!=this)return false;
+        if(output&&output!=output_) {
+            const AudioVoiceMixer* vacant{};
+            if(!output->mixer_.compare_exchange_strong(vacant,this,std::memory_order_acq_rel))return false;
+        }
         for(std::size_t index=0u;index<voices_.size();++index) {
             auto& voice=voices_[index];if(voice.pcm)retired.pcm[retired.count++].swap(voice.pcm);
             voice.active=false;voice.identity=voice.cursor=0u;PublishFeedback(index,0u,AudioVoicePlayback::Empty);
         }
-        output_=std::move(output);activeMask_=0u;
+        if(output_&&output_!=output)output_->mixer_.store(nullptr,std::memory_order_release);
+        output_=std::move(output);activeMask_=0u;return true;
     }
     AudioVoiceFeedback Feedback(std::size_t slot) const noexcept {
-        if(slot>=feedback_.size())return {};
-        const auto word=feedback_[slot].load(std::memory_order_acquire);
-        return {word>>2u,static_cast<AudioVoicePlayback>(word&3u)};
+        // Owner/callback-lock compatibility view only: output_ changes on
+        // owner reset. Concurrent runtime readers use transport.Feedback(),
+        // whose exact immutable identity cannot change underneath the read.
+        return output_?output_->Feedback(slot):AudioVoiceFeedback{};
     }
     // Stereo PCM backend profile: unsigned32.32 source-frame step and linear
     // interpolation; gains are PREPARED by the native spatial provider, not an
@@ -208,10 +233,9 @@ private:
         float left{},right{};bool active{},loop{},reportedPlaying{};
     };
     void PublishFeedback(std::size_t slot,std::uint64_t voice,AudioVoicePlayback playback) noexcept {
-        feedback_[slot].store((voice<<2u)|static_cast<std::uint64_t>(playback),std::memory_order_release);
+        if(output_)output_->feedback_[slot].store((voice<<2u)|static_cast<std::uint64_t>(playback),std::memory_order_release);
     }
     std::array<Voice,AudioVoiceCapacity> voices_;
-    std::array<std::atomic<std::uint64_t>,AudioVoiceCapacity> feedback_{};
     std::shared_ptr<const AudioOutputIdentity> output_;
     std::uint32_t activeMask_{};
 };
@@ -280,6 +304,8 @@ public:
     const auto& ClientLifetime() const noexcept {return client_;}
     const auto& Endpoint() const noexcept {return endpoint_;}
     const auto& Identity() const noexcept {return identity_;}
+    bool MixerAttached() const noexcept {return identity_->mixer_.load(std::memory_order_acquire)!=nullptr;}
+    AudioVoiceFeedback Feedback(std::size_t slot) const noexcept {return identity_->Feedback(slot);}
     std::size_t PendingBatches() const noexcept {
         // Diagnostic only; neither count nor this snapshot authorizes publish.
         // Read consumption first for a conservative snapshot. Concurrent
@@ -356,4 +382,5 @@ private:
     std::atomic<bool> alive_{true};
 };
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free,"Native audio feedback requires lock-free64-bit atomics");
+static_assert(std::atomic<const AudioVoiceMixer*>::is_always_lock_free,"Native audio mixer claims require lock-free pointers");
 } // namespace QuestVr

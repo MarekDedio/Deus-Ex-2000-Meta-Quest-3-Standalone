@@ -41,7 +41,7 @@ struct Fixture {
          transport(std::make_shared<AudioOutputTransport>(endpoint,client,31u,47u)) {
         if(start)Require(endpoint->ConfirmStartedOnOwner(true),"Synthetic endpoint start protocol refused");
         AudioVoiceMixer::Retirement retired;
-        mixer.ResetOnOwner(transport->Identity(),retired);
+        Require(mixer.ResetOnOwner(transport->Identity(),retired),"Fresh output refused exclusive mixer attachment");
         Require(retired.count==0u,"Fresh mixer unexpectedly retired PCM");
     }
     auto Pcm(std::initializer_list<std::int16_t> samples) {
@@ -361,12 +361,12 @@ void VoiceControlsAndRetirement() {
     retired.Apply(all);
     Samples(retired.Mix(1u),{320,-320},"Fixed mixer failed full voice capacity");
     AudioVoiceMixer::Retirement resetRetirement;
-    retired.mixer.ResetOnOwner(nullptr,resetRetirement);
+    Require(retired.mixer.ResetOnOwner(nullptr,resetRetirement),"Owner reset refused its exact mixer");
     Require(resetRetirement.count==AudioVoiceCapacity,"Owner reset failed to retire every occupied voice");
     Samples(retired.Mix(1u),{0,0},"Retired mixer generation remained audible");
     for(std::size_t slot=0u;slot<AudioVoiceCapacity;++slot)Feedback(retired.mixer,slot,0u,AudioVoicePlayback::Empty);
     resetRetirement=AudioVoiceMixer::Retirement{};
-    retired.mixer.ResetOnOwner(retired.transport->Identity(),resetRetirement);
+    Require(retired.mixer.ResetOnOwner(retired.transport->Identity(),resetRetirement),"Detached output could not reattach");
     retired.Apply(retired.Batch({Play(constant,1u,0u,true)}));
     AudioVoiceBatch repeated=retired.Batch({});repeated.count=AudioBatchCommandCapacity;
     for(std::size_t index=0u;index<repeated.count;++index)repeated.commands[index]=Play(constant,index+2u,0u,true);
@@ -435,15 +435,94 @@ void MalformedBatchAtomicity() {
     Samples(f.Mix(1u),{1000,-2000},"Malformed retirement storage changed voice");
 }
 
+void OutputFeedbackOwnership() {
+    Fixture first,second;
+    auto pcm=first.Pcm({100,-200,300,-400});
+    first.Apply(first.Batch({Play(pcm,41u,0u,true)}));
+    Require(first.transport->MixerAttached(),"Actual owner attachment was not visible through output capability");
+    auto observed=first.transport->Feedback(0u);
+    Require(observed.voice==41u&&observed.playback==AudioVoicePlayback::Pending,
+        "Runtime-visible output feedback claimed PCM before a positive callback mix");
+    Samples(first.Mix(1u),{100,-200},"Feedback path changed actual PCM");
+    observed=first.transport->Feedback(0u);
+    Require(observed.voice==41u&&observed.playback==AudioVoicePlayback::Playing,
+        "Actual mixed PCM did not reach the runtime-visible feedback capability");
+    observed=first.transport->Feedback(AudioVoiceCapacity);
+    Require(!observed.voice&&observed.playback==AudioVoicePlayback::Empty,"Invalid feedback slot exposed another resource");
+    const auto other=second.Pcm({75,-125});second.Apply(second.Batch({Play(other,51u,0u,true)}));
+    AudioVoiceMixer::Retirement denied;
+    Require(!second.mixer.ResetOnOwner(first.transport->Identity(),denied)&&denied.Empty(),
+        "A second live mixer stole output feedback ownership");
+    Feedback(first.mixer,0u,41u,AudioVoicePlayback::Playing);
+    Feedback(second.mixer,0u,51u,AudioVoicePlayback::Pending);
+    Samples(second.Mix(1u),{75,-125},"Denied consumer transfer mutated the existing mixer");
+    AudioVoiceMixer::Retirement retired;
+    Require(first.mixer.ResetOnOwner(nullptr,retired)&&!first.transport->MixerAttached()&&retired.count==1u,
+        "Owner detach did not retire its claim and PCM together");
+    observed=first.transport->Feedback(0u);
+    Require(!observed.voice&&observed.playback==AudioVoicePlayback::Empty,
+        "Retained runtime capability kept Playing after its consumer detached");
+    retired=AudioVoiceMixer::Retirement{};
+    Require(second.mixer.ResetOnOwner(first.transport->Identity(),retired)&&retired.count==1u&&
+        first.transport->MixerAttached()&&!second.transport->MixerAttached(),"Exclusive consumer transfer was not atomic on owner");
+    retired=AudioVoiceMixer::Retirement{};
+    Require(second.mixer.Apply(first.Batch({Play(pcm,61u,0u,true)}),retired),"New exclusive consumer refused exact output PCM");
+    std::array<std::int16_t,2u> actual{};second.mixer.MixAdd(actual.data(),1u,first.transport->Generation());
+    observed=first.transport->Feedback(0u);
+    Require(observed.voice==61u&&observed.playback==AudioVoicePlayback::Playing,
+        "Transferred consumer wrote another output's feedback");
+    auto equalNumbers=std::make_shared<AudioOutputTransport>(first.endpoint,first.client,31u,47u);
+    Require(!equalNumbers->MixerAttached()&&!equalNumbers->Feedback(0u).voice,
+        "A different exact transport inherited feedback from equal stream numbers");
+    {
+        AudioVoiceMixer temporary;AudioVoiceMixer::Retirement retirement;
+        Require(temporary.ResetOnOwner(equalNumbers->Identity(),retirement),"Fresh distinct transport refused temporary consumer");
+        auto batch=first.Batch({Play(equalNumbers->PreparePcm({19,-23},48'000u),71u,0u,true)});
+        batch.output=equalNumbers->Identity();
+        Require(temporary.Apply(batch,retirement),"Distinct feedback consumer refused own immutable PCM");
+        std::array<std::int16_t,2u> output{};temporary.MixAdd(output.data(),1u,equalNumbers->Generation());
+        Require(equalNumbers->Feedback(0u).voice==71u&&first.transport->Feedback(0u).voice==61u,
+            "Equal generation aliased output feedback capabilities");
+    }
+    Require(!equalNumbers->MixerAttached()&&!equalNumbers->Feedback(0u).voice,
+        "Destroyed owner left a dangling consumer claim or historical Playing state");
+    AudioVoiceMixer replacement;AudioVoiceMixer::Retirement available;
+    Require(replacement.ResetOnOwner(equalNumbers->Identity(),available),"Destroyed owner made output impossible to reattach");
+}
+
 void SpscPublication() {
     Fixture f;
     const auto pcm=f.Pcm({80,-160,80,-160});
     constexpr std::size_t total=24'000u;
-    std::atomic<bool> failed{},producerDone{};
-    std::size_t produced{},consumed{},canceled{},observedSamples{};
-    std::exception_ptr producerFailure,consumerFailure;
+    std::atomic<bool> failed{},producerDone{},consumerDone{},observerStarted{},observerSawPlaying{};
+    std::size_t produced{},consumed{},canceled{},observedSamples{},feedbackReads{},playingFeedbackReads{};
+    std::exception_ptr producerFailure,consumerFailure,observerFailure;
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
     auto Check=[](bool condition,const char* message){if(!condition)throw std::runtime_error(message);};
+    // A third thread represents the CPU runtime. It must not inspect mixer
+    // storage/output_ or borrow the owner's callback mutex.
+    std::thread observer([&] {
+        observerStarted.store(true,std::memory_order_release);
+        std::uint64_t previous{};
+        try {
+            while(!consumerDone.load(std::memory_order_acquire)&&!failed.load(std::memory_order_acquire)) {
+                Check(std::chrono::steady_clock::now()<deadline,"Feedback observer timed out");
+                const auto feedback=f.transport->Feedback(0u);++feedbackReads;
+                Check(f.transport->MixerAttached(),"Live SPSC consumer lost its exact output claim");
+                if(feedback.playback==AudioVoicePlayback::Empty)Check(!feedback.voice,"Torn Empty/voice feedback word");
+                else {
+                    Check(feedback.voice>=previous&&feedback.voice<=total&&
+                        (feedback.playback==AudioVoicePlayback::Pending||feedback.playback==AudioVoicePlayback::Playing),
+                        "Feedback observer saw torn/reversed/invalid voice-state word");
+                    previous=feedback.voice;
+                    if(feedback.playback==AudioVoicePlayback::Playing) {
+                        ++playingFeedbackReads;observerSawPlaying.store(true,std::memory_order_release);
+                    }
+                }
+                std::this_thread::yield();
+            }
+        }catch(...){observerFailure=std::current_exception();failed.store(true,std::memory_order_release);}
+    });
     std::thread producer([&] {
         try {
             for(std::size_t sequence=0u;sequence<total&&!failed.load(std::memory_order_acquire);) {
@@ -467,6 +546,7 @@ void SpscPublication() {
     });
     std::thread consumer([&] {
         try {
+            while(!observerStarted.load(std::memory_order_acquire))std::this_thread::yield();
             AudioVoiceBatch batch;
             for(std::size_t expected=0u;expected<total&&!failed.load(std::memory_order_acquire);) {
                 Check(std::chrono::steady_clock::now()<deadline,"SPSC consumer timed out");
@@ -483,27 +563,39 @@ void SpscPublication() {
                     "SPSC consumer observed missing/torn/duplicated/reordered immutable batch");
                 AudioVoiceMixer::Retirement retirement;
                 Check(f.mixer.Apply(batch,retirement),"SPSC admitted batch failed mixer owner validation");
-                const auto before=f.mixer.Feedback(0u);
+                const auto before=f.transport->Feedback(0u);
                 Check(before.voice==expected+1u&&before.playback==AudioVoicePlayback::Pending,"SPSC batch claimed Playing before PCM mix");
                 std::array<std::int16_t,2u> output{};
                 f.mixer.MixAdd(output.data(),1u,f.transport->Generation());
                 Check(output[0u]==static_cast<std::int16_t>((expected%8u+1u)*10u)&&
                     output[1u]==-static_cast<std::int16_t>((expected%4u+1u)*40u),"SPSC gain/PCM publication tore or lost a sequence");
-                const auto after=f.mixer.Feedback(0u);
+                const auto after=f.transport->Feedback(0u);
                 Check(after.voice==expected+1u&&after.playback==AudioVoicePlayback::Playing,"SPSC positive PCM frame failed feedback transition");
+                if(expected==0u) {
+                    // The stress reader must actually witness published PCM,
+                    // not pass vacuously by sampling only Empty before/after.
+                    while(!observerSawPlaying.load(std::memory_order_acquire)&&!failed.load(std::memory_order_acquire)) {
+                        Check(std::chrono::steady_clock::now()<deadline,"Runtime reader never observed actual mixed Playing feedback");
+                        std::this_thread::yield();
+                    }
+                }
                 ++expected;++consumed;++observedSamples;
                 batch=AudioVoiceBatch{};
                 // Single consumer owns Apply/Mix. Real owner destroys this
                 // retirement outside its callback lock, never in MixAdd.
             }
         }catch(...){consumerFailure=std::current_exception();failed.store(true,std::memory_order_release);}
+        consumerDone.store(true,std::memory_order_release);
     });
-    producer.join();consumer.join();
+    producer.join();consumer.join();observer.join();
     if(producerFailure)std::rethrow_exception(producerFailure);
     if(consumerFailure)std::rethrow_exception(consumerFailure);
+    if(observerFailure)std::rethrow_exception(observerFailure);
     Require(produced==total&&consumed==total&&observedSamples==total&&canceled==total/3u,
         "SPSC final publication/cancel/PCM proof counts changed");
     Require(f.transport->PendingBatches()==0u,"SPSC final queue retained unconsumed publication");
+    Require(feedbackReads!=0u&&playingFeedbackReads!=0u&&observerSawPlaying.load(std::memory_order_acquire),
+        "Concurrent runtime never observed actual positive mixed feedback");
     Feedback(f.mixer,0u,total,AudioVoicePlayback::Playing);
 }
 } // namespace
@@ -511,7 +603,7 @@ void SpscPublication() {
 int main() {
     try {
         ReservationPublication();QueueCapacityAndReuse();OwnerAndResourceValidation();PcmBudget();
-        PcmMixingAndFeedback();VoiceControlsAndRetirement();MalformedBatchAtomicity();SpscPublication();
+        PcmMixingAndFeedback();VoiceControlsAndRetirement();MalformedBatchAtomicity();OutputFeedbackOwnership();SpscPublication();
         std::cout<<"PASS audio transport/real stereo PCM math: "<<checks<<" checks/"<<refusals
             <<" refusals; 24000 deterministic SPSC publications and PCM frames. Host protocol ONLY; "
               "not AAudio hardware readiness, original AudioSubsystem parity or playable startup.\n";

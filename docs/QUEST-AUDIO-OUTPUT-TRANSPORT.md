@@ -113,3 +113,8 @@ Compiler inputs were frozen throughout these jobs. Final integrity evidence is
 under `artifacts/audio-transport-final-audit1-20261104.json`; build/test logs use
 the same `audio-transport-` prefix. No new APK was packaged or installed. The
 remaining full provider/startup/live-gameplay requirements above are unchanged.
+
+The later [runtime-visible playback feedback](QUEST-AUDIO-PLAYBACK-FEEDBACK.md)
+moves the packed status words into this exact output identity and enforces a
+single mixer claim. It enables safe CPU observation of actual mixed/finished
+voices without pretending that the original AudioSubsystem is already present.

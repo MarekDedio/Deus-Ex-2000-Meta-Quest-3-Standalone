@@ -1,4 +1,5 @@
 #include "portable_unreal_runtime.h"
+#include "quest_audio_transport.h"
 #include "portable_startup_weapon_fire_probe.h"
 #include "portable_startup_weapon_fire_input.h"
 #include "portable_object_lookup.h"
@@ -15465,6 +15466,8 @@ PortableAudioOutputSnapshot ReadPortableRuntimeAudioOutput() {
     }
     result.referenceRetainedBytes=AudioOutputBindingBytes();result.resourcePcmBytes=current.transport->RetainedPcmBytes();
     result.pendingBatches=current.transport->PendingBatches();
+    result.mixerAttached=current.transport->MixerAttached();
+    for(std::size_t slot=0u;slot<result.voices.size();++slot)result.voices[slot]=current.transport->Feedback(slot);
     PortableActorVmHost host;
     auto bytes=sizeof(result);
     for(const auto* text:{&result.clientPath,&result.enginePath,&result.viewportPath,&result.engineAudioPath})

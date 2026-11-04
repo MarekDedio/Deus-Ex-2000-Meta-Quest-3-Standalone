@@ -1,6 +1,7 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
+#include "quest_audio_transport.h"
 #include "portable_object_lookup.h"
 #include "portable_process_loop.h"
 #include "quest_level_clock.h"
@@ -1018,7 +1019,7 @@ void OwnedAudioOutputBinding(Fixture& fixture,const std::function<void()>& initi
     const auto gc=GC::GetStats();const auto lookup=ReadPortableRuntimeObjectLookup();
     BindPortableRuntimeAudioOutput(transport);BindPortableRuntimeAudioOutput(transport);
     auto bound=ReadPortableRuntimeAudioOutput();
-    Require(bound.bound&&bound.ready&&bound.notAudioSubsystem&&bound.generation==19u&&
+    Require(bound.bound&&bound.ready&&!bound.mixerAttached&&bound.notAudioSubsystem&&bound.generation==19u&&
         bound.clientIdentity==clientId&&bound.viewportIdentity==viewportId&&bound.lookupGeneration==client.lookupGeneration&&
         bound.clientIndex==client.clientIndex&&bound.engineIndex==client.engineIndex&&bound.viewportIndex!=0u&&
         bound.clientPath==client.clientPath&&bound.enginePath==client.enginePath&&bound.viewportPath==viewport.viewportPath&&
@@ -1041,17 +1042,40 @@ void OwnedAudioOutputBinding(Fixture& fixture,const std::function<void()>& initi
     const auto withPcm=ReadPortableRuntimeAudioOutput();
     Require(withPcm.resourcePcmBytes==transport->RetainedPcmBytes()&&withPcm.resourcePcmBytes>=8u&&
         withPcm.referenceRetainedBytes==bound.referenceRetainedBytes,"PCM charge was hidden in VM reference-state budget");
+    QuestVr::AudioVoiceMixer ownerMixer;QuestVr::AudioVoiceMixer::Retirement attachment;
+    Require(ownerMixer.ResetOnOwner(transport->Identity(),attachment)&&ReadPortableRuntimeAudioOutput().mixerAttached,
+        "Actual output consumer attachment did not reach native runtime snapshot");
     QuestVr::AudioVoiceBatch batch;batch.generation=transport->Generation();batch.count=1u;
     batch.commands[0u].operation=QuestVr::AudioVoiceOperation::Play;batch.commands[0u].voice=1u;batch.commands[0u].pcm=pcm;
     {
         auto canceled=transport->Reserve(batch);canceled.RequirePublishable();
-        Require(ReadPortableRuntimeAudioOutput().pendingBatches==0u,"Reserved output became visible before commit");
+        const auto reserved=ReadPortableRuntimeAudioOutput();
+        Require(reserved.pendingBatches==0u&&!reserved.voices[0u].voice&&
+            reserved.voices[0u].playback==QuestVr::AudioVoicePlayback::Empty,"Reserved output/feedback became visible before commit");
     }
     auto ticket=transport->Reserve(batch);ticket.RequirePublishable();ticket.PublishPrepared();
-    Require(ReadPortableRuntimeAudioOutput().pendingBatches==1u,"Committed queue was not reflected in bound output snapshot");
+    const auto committed=ReadPortableRuntimeAudioOutput();
+    Require(committed.pendingBatches==1u&&!committed.voices[0u].voice,
+        "Committed queue bypassed owner admission or was absent from native runtime snapshot");
+    QuestVr::AudioVoiceBatch admitted;QuestVr::AudioVoiceMixer::Retirement retired;
+    Require(transport->PopOnOwner(admitted)&&ownerMixer.Apply(admitted,retired),"Actual owner refused committed native-bound PCM");
+    const auto pending=ReadPortableRuntimeAudioOutput();
+    Require(pending.pendingBatches==0u&&pending.voices[0u].voice==1u&&
+        pending.voices[0u].playback==QuestVr::AudioVoicePlayback::Pending,"Owner admission claimed Playing before a PCM callback frame");
+    std::array<std::int16_t,2u> mixed{};ownerMixer.MixAdd(mixed.data(),1u,transport->Generation());
+    const auto playing=ReadPortableRuntimeAudioOutput();
+    Require(mixed==std::array<std::int16_t,2u>{100,-100}&&playing.voices[0u].voice==1u&&
+        playing.voices[0u].playback==QuestVr::AudioVoicePlayback::Playing&&playing.notAudioSubsystem,
+        "Positive owner PCM/voice identity was not visible through actual native provenance");
+    mixed={};ownerMixer.MixAdd(mixed.data(),1u,transport->Generation());
+    const auto finished=ReadPortableRuntimeAudioOutput();
+    Require(mixed==std::array<std::int16_t,2u>{200,-200}&&finished.voices[0u].voice==1u&&
+        finished.voices[0u].playback==QuestVr::AudioVoicePlayback::Finished,"Natural PCM completion did not reach native runtime feedback");
     transport->Endpoint()->Revoke(-731);
     const auto revoked=ReadPortableRuntimeAudioOutput();
-    Require(revoked.bound&&!revoked.ready&&revoked.engineAudioPath.empty(),"Revoked stream hid its binding or fabricated native audio");
+    Require(revoked.bound&&!revoked.ready&&revoked.engineAudioPath.empty()&&
+        revoked.voices[0u].voice==1u&&revoked.voices[0u].playback==QuestVr::AudioVoicePlayback::Finished,
+        "Revoked stream hid its historical feedback/binding or fabricated a usable native audio device");
     refuse(transport);
     ClearPortableRuntimeClient();
     Require(!ReadPortableRuntimeAudioOutput().bound&&!transport->Ready(),"Native Client clear retained a usable output binding");
@@ -1059,7 +1083,9 @@ void OwnedAudioOutputBinding(Fixture& fixture,const std::function<void()>& initi
     PreparePortableRuntimeClientObjects();RegisterPortableRuntimeViewport(clientId,{viewportId,1440u,1440u,3u,2u});
     PreparePortableRuntimePlayerObjects(viewportId);refuse(transport);
     auto replacement=output(lifetime);BindPortableRuntimeAudioOutput(replacement);
-    Require(ReadPortableRuntimeAudioOutput().ready,"Fresh same-ID Client could not bind its own exact capability");
+    const auto fresh=ReadPortableRuntimeAudioOutput();
+    Require(fresh.ready&&!fresh.mixerAttached&&!fresh.voices[0u].voice,
+        "Fresh same-ID native binding inherited retired output feedback or failed its own exact capability");
     ClearPortableRuntimeClient();
     Require(!replacement->Ready()&&replacement->Endpoint()->Ready(),"Client clear failed transport retirement or revoked another owner's stream");
     lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);

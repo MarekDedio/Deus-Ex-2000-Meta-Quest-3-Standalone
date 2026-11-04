@@ -72,6 +72,36 @@ Only authenticated semantic fields should become portable state; this is not
 permission to copy PE32 records or treat every StopSound temporary padding byte
 as a semantic default. The earlier StopSound/NoteDestroy contract still applies.
 
+## Priority continuation: authenticated retained square root
+
+The follow-on output-feedback batch rechecks the unchanged Core/Engine/Galaxy
+hashes above and closes the earlier missing appSqrt target. Galaxy's import-name
+record9A166 is `?appSqrt@@YANN@Z`, selected by the IAT cell10699730 used at
+106081C9 and10609AE7. Core export index1406/ordinal1407 has RVA32BA; its genuine
+101032BA thunk jumps10123290. That complete body is exactly `fld QWORD [esp+4];
+fsqrt; ret` through10123296. External objdump reads both bodies as data; no DLL
+is loaded/executed. Generated evidence uses
+`native-audio-priority-sqrt-{thunk,body,iat}-source-20261104.log` under artifacts;
+the raw IAT word10699730 is0009A166, matching that exact import-name record.
+
+The existing independently tested `NativeScalar::Sqrt(double)` is therefore the
+appropriate retained PC64 primitive for the ordinary source profile. Compute
+the unspilled coordinate differences and squares in original X/Y-then-Z order,
+spill the sum to Double for the call, and retain the FSQRT result through divide
+by Float radius, Double1 subtraction and Float volume multiply. The intervening
+Double distance FST and Float priority FST do not narrow the live value used by
+initial PlaySound's priority scan. Replacing it with either spilled value or a
+host Float/double expression can select a different voice. Update's separate
+priority FSTP stores the result for subsequent replacement calls. This establishes
+the primitive/source sequence, not a newly implemented native channel policy or
+numerical acceptance test for that complete policy.
+
+The wrapper's radius normalization103DFD96..103DFDB5 tests x87 C3, so zero (either
+sign) **or unordered NaN** takes the1600 default branch. The earlier finite-only
+description was not a complete nonfinite contract. Current VM packet admission
+explicitly refuses nonfinite inputs; it must not claim the unimplemented NaN
+continuation or silently treat bDeleteMe as UObject pending-kill0x80.
+
 ## Update is a real consumer, not just a Play command queue
 
 Galaxy Update export10601136 ->10609510 has separate ambient admission,
