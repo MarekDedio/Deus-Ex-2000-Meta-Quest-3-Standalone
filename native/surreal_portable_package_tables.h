@@ -299,7 +299,8 @@ std::string ResolvePortableValueObjectReference(
     const std::function<bool(const std::string&, const std::string&)>& importedClassMatches = {});
 PortableSound LoadPortableSound(
     const PortablePackageTables& package,
-    std::size_t exportIndex);
+    std::size_t exportIndex,
+    std::size_t maxWorkingBytes = 512u * 1024u * 1024u);
 struct PortableMusic {
     std::string objectPath,format;
     std::vector<std::uint8_t> data;

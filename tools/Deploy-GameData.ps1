@@ -1,4 +1,6 @@
 [CmdletBinding()]
+# Pass -GameRoot explicitly when the owned installation is outside the
+# repository's parent folder. APK replacement alone does not sync game data.
 param(
     [Parameter()]
     [string]$GameRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -67,9 +69,12 @@ try {
         "$remoteRoot/System/User.ini",
         "$remoteRoot/System/DefUser.ini",
         "$remoteRoot/System/DeusEx.u",
+        "$remoteRoot/System/DeusExSounds.u",
         "$remoteRoot/Maps/00_Training.dx",
         "$remoteRoot/Textures/CoreTexMetal.utx",
         "$remoteRoot/Textures/UNATCO.utx",
+        "$remoteRoot/Sounds/Ambient.uax",
+        "$remoteRoot/Sounds/MoverSFX.uax",
         "$remoteRoot/Music/Training_Music.umx"
     )
 

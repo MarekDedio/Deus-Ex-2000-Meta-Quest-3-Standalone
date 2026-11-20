@@ -1,5 +1,8 @@
 #include "portable_unreal_runtime.h"
 #include "quest_audio_transport.h"
+#include "quest_native_audio_channels.h"
+#include "portable_native_audio.h"
+#include "portable_native_sound_decode.h"
 #include "portable_startup_weapon_fire_probe.h"
 #include "portable_startup_weapon_fire_input.h"
 #include "portable_object_lookup.h"
@@ -184,6 +187,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -246,7 +250,7 @@ struct RuntimeNativeDumpState {
 };
 enum class RuntimeNativeDefaultKind {Object,Subsystem,Field,Property,IntProperty,StrProperty,ArrayProperty,System,
     Struct,NameProperty,StructProperty,Input,InputExt,
-    Primitive,Engine,GameEngine,GameEngineExt,DeusExGameEngine};
+    Primitive,Engine,GameEngine,GameEngineExt,DeusExGameEngine,AudioSubsystem,QuestAudioSubsystem};
 struct RuntimeNativeInputAlias {NameString alias{"None"};std::string command;};
 struct RuntimeNativeInputValues {
     std::array<RuntimeNativeInputAlias,40u> aliases;
@@ -1033,6 +1037,9 @@ std::size_t systemNameArenaCredit{};
 // Successful native1024 additions belong to the existing process-lifetime
 // name arena, not a map/world rollback journal. Never refund on map retirement.
 std::size_t runtimeNameArenaCredit{};
+// Concrete Audio Class/instance names also remain in the real process-wide
+// FName arena after their native runtime domain is retired.
+std::size_t nativeAudioNameArenaCredit{};
 constexpr QuestVr::NativeEngineClassRegistration NativeSystemClass{
     "Core.System","Core.Subsystem","Core.Object",0x6cu,0x16u,0x04084004u,"Core"};
 bool NativeSystemDefaultValid(const RuntimeObject*);
@@ -1040,6 +1047,55 @@ bool ActualNativeSystemObjectValid(const RuntimeObject*);
 bool ActualNativeSystemFieldValid(const RuntimeObject*);
 std::size_t NativeSystemRetainedBytes(const RuntimeNativeSystemDomain&);
 std::unique_ptr<GCRoot<RuntimeEngineCollisionDomain>> persistentEngineCollision;
+// Distinct concrete Quest provider. The GC domain owns its native Class/CDOs
+// and instance; mutable channels retain original Actor/Sound references here,
+// never as pointers in the PCM callback or platform queue.
+struct RuntimeNativeAudioResource {
+    RuntimeObject* sound{};
+    std::shared_ptr<const QuestVr::PreparedAudioPcm> pcm;
+    std::uint32_t loopBegin{},loopEnd{};
+    bool loop{};
+};
+struct RuntimeNativeAudioState {
+    QuestVr::NativeAudioChannels channels;
+    std::array<float,QuestVr::AudioVoiceCapacity> occlusion{};
+    RuntimeObject* viewport{};
+    std::vector<RuntimeNativeAudioResource> resources;
+    double previousTime{};
+    std::uint64_t updates{};
+};
+struct RuntimeNativeAudioDomain final : GCObject {
+    RuntimeObject *cls{},*baseDefault{},*defaults{},*instance{},*engine{};
+    std::shared_ptr<QuestVr::AudioOutputTransport> output;
+    std::unique_ptr<RuntimeNativeAudioState> state;
+    std::string iniPath;
+    std::uint64_t lookupGeneration{};
+    std::uint64_t consumerEpoch{};
+    std::uint8_t soundVolume{},speechVolume{};
+    float ambientFactor{},dopplerSpeed{};
+    bool initialized{},retired{},reverseStereo{};
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        for(auto* object:{cls,baseDefault,defaults,instance,engine})marklist=GC::MarkObject(marklist,object);
+        if(state) {
+            marklist=GC::MarkObject(marklist,state->viewport);
+            for(const auto& slot:state->channels.slots) {
+                marklist=GC::MarkObject(marklist,reinterpret_cast<RuntimeObject*>(slot.actor));
+                marklist=GC::MarkObject(marklist,reinterpret_cast<RuntimeObject*>(slot.sound));
+            }
+            for(const auto& resource:state->resources)marklist=GC::MarkObject(marklist,resource.sound);
+        }
+        return marklist;
+    }
+};
+std::unique_ptr<GCRoot<RuntimeNativeAudioDomain>> persistentNativeAudio;
+constexpr QuestVr::NativeEngineClassRegistration QuestAudioClass{
+    "Engine.QuestAudioSubsystem","Engine.AudioSubsystem","Core.Object",
+    static_cast<std::uint32_t>(sizeof(RuntimeNativeAudioState)),0x16u,0x04084004u,"Engine"};
+bool NativeAudioDefaultValid(const RuntimeObject*);
+bool ActualNativeAudioObjectValid(const RuntimeObject*);
+std::size_t NativeAudioRetainedBytes(const RuntimeNativeAudioDomain&);
+void RetireNativeAudioProvider() noexcept;
 struct RuntimeNativeInputConfig {
     std::string sourcePath;
     std::string seedPath; // Empty for legacy supplied-file read-only bindings.
@@ -1900,6 +1956,7 @@ void ClearNativePlayerEdges() noexcept {
 }
 
 void ClearNativePlayerObjects() noexcept {
+    RetireNativeAudioProvider(); // Retain any active root's objects until unwind.
     RetireRuntimeAudioOutput(); // Revoke before native identity/lookup retirement.
     std::vector<RuntimeQuestInputBinding>{}.swap(persistentQuestInputSources);
     ClearNativePlayerEdges();
@@ -2685,6 +2742,7 @@ bool NativePackageClassDefaultValid(const RuntimeObject* cls) {
         cls->defaultObject->nativePackageDefaults->ClassIndex()==cls->objectIndex.Index();
 }
 bool PreparedNativeClassDefaultValid(const RuntimeObject* cls) {
+    if(NativeAudioDefaultValid(cls))return true;
     if(NativeSystemDefaultValid(cls))return true;
     if(InputSchemaDefaultValid(cls))return true;
     if(!persistentEngineCollision || !cls || !cls->defaultObject) return false;
@@ -2773,6 +2831,7 @@ bool ActualNativeInputObjectValid(const RuntimeObject* object) {
     return ActualNativeInputInstanceValid(object)||ActualNativeInitializedInputInstanceValid(object);
 }
 bool ActualNativeCollisionObjectValid(const RuntimeObject* object) {
+    if(ActualNativeAudioObjectValid(object))return true;
     if(ActualNativeSystemObjectValid(object))return true;
     if(!persistentEngineCollision || !object || object->defaultOwner || object->runtimeBirth ||
         !object->sourcePath.empty() || !object->cls || !object->lookupControl ||
@@ -2787,6 +2846,69 @@ bool ActualNativeCollisionObjectValid(const RuntimeObject* object) {
         object->outer && PreparedNativeClassDefaultValid(object->cls) &&
         (object->cls->reflection.objectPath=="Core.ArrayProperty" || object->cls->reflection.objectPath=="Core.StrProperty");
     return false;
+}
+bool NativeAudioDefaultValid(const RuntimeObject* cls) {
+    if(!persistentNativeAudio||!persistentNativeAudio->get()||!cls||!cls->defaultObject)return false;
+    const auto& domain=*persistentNativeAudio->get();const auto* defaults=cls->defaultObject;
+    if(!domain.cls||!domain.cls->base)return false;
+    const bool derived=cls==domain.cls,base=cls==domain.cls->base;
+    if((!derived&&!base)||defaults!=(derived?domain.defaults:domain.baseDefault)||
+        cls->nativeMetadataClass!=(derived?&QuestAudioClass:&QuestVr::NativeConfigClasses[1u])||
+        !cls->cls||cls->cls->reflection.objectPath!="Core.Class"||!cls->nativeClassWithin||
+        cls->nativeClassWithin->reflection.objectPath!="Core.Object"||cls->reflection.flags!=0x04084004u||
+        !cls->sourcePath.empty()||!defaults->sourcePath.empty()||defaults->reflection.flags||defaults->runtimeBirth||
+        defaults->exportIndex!=std::numeric_limits<std::size_t>::max()||
+        !persistentObjectLookup||!persistentObjectLookup->active||cls->lookupControl!=persistentObjectLookup||
+        defaults->lookupControl||defaults->lookupPublicationSerial||!cls->objectIndex||!defaults->objectIndex||
+        !cls->lookupName||!cls->lookupPublicationSerial)return false;
+    const auto* record=persistentObjectLookup->index.RecordForIdentity(reinterpret_cast<std::uintptr_t>(cls));
+    if(!record||record->index!=cls->objectIndex.Index())return false;
+    const auto canonical=persistentVmObjects.find(LowerAscii(cls->reflection.objectPath));
+    if(canonical==persistentVmObjects.end()||canonical->second!=cls)return false;
+    const auto& data=defaults->preparedNativeDefaults;
+    return data&&data->kind==(derived?RuntimeNativeDefaultKind::QuestAudioSubsystem:RuntimeNativeDefaultKind::AudioSubsystem)&&
+        data->nativeSize==(derived?QuestAudioClass.nativeSize:0x2cu)&&data->classFlags==(derived?0x16u:0x17u)&&
+        data->owner==cls&&
+        defaults->cls==cls&&defaults->defaultOwner==cls&&!defaults->outer&&!defaults->lookupName&&
+        defaults->preparedNativeDefaults->superDefault==(cls->base?cls->base->defaultObject:nullptr);
+}
+bool ActualNativeAudioObjectValid(const RuntimeObject* object) {
+    if(!persistentNativeAudio||!persistentNativeAudio->get()||!persistentObjectLookup||!persistentObjectLookup->active)return false;
+    const auto& domain=*persistentNativeAudio->get();
+    if(!object||object!=domain.instance)return false;
+    const auto* record=persistentObjectLookup->index.RecordForIdentity(reinterpret_cast<std::uintptr_t>(object));
+    if(!record||record->index!=object->objectIndex.Index()||!object->lookupPublicationSerial)return false;
+    const auto found=persistentVmObjects.find(LowerAscii(object->reflection.objectPath));
+    return found!=persistentVmObjects.end()&&found->second==object&&!domain.retired&&domain.initialized&&domain.state&&
+        object->cls==domain.cls&&domain.cls->nativeMetadataClass==&QuestAudioClass&&NativeAudioDefaultValid(domain.cls)&&
+        NativeAudioDefaultValid(domain.cls->base)&&object->lookupName&&object->lookupName->ToString()=="QuestAudioSubsystem0"&&
+        object->sourcePath.empty()&&object->exportIndex==std::numeric_limits<std::size_t>::max()&&object->reflection.flags==0x4000u&&
+        object->outer&&object->outer==domain.engine->outer&&domain.engine->nativeEngineInstance&&
+        domain.engine->nativeEngineInstance->values.audio==object&&domain.lookupGeneration==persistentObjectLookup->generation&&
+        object->lookupControl==persistentObjectLookup&&object->objectIndex&&!object->defaultOwner&&!object->runtimeBirth&&
+        persistentAudioOutput&&persistentAudioOutput->transport==domain.output&&persistentAudioOutput->engine==domain.engine&&
+        persistentAudioOutput->lookup==persistentObjectLookup.get()&&persistentAudioOutput->lookupGeneration==domain.lookupGeneration&&
+        persistentNativeClient.MatchesLifetime(domain.output->ClientLifetime());
+}
+void RetireNativeAudioProvider() noexcept {
+    if(!persistentNativeAudio||!persistentNativeAudio->get())return;
+    auto& domain=*persistentNativeAudio->get();domain.retired=true;
+    if(domain.output)domain.output->Revoke();
+    if(domain.engine&&domain.engine->nativeEngineInstance&&domain.engine->nativeEngineInstance->values.audio==domain.instance)
+        domain.engine->nativeEngineInstance->values.audio=nullptr;
+}
+std::size_t NativeAudioRetainedBytes(const RuntimeNativeAudioDomain& domain) {
+    auto bytes=sizeof(domain)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimeNativeAudioDomain>)+sizeof(GCRootNode)+domain.iniPath.capacity()+1u;
+    for(auto* object:{domain.cls,domain.baseDefault,domain.defaults,domain.instance}) {
+        if(!object)continue;
+        bytes+=sizeof(RuntimeObject)+sizeof(GCAllocation)+object->references.capacity()*sizeof(RuntimeObject*);
+        if(object->preparedNativeDefaults)bytes+=sizeof(RuntimePreparedNativeDefaults);
+        for(const auto* text:{&object->reflection.objectPath,&object->reflection.metaClass,&object->reflection.outerPath,
+            &object->reflection.basePath,&object->sourcePath})bytes+=text->capacity()+1u;
+        bytes+=2u*(sizeof(std::string)+6u*sizeof(void*)+object->reflection.objectPath.capacity()+1u);
+    }
+    if(domain.state)bytes+=sizeof(RuntimeNativeAudioState)+domain.state->resources.capacity()*sizeof(RuntimeNativeAudioResource);
+    return bytes; // PCM is separately retained/charged by exact output budget.
 }
 std::size_t NativePackageRetainedBytes(const RuntimeNativePackageIndex& index) {
     if(index.objects.size()>4096u || !index.defaults || !index.defaults->nativePackageDefaults)
@@ -3844,7 +3966,9 @@ public:
         ValidateNativeInputMutationLeases();
         for(const auto& canvas:provisionalCanvases_)RequireNativeViewportCanvas(canvas.get());
         for(const auto& console:provisionalConsoles_)RequireNativeViewportConsole(console.get());
+        PrepareNativeAudioPublication();
         PublishNativeUserConfig(); // Last fallible preparation, then no rollback after a rename.
+        CommitNativeAudioPublication(); // Reserved fixed slot: no throw after config rename.
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeMutableModel_.reset();
@@ -3876,6 +4000,7 @@ public:
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        RollbackNativeAudio();
         if(beforeBrushTracker_) {
             beforeBrushTracker_->level->nativeBrushTracker.swap(beforeBrushTracker_->state);
             beforeBrushTracker_.reset();
@@ -4064,10 +4189,11 @@ public:
     }
     std::string ObjectString(const std::string& path) override {
         auto* object = Object(path); // Validate identity and canonicalize spelling.
+        if(ActualNativeAudioObjectValid(object))return object->reflection.objectPath;
         // Original initialized default blocks have Name None and Outer null.
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
-        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance) {
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance||ActualNativeAudioObjectValid(object)) {
             if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputObjectValid(object))
                 throw std::runtime_error("Constructed native UObject identity is invalid");
             return object->reflection.objectPath;
@@ -5480,10 +5606,13 @@ public:
         const auto field=DescribeProperty(key);
         auto* metadata=Object(field.key);
         const char* type=kind==Kind::Object?"ObjectProperty":kind==Kind::Byte?"ByteProperty":
-            kind==Kind::Bool?"BoolProperty":kind==Kind::Vector?"StructProperty":"";
+            kind==Kind::Bool?"BoolProperty":kind==Kind::Int?"IntProperty":kind==Kind::Float?"FloatProperty":
+            kind==Kind::Name?"NameProperty":kind==Kind::String?"StrProperty":
+            (kind==Kind::Vector||kind==Kind::Rotator)?"StructProperty":"";
         if (!object || !OwnsProperty(object->cls,field) || field.arrayDimension!=1u || field.zero.kind!=kind ||
             !metadata->property || metadata->property->type!=type ||
             (kind==Kind::Vector && field.resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12) ||
+            (kind==Kind::Rotator && field.resultLayout!=QuestVr::Vm::ResultLayout::CoreRotator12) ||
             (*constraint && LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!=LowerAscii(constraint)))
             throw std::runtime_error("Native sound field is not its actual authored scalar schema");
         const auto value=Read(object,field,0u);
@@ -5643,6 +5772,10 @@ public:
             if (slot>=3u) for (const auto component:values[slot].vector)
                 if (!std::isfinite(component)) throw std::runtime_error("ClientHearSound packet must be finite");
         }
+        const auto volume=QuestVr::NativeScalar::StoreFloat(QuestVr::NativeScalar::Multiply(
+            QuestVr::NativeScalar::Load(values[4u].vector[0u]),QuestVr::NativeScalar::Load(0.01)));
+        const auto pitch=QuestVr::NativeScalar::StoreFloat(QuestVr::NativeScalar::Multiply(
+            QuestVr::NativeScalar::Load(values[4u].vector[2u]),QuestVr::NativeScalar::Load(0.01)));
         ValidateObjectValue(values[0u],"Engine.Actor",false);
         ValidateObjectValue(values[2u],"Engine.Sound",false);
         RequireMapActor(pawn);
@@ -5658,11 +5791,23 @@ public:
         auto* player=SoundObjectField(pawn,"Engine.PlayerPawn.Player","Engine.Player");
         if (!player || CastObject("Engine.Viewport",Value::Text(Kind::Object,player->reflection.objectPath),false).text.empty())
             return {};
-        // No fake audio-disabled success: the port's original Audio subsystem
-        // still needs a bounded commit-only queue/prepared backend. A genuine
-        // Viewport route must roll back until that consumer is implemented.
-        throw std::runtime_error("ClientHearSound original audio publication is not implemented");
+        auto* engine=pawn->nativeXLevel?pawn->nativeXLevel->nativeLevelEngine:nullptr;
+        if(!engine||!ActualNativeCollisionObjectValid(engine)||!engine->nativeEngineInstance)
+            throw std::runtime_error("ClientHearSound requires actual native XLevel.Engine");
+        if(!engine->nativeEngineInstance->values.audio) {
+            // A real configured Quest session is not made artificially silent.
+            if(persistentAudioOutput)throw std::runtime_error("ClientHearSound configured Quest Audio provider is not prepared");
+            return {}; // Genuine source Audio=None without a bound output.
+        }
+        RuntimeObject* source=values[0u].text.empty()?nullptr:Object(values[0u].text);
+        if(source&&(source->reflection.flags&0x80u))source=nullptr;
+        const auto radius=values[4u].vector[1u]==0.0f?1600.0f:values[4u].vector[1u];
+        NativeAudioPlay(source,std::bit_cast<std::uint32_t>(values[1u].integer),
+            values[2u].text.empty()?nullptr:Object(values[2u].text),values[3u].vector,volume,radius,pitch);
+        return {}; // Original callback ignores provider Int result.
     }
+
+    #include "portable_native_audio_host.inl"
 
     std::shared_ptr<const Function> FastTraceDeclaration(const Function* supplied) {
         const auto authored=FunctionFor(Object("Engine.Actor.FastTrace"));
@@ -8787,7 +8932,7 @@ public:
                 key=="extension.tilewindow.rowarray")
                 throw std::runtime_error("Native Window private pointer-array storage is not a script-visible value");
         }
-        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance) {
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance||ActualNativeAudioObjectValid(object)) {
             if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputObjectValid(object))
                 throw std::runtime_error("Native UObject reflected read lost its actual identity");
             const auto key=LowerAscii(property.key);
@@ -9540,6 +9685,13 @@ public:
                 result.brushTracker.topologyChecked=tracker.topologyChecked;result.brushTracker.movers=tracker.movers.size();
                 result.brushTracker.polygons=tracker.setup.completedPolygons;result.brushTracker.nodes=tracker.activeNodes;
                 result.brushTracker.vertices=tracker.activeVertices;result.brushTracker.points=tracker.dynamicPoints;
+            }
+            auto* audio=CurrentClockLevel()->nativeLevelEngine->nativeEngineInstance->values.audio;
+            if(audio) {
+                auto& provider=RequireNativeAudio();
+                if(audio!=provider.instance)throw std::runtime_error("LoadMap Audio is not its actual concrete Quest provider");
+                auto* viewport=provider.state->viewport; // Original GetViewport, then SetViewport even when equal.
+                NativeAudioSetViewport(viewport,execution);
             }
         }
         // Native client/player/detail providers after the original partition
@@ -10926,6 +11078,8 @@ private:
     // metadata and Engine asset registrations supply an absent class identity.
     // Serialized UClasses always take precedence and use their actual ObjBase.
     std::optional<QuestVr::ObjectCastClass> NativeCastClass(const std::string& path) {
+        if(LowerAscii(path)==LowerAscii(std::string(QuestAudioClass.path)))
+            return QuestVr::ObjectCastClass{std::string(QuestAudioClass.path),"QuestAudioSubsystem","Engine.AudioSubsystem"};
         if(LowerAscii(path)=="core.system"&&persistentSystem&&persistentSystem->get())
             return QuestVr::ObjectCastClass{"Core.System","System","Core.Subsystem"};
         if(IsContextExcludedPath(path))throw std::runtime_error("Native class fallback is context-excluded: "+path);
@@ -11910,7 +12064,10 @@ private:
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
         if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
         if(persistentSystem)defaults.Retain(NativeSystemRetainedBytes(*persistentSystem->get()));
+        if(persistentNativeAudio)defaults.Retain(NativeAudioRetainedBytes(*persistentNativeAudio->get()));
+        defaults.Retain(NativeAudioJournalBytes());
         defaults.Retain(systemNameArenaCredit);
+        defaults.Retain(nativeAudioNameArenaCredit);
         defaults.Retain(runtimeNameArenaCredit);
         defaults.Retain(NativePlayerSessionBytes());
         defaults.Retain(NativeClientRootRetainedBytes());
@@ -14467,6 +14624,7 @@ void ShutdownPortableRuntime() {
     if(persistentRetailCollision && persistentRetailCollision->ReadUsage().depth)
         throw std::runtime_error("Runtime shutdown refused during an active retail collision root");
     if(persistentVmRootCount)throw std::runtime_error("Runtime shutdown refused during an active VM root");
+    RetireNativeAudioProvider();
     RetireRuntimeAudioOutput(); // Before lookup, Engine or actual Client roots retire.
     persistentGameScriptsEnabled=false;
     persistentProcessLoop.reset(); // Unbind before any runtime/lookup/GC retirement.
@@ -14480,6 +14638,7 @@ void ShutdownPortableRuntime() {
     persistentSystem.reset();
     persistentUserConfigStorage.reset();
     persistentEngineCollision.reset();
+    persistentNativeAudio.reset();
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
     persistentPrimitiveModelCache.Clear();
     ClearNativePlayerObjects();
@@ -15211,6 +15370,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 }
 
 #include "portable_engine_collision.inl"
+#include "portable_native_audio_api.inl"
 #include "portable_input_schema.inl"
 #include "portable_system_services.inl"
 #include "portable_input_config.inl"
@@ -17500,6 +17660,12 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 
 std::size_t UnloadPortableRuntimeMap() {
     if(persistentLiveModelReaders)throw std::runtime_error("Map unload refused during an active live Model query lease");
+    if(persistentNativeAudio&&persistentNativeAudio->get()->state) {
+        const auto& state=*persistentNativeAudio->get()->state;
+        if(state.viewport||!state.resources.empty()||std::any_of(state.channels.slots.begin(),state.channels.slots.end(),
+            [](const auto& channel){return channel.actor||channel.sound||channel.voice;}))
+            throw std::runtime_error("Map unload refused: live native audio requires transactional viewport/channel/resource travel retirement");
+    }
     if(!persistentFlagBases.empty())throw std::runtime_error("Live FlagBase map travel requires its original purge/archive service");
     if(!persistentDumpObjects.empty())throw std::runtime_error("Map travel requires live DumpLocation ownership retirement");
     if(HasNativeDeferredOwnership())

@@ -22,6 +22,8 @@ add_library(surreal_portable_core STATIC
     surreal_package_stream_reader.cpp
     surreal_portable_package_tables.cpp
     portable_music_sources.cpp
+    portable_sound_sources.cpp
+    portable_native_sound_decode.cpp
     portable_brush_polys.cpp
     portable_brush_texture_sources.cpp
     quest_native_font_metrics.cpp
@@ -32,6 +34,8 @@ add_library(surreal_portable_core STATIC
 target_compile_features(surreal_portable_core PUBLIC cxx_std_20)
 target_compile_options(surreal_portable_core PRIVATE -Wall -Wextra)
 target_include_directories(surreal_portable_core PUBLIC "${SURREAL_ENGINE_ROOT}")
+target_include_directories(surreal_portable_core PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../third_party/SurrealEngine/Thirdparty")
+target_link_libraries(surreal_portable_core PUBLIC quest_music_codecs)
 
 add_library(deusex_data_probe SHARED ue1_package_probe.cpp)
 target_compile_features(deusex_data_probe PRIVATE cxx_std_20)

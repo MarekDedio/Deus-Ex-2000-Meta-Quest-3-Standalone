@@ -299,6 +299,7 @@
         // be revoked. Refuse BEFORE rename and let Prepared cancel its stage.
         ValidateRootNativeClientLease();
         ValidateNativeInputMutationLeases();
+        ValidateNativeAudioPublicationLease();
         const auto result=prepared.Publish();
         if(!result.Published())throw std::runtime_error("Native app-owned config was not published");
         // Rename has happened. Only noexcept state publication follows: NEVER

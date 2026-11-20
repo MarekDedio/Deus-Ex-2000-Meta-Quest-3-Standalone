@@ -205,8 +205,8 @@
                 throw std::runtime_error("DestroyActor Audio has no actual native Engine constructor storage");
             return reinterpret_cast<std::uintptr_t>(engine->nativeEngineInstance->values.audio);
         };
-        q.audioActorDestroyed=[](std::uintptr_t,std::uintptr_t) {
-            throw std::runtime_error("Original DestroyActor nonnull Audio notification is not implemented");
+        q.audioActorDestroyed=[this](std::uintptr_t audio,std::uintptr_t actor) {
+            NativeAudioNoteDestroy(reinterpret_cast<RuntimeObject*>(audio),reinterpret_cast<RuntimeObject*>(actor));
         };
         q.conditionalDestroy=[this,resolve,&execution](std::uintptr_t identity)->std::int32_t {
             return ConditionalDestroyObject(resolve(identity),execution);

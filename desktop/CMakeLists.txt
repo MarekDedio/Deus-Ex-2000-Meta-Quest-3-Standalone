@@ -132,6 +132,17 @@ endif()
 add_test(NAME portable_music_sources COMMAND portable_music_sources_test)
 set_tests_properties(portable_music_sources PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(portable_sound_sources_test portable_sound_sources_test.cpp)
+target_compile_features(portable_sound_sources_test PRIVATE cxx_std_20)
+target_link_libraries(portable_sound_sources_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_sound_sources_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_sound_sources_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_sound_sources COMMAND portable_sound_sources_test)
+add_test(NAME portable_sound_sources_owned COMMAND portable_sound_sources_test --owned)
+set_tests_properties(portable_sound_sources_owned PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(portable_brush_polys_test portable_brush_polys_test.cpp)
 target_compile_features(portable_brush_polys_test PRIVATE cxx_std_20)
 target_link_libraries(portable_brush_polys_test PRIVATE quest_portable_host)
@@ -202,6 +213,8 @@ add_library(quest_portable_host STATIC
     "${PORT_NATIVE}/surreal_package_stream_reader.cpp"
     "${PORT_NATIVE}/surreal_portable_package_tables.cpp"
     "${PORT_NATIVE}/portable_music_sources.cpp"
+    "${PORT_NATIVE}/portable_sound_sources.cpp"
+    "${PORT_NATIVE}/portable_native_sound_decode.cpp"
     "${PORT_NATIVE}/portable_brush_polys.cpp"
     "${PORT_NATIVE}/portable_brush_texture_sources.cpp"
     "${PORT_NATIVE}/quest_native_font_metrics.cpp"
@@ -212,6 +225,8 @@ add_library(quest_portable_host STATIC
 )
 target_compile_features(quest_portable_host PUBLIC cxx_std_20)
 target_include_directories(quest_portable_host PUBLIC "${SURREAL_ENGINE_ROOT}" "${PORT_NATIVE}")
+target_include_directories(quest_portable_host PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../third_party/SurrealEngine/Thirdparty")
+target_link_libraries(quest_portable_host PUBLIC quest_music_codecs)
 # Upstream's package headers rely on its Precomp.h for memory/integer types.
 target_precompile_headers(quest_portable_host PRIVATE "${SURREAL_ENGINE_ROOT}/Precomp.h")
 if(WIN32)
@@ -872,6 +887,27 @@ if(MINGW)
 endif()
 add_test(NAME quest_audio_transport COMMAND quest_audio_transport_test)
 set_tests_properties(quest_audio_transport PROPERTIES TIMEOUT 60)
+
+add_executable(portable_native_sound_decode_test portable_native_sound_decode_test.cpp)
+target_compile_features(portable_native_sound_decode_test PRIVATE cxx_std_20)
+target_link_libraries(portable_native_sound_decode_test PRIVATE quest_portable_host)
+target_include_directories(portable_native_sound_decode_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../third_party/SurrealEngine/Thirdparty")
+if(MINGW)
+    target_compile_options(portable_native_sound_decode_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_native_sound_decode_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_native_sound_decode COMMAND portable_native_sound_decode_test)
+add_test(NAME portable_native_sound_decode_owned COMMAND portable_native_sound_decode_test --owned)
+set_tests_properties(portable_native_sound_decode_owned PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(quest_native_audio_channels_test quest_native_audio_channels_test.cpp)
+target_compile_features(quest_native_audio_channels_test PRIVATE cxx_std_20)
+target_include_directories(quest_native_audio_channels_test PRIVATE "${PORT_NATIVE}")
+if(MINGW)
+    target_compile_options(quest_native_audio_channels_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_native_audio_channels_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_native_audio_channels COMMAND quest_native_audio_channels_test)
 
 add_executable(portable_lightmap_renderer_test portable_lightmap_renderer_test.cpp visual_renderer.cpp)
 target_compile_features(portable_lightmap_renderer_test PRIVATE cxx_std_17)

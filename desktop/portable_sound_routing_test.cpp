@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "quest_audio_transport.h"
+#include "portable_native_audio.h"
 #include "portable_object_lookup.h"
 #include "portable_process_loop.h"
 #include "quest_level_clock.h"
@@ -428,6 +429,17 @@ Tables Build(Fixture& fixture,bool outside=true,bool ownedEngine=false,bool star
         const auto possessions=classes.Property("Possessions","IntProperty",listener,cc);
         classes.Function("Possess",listener,cc,
             Join({Assign(Ref(0x01u,possessions),Native(146u,{Ref(0x01u,possessions),Integer(1)})),Return()}),0u,0x802u);
+        // Actual inherited Engine.Pawn.ClientHearSound, with ONLY test Possess
+        // overridden. No fabricated native output dispatch or caller shortcut.
+        const auto nativeListener=classes.Export("NativeListener",0,cpa);
+        classes.Function("Possess",nativeListener,cc,Return(),0u,0x802u);
+        const auto late=classes.Function("NativeHearThenFail",nativeListener,cc);
+        const auto source=classes.Property("Source","ObjectProperty",late,cc,ca,0x80u);
+        const auto sound=classes.Property("Sound","ObjectProperty",late,cc,cs,0x80u);
+        const auto hearNative=classes.Import("ClientHearSound",cpawn,"Function");
+        classes.FunctionCode(late,Join({Final(hearNative,{Ref(0x00u,source),Integer(0),Ref(0x00u,sound),
+            Vector({0,0,0}),Vector({100,800,100})}),Native(999u),Return()}));
+        classes.ClassBody(nativeListener);
     }
     for(auto cls:{listener,splicer,moving,failing}) {
         const auto fn=classes.Function("ClientHearSound",cls,cc,{},0u,0x902u);
@@ -498,16 +510,27 @@ Tables Build(Fixture& fixture,bool outside=true,bool ownedEngine=false,bool star
     Package map;map.stem="SoundFixture";const auto me=map.ImportPackage("Engine"),mc=map.ImportPackage("SoundClasses");
     const auto world=map.Export("MyLevel",map.Import("Level",me)),worldModel=map.Export("WorldModel",map.Import("Model",me));
     const auto soundA=map.Export("SoundA",map.Import("Sound",me)),soundB=map.Export("SoundB",map.Import("Sound",me));
-    map.ActorBody(soundA,{});map.ActorBody(soundB,{});
+    const auto soundBody=[&](std::int32_t resource) {
+        Bytes wave;for(char c:std::string("RIFF"))wave.push_back(static_cast<std::uint8_t>(c));U32(wave,52u);
+        for(char c:std::string("WAVEfmt ")){wave.push_back(static_cast<std::uint8_t>(c));}U32(wave,16u);
+        U16(wave,1u);U16(wave,1u);U32(wave,8000u);U32(wave,16000u);U16(wave,2u);U16(wave,16u);
+        for(char c:std::string("data")){wave.push_back(static_cast<std::uint8_t>(c));}U32(wave,16u);
+        for(unsigned frame=0u;frame<8u;++frame)U16(wave,1000u);
+        Bytes body{0u};Index(body,map.Name("WAV"));U32(body,0u);Index(body,static_cast<std::int32_t>(wave.size()));
+        Append(body,wave);map.Body(resource,std::move(body));
+    };
+    soundBody(soundA);soundBody(soundB);
     const auto levelActor=map.Export("Level0",map.Import(startup?"WorldLevel":"LevelInfo",startup?mc:me)),alternateInfo=map.Export("AlternateInfo",map.Import("LevelInfo",me));
     const auto driver=map.Export("Driver",map.Import(startup?"WorldProbe":"Probe",mc)),other=map.Export("Other",map.Import("Probe",mc));
     const auto first=map.Export("First",map.Import("Listener",mc)),second=map.Export("Second",map.Import("Listener",mc));
     const auto third=map.Export("Third",map.Import("Listener",mc)),splice=map.Export("Splicer",map.Import("SpliceListener",mc));
     const auto move=map.Export("Mover",map.Import("MovingListener",mc)),failure=map.Export("Failure",map.Import("FailingListener",mc));
     const auto basePawn=map.Export("BasePawn",map.Import("Pawn",me)),plainPlayer=map.Export("PlainPlayer",map.Import("PlayerPawn",me));
+    const auto nativeListener=ownedEngine&&!startup?map.Export("NativeListener",map.Import("NativeListener",mc)):0;
     const auto orphan=map.Export("Orphan",map.Import("Probe",mc));
-    const std::vector<std::int32_t> actors=startup?std::vector<std::int32_t>{levelActor,driver}:
+    std::vector<std::int32_t> actors=startup?std::vector<std::int32_t>{levelActor,driver}:
         std::vector<std::int32_t>{levelActor,driver,other,first,second,third,splice,move,failure,basePawn,plainPlayer};
+    if(nativeListener)actors.push_back(nativeListener);
     auto authored=actors;authored.push_back(alternateInfo);authored.push_back(orphan);
     for(auto reference:authored) {
         Bytes tags;
@@ -1096,6 +1119,107 @@ void OwnedAudioOutputBinding(Fixture& fixture,const std::function<void()>& initi
     std::cout<<"OWNED AUDIO OUTPUT: exact actual Client/Engine/Viewport binding, pending/metadata/stale owner refusals, PCM accounting and clear/shutdown; host protocol only, NOT original AudioSubsystem or hardware readiness.\n";
 }
 
+void OwnedNativeAudioProvider(Fixture& fixture,const std::function<void()>& initialize,const std::string& ini) {
+    initialize();constexpr std::uint64_t clientId=8501u,viewportId=8502u;
+    auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,clientId);
+    PreparePortableRuntimeClientObjects();RegisterPortableRuntimeViewport(clientId,{viewportId,1440u,1440u,3u,2u});
+    PreparePortableRuntimePlayerObjects(viewportId);
+    auto endpoint=std::make_shared<QuestVr::AudioEndpointControl>(23u,lifetime,clientId,viewportId,QuestVr::AudioOutputFormat{48000u,2u});
+    auto output=std::make_shared<QuestVr::AudioOutputTransport>(endpoint,lifetime,clientId,viewportId);
+    Require(endpoint->ConfirmStartedOnOwner(true),"Explicit host native-audio protocol confirmation refused");
+    BindPortableRuntimeAudioOutput(output);
+    bool absentConsumer{};
+    try{PreparePortableRuntimeQuestAudioSubsystem(ini);}catch(const std::exception&){absentConsumer=true;}
+    Require(absentConsumer&&!ReadPortableRuntimeQuestAudioSubsystem().prepared,
+        "Concrete provider claimed initialization without actual PCM consumer");++refusals;
+    QuestVr::AudioVoiceMixer mixer;QuestVr::AudioVoiceMixer::Retirement attached;
+    Require(mixer.ResetOnOwner(output->Identity(),attached),"Cannot attach actual test PCM consumer");
+    const auto prepared=PreparePortableRuntimeQuestAudioSubsystem(ini);
+    Require(prepared.prepared&&prepared.initialized&&prepared.ready&&!prepared.retired&&
+        prepared.classPath=="Engine.QuestAudioSubsystem"&&prepared.classIndex&&prepared.audioIndex&&
+        prepared.baseDefaultIndex&&prepared.defaultIndex&&prepared.liveChannels==16u&&prepared.freeCounter==0u&&
+        ReadPortableRuntimeAudioOutput().engineAudioPath==prepared.audioPath,
+        "Concrete Quest provider lost actual Class/default/instance/Engine/output or configured channel authority");
+    Require(PreparePortableRuntimeQuestAudioSubsystem(ini).audioIndex==prepared.audioIndex,"Provider repeated initialization changed its identity");
+    const auto player=SetPortableRuntimePlayer(viewportId,Path("NativeListener"));
+    Require(player.passed()&&player.committed,"Cannot bind explicit generated Possess test pawn: "+player.error);
+    const auto set=SetPortableRuntimeQuestAudioViewport(viewportId);
+    Require(set.passed()&&set.committed&&ReadPortableRuntimeQuestAudioSubsystem().viewportPath==ReadPortableRuntimePlayerSession(viewportId).viewportPath,
+        "Concrete Quest SetViewport failed its real output/Client pair: "+set.error);
+    const auto hear=[&](std::uint32_t id) {
+        return ExecutePortableActorFunction(Path("NativeListener"),"ClientHearSound",{Object("Driver"),
+            {Value::Integer(std::bit_cast<std::int32_t>(id)),{}},Object("SoundA"),{Value::Vector({0,0,0}),{}},
+            {Value::Vector({100,800,100}),{}}});
+    };
+    const auto before=ReadPortableRuntimeQuestAudioSubsystem();
+    const auto fail=ExecutePortableActorFunction(Path("NativeListener"),"NativeHearThenFail",{Object("Driver"),Object("SoundA")});
+    const auto rolled=ReadPortableRuntimeQuestAudioSubsystem();
+    Require(!fail.passed()&&!fail.committed&&fail.error.find("999")!=std::string::npos&&rolled.freeCounter==before.freeCounter&&
+        rolled.voiceSerial==before.voiceSerial&&output->PendingBatches()==0u&&rolled.resourceCount==0u,
+        "Late original native callback failure retained channel counter/voice/resource/queue state: "+fail.error);++refusals;
+    const auto heard=hear(0u);
+    Require(heard.passed()&&heard.committed,"Original native ClientHearSound did not route to concrete provider: "+heard.error);
+    const auto selected=ReadPortableRuntimeQuestAudioSubsystem();
+    const auto active=std::find_if(selected.channels.begin(),selected.channels.end(),[](const auto& value){return value.id!=0u;});
+    Require(selected.freeCounter==0xffffffffu&&active!=selected.channels.end()&&active->id==0xfffffff0u&&
+        active->soundPath==Path("SoundA")&&active->actorPath==Path("Driver")&&!active->voice&&output->PendingBatches()==0u,
+        "Native channel selection fabricated playback or lost original SLOT_None/Sound/Actor identity");
+    bool liveTravelRefused{};
+    try{UnloadPortableRuntimeMap();}catch(const std::exception& error){
+        liveTravelRefused=std::string_view(error.what()).find("live native audio")!=std::string_view::npos;
+    }
+    const auto afterTravel=ReadPortableRuntimeQuestAudioSubsystem();
+    Require(liveTravelRefused&&afterTravel.freeCounter==selected.freeCounter&&
+        afterTravel.viewportPath==selected.viewportPath&&afterTravel.channels.size()==selected.channels.size()&&
+        std::equal(afterTravel.channels.begin(),afterTravel.channels.end(),selected.channels.begin(),[](const auto& a,const auto& b){
+            return a.id==b.id&&a.actorPath==b.actorPath&&a.soundPath==b.soundPath&&a.voice==b.voice;})&&output->PendingBatches()==0u,
+        "Unsupported live audio travel unlinked the map or mutated native/audible channel state");++refusals;
+    const auto updated=UpdatePortableRuntimeQuestAudio();
+    Require(updated.passed()&&updated.committed,"Concrete native audio Update did not prepare/publish actual source PCM: "+updated.error);
+    const auto started=ReadPortableRuntimeQuestAudioSubsystem();
+    Require(started.resourceCount==1u&&started.voiceSerial==1u&&started.updates==1u&&output->PendingBatches()==1u,
+        "Native audio Update did not commit real bounded resource and voice state");
+    QuestVr::AudioVoiceBatch batch;
+    Require(output->PopOnOwner(batch)&&batch.count==1u&&batch.commands[0u].pcm&&batch.commands[0u].pcm->Rate()==8000u,
+        "Native source rate was discarded or no PCM command reached owner");
+    const auto slot=batch.commands[0u].slot;QuestVr::AudioVoiceMixer::Retirement retirement;
+    Require(mixer.Apply(batch,retirement)&&output->Feedback(slot).playback==QuestVr::AudioVoicePlayback::Pending,
+        "Committed original sound bypassed Pending admission");
+    std::array<std::int16_t,128u> samples{};mixer.MixAdd(samples.data(),64u,output->Generation());
+    Require(std::any_of(samples.begin(),samples.end(),[](auto sample){return sample!=0;})&&
+        output->Feedback(slot).playback==QuestVr::AudioVoicePlayback::Finished,"Original native sound never produced actual positive PCM/finish");
+    const auto completed=UpdatePortableRuntimeQuestAudio();
+    Require(completed.passed()&&completed.committed&&ReadPortableRuntimeQuestAudioSubsystem().channels[slot].id==0u,
+        "Finished backend feedback did not stop native channel");
+    while(output->PopOnOwner(batch)){QuestVr::AudioVoiceMixer::Retirement retired;Require(mixer.Apply(batch,retired),"Owner refused native stop batch");}
+    Require(hear(2u).passed(),"Cannot requeue native sound for same-viewport stop");
+    Require(UpdatePortableRuntimeQuestAudio().passed(),"Cannot update native repeat sound");
+    const auto beforeSameViewport=ReadPortableRuntimeQuestAudioSubsystem();
+    const auto repeated=SetPortableRuntimeQuestAudioViewport(viewportId);
+    const auto stopped=ReadPortableRuntimeQuestAudioSubsystem();
+    Require(repeated.passed()&&repeated.committed&&
+        stopped.previousAudioTime==beforeSameViewport.previousAudioTime&&stopped.updates==beforeSameViewport.updates&&
+        std::all_of(stopped.channels.begin(),stopped.channels.end(),[](const auto& row){return row.id==0u;}),
+        "Same-viewport Get/Set failed to stop before equality or changed the independent audio clock");
+    Require(hear(2u).passed(),"Cannot stage attached source before native destruction probe");
+    const auto priorDestroy=ReadPortableRuntimeQuestAudioSubsystem();const auto queuedBeforeDestroy=output->PendingBatches();
+    const auto destruction=ProbePortableActorNativeDestroy({Path("Driver")});
+    Require(destruction.completed&&destruction.execution.passed()&&destruction.returned.size()==1u&&destruction.returned[0u]!=0,
+        "Actual DestroyActor did not traverse concrete nonnull Audio.NoteDestroy: "+destruction.execution.error);
+    const auto afterDestroy=ReadPortableRuntimeQuestAudioSubsystem();
+    Require(afterDestroy.freeCounter==priorDestroy.freeCounter&&afterDestroy.voiceSerial==priorDestroy.voiceSerial&&
+        output->PendingBatches()==queuedBeforeDestroy&&
+        std::equal(afterDestroy.channels.begin(),afterDestroy.channels.end(),priorDestroy.channels.begin(),[](const auto& a,const auto& b){
+            return a.id==b.id&&a.voice==b.voice&&a.actorPath==b.actorPath&&a.soundPath==b.soundPath;}),
+        "Rollback-only native destruction retained detached ownership or audible command effects");
+    endpoint->Revoke(-731);const auto stale=hear(2u);
+    Require(!stale.passed()&&!stale.committed,"Revoked original sound provider published channels");++refusals;
+    ShutdownPortableRuntime();
+    Require(!output->Ready(),"Native provider shutdown left output publication usable");
+    std::cout<<"OWNED NATIVE AUDIO: real concrete Class/CDO/Engine/Client provenance, original ClientHearSound/counter/rollback, source-rate WAV, committed owner PCM/feedback and same-viewport stop; host protocol, NOT headset playback/startup or Galaxy spatial parity.\n";
+    fixture.Unchanged();
+}
+
 void OwnedActualClientRouting(const std::filesystem::path& root,bool startup=false) {
     // ScriptSaveSchema derives its game root from the actual Actor UClass's
     // source. Put verified byte-identical copies beside the generated test map
@@ -1139,6 +1263,7 @@ void OwnedActualClientRouting(const std::filesystem::path& root,bool startup=fal
         ShutdownPortableRuntime();GC::Collect();return;
     }
     OwnedAudioOutputBinding(fixture,initialize);
+    OwnedNativeAudioProvider(fixture,initialize,ini.string());
     constexpr std::uint64_t clientId=8301u,firstId=8302u,secondId=8303u;
     const auto empty=[&](const char* label) {
         const auto before=fixture.Snapshot("OwnedEmptyBefore");const auto gc=GC::GetStats();

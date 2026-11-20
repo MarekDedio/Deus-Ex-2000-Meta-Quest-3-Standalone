@@ -376,6 +376,155 @@ void VoiceControlsAndRetirement() {
     Feedback(retired.mixer,0u,AudioBatchCommandCapacity+1u,AudioVoicePlayback::Pending);
 }
 
+void NativeRateAndLoopRegions() {
+    Fixture f;
+    const std::vector<std::int16_t> source{100,200,1100,1200,2100,2200,3100,3200,9100,9200};
+    const auto pcm=f.transport->PrepareSourcePcm(source,24'000u);
+    Require(pcm->Rate()==24'000u&&pcm->Frames()==5u&&
+        std::vector<std::int16_t>(pcm->Samples().begin(),pcm->Samples().end())==source,
+        "Native-rate PCM preparation resampled/relabelled source frames or channels");
+    for(const auto rate:{8'000u,44'100u,192'000u}) {
+        auto otherRate=f.transport->PrepareSourcePcm(source,rate);
+        Require(otherRate->Rate()==rate&&otherRate->Frames()==5u&&
+            std::vector<std::int16_t>(otherRate->Samples().begin(),otherRate->Samples().end())==source,
+            "Source-rate clip inherited the output rate or changed immutable samples");
+    }
+    const auto initialCharge=f.transport->RetainedPcmBytes();
+    for(const auto rate:{0u,7'999u,192'001u,std::numeric_limits<std::uint32_t>::max()})
+        Refused([&]{(void)f.transport->PrepareSourcePcm(source,rate);});
+    Refused([&]{(void)f.transport->PrepareSourcePcm({},24'000u);});
+    Refused([&]{(void)f.transport->PrepareSourcePcm({1,2,3},24'000u);});
+    Refused([&]{(void)f.transport->PreparePcm(source,24'000u);}); // Canonical output-rate API stays strict.
+    Require(f.transport->RetainedPcmBytes()==initialCharge,"Rejected source-rate/shape preparation leaked PCM budget");
+    Fixture pending(7u,false);
+    Refused([&]{(void)pending.transport->PrepareSourcePcm(source,24'000u);});
+
+    // Step is explicitly prepared by the native spatial/frequency provider.
+    // A source rate alone must not add hidden resampling or a second pitch.
+    f.Commit(f.Batch({Play(pcm,701u)}));f.Drain();
+    Samples(f.Mix(6u),{100,200,1100,1200,2100,2200,3100,3200,9100,9200,0,0},
+        "Native-rate clip bypassed explicit step or failed direct owner admission");
+    Feedback(f.mixer,0u,701u,AudioVoicePlayback::Finished);
+    f.Apply(f.Batch({Play(pcm,702u,0u,false,1.0f,1.0f,AudioPhaseOne/2u)}));
+    Samples(f.Mix(11u),{100,200,600,700,1100,1200,1600,1700,2100,2200,2600,2700,
+        3100,3200,6100,6200,9100,9200,9100,9200,0,0},
+        "Explicit source/output half-step failed native-rate interpolation or one-shot final hold");
+    Feedback(f.mixer,0u,702u,AudioVoicePlayback::Finished);
+
+    auto region=Play(pcm,703u,0u,true);region.loopBegin=1u;region.loopEnd=4u;
+    f.Commit(f.Batch({region}));f.Drain();
+    Samples(f.Mix(8u),{100,200,1100,1200,2100,2200,3100,3200,1100,1200,2100,2200,3100,3200,1100,1200},
+        "Sampler region lost the initial prefix, wrapped to zero or played the excluded tail");
+    Feedback(f.mixer,0u,703u,AudioVoicePlayback::Playing);
+    region.voice=704u;region.phaseStep=AudioPhaseOne/2u;f.Apply(f.Batch({region}));
+    Samples(f.Mix(10u),{100,200,600,700,1100,1200,1600,1700,2100,2200,2600,2700,
+        3100,3200,2100,2200,1100,1200,1600,1700},
+        "Sampler interpolation crossed exclusive loop end into tail instead of loop begin");
+    region.voice=705u;region.phaseStep=AudioPhaseOne*7u+AudioPhaseOne/2u;f.Apply(f.Batch({region}));
+    Samples(f.Mix(5u),{100,200,1600,1700,3100,3200,1600,1700,3100,3200},
+        "A source step wider than the loop region lost overshoot/modulo phase");
+    region.voice=706u;region.phaseStep=AudioPhaseOne/2u;region.loopBegin=2u;region.loopEnd=3u;f.Apply(f.Batch({region}));
+    Samples(f.Mix(7u),{100,200,600,700,1100,1200,1600,1700,2100,2200,2100,2200,2100,2200},
+        "Single-frame sampler loop did not retain initial prefix then hold its exact region");
+    region.voice=707u;region.phaseStep=AudioPhaseOne;region.loopBegin=2u;region.loopEnd=0u;f.Apply(f.Batch({region}));
+    Samples(f.Mix(7u),{100,200,1100,1200,2100,2200,3100,3200,9100,9200,2100,2200,3100,3200},
+        "Zero sampler end did not mean whole source extent with the explicit loop begin");
+
+    region.voice=708u;region.loopBegin=1u;region.loopEnd=4u;region.phaseStep=AudioPhaseOne/2u;f.Apply(f.Batch({region}));
+    Samples(f.Mix(3u),{100,200,600,700,1100,1200},"Loop update fixture failed its prefix");
+    f.Apply(f.Batch({Update(708u,0.5f,0.25f,AudioPhaseOne*2u)}));
+    Samples(f.Mix(3u),{800,425,1050,550,1300,675},
+        "A gain/frequency update changed sampler markers or reset the source cursor");
+
+    std::vector<AudioVoiceCommand> invalid;
+    auto bad=region;bad.loop=false;invalid.push_back(bad);
+    bad=region;bad.loopBegin=4u;bad.loopEnd=4u;invalid.push_back(bad);
+    bad=region;bad.loopBegin=4u;bad.loopEnd=3u;invalid.push_back(bad);
+    bad=region;bad.loopEnd=6u;invalid.push_back(bad);
+    bad=region;bad.loopBegin=5u;bad.loopEnd=0u;invalid.push_back(bad);
+    bad=region;bad.loopBegin=std::numeric_limits<std::uint32_t>::max();invalid.push_back(bad);
+    bad=region;bad.loopEnd=std::numeric_limits<std::uint32_t>::max();invalid.push_back(bad);
+    bad=Play(pcm,709u);bad.loopEnd=4u;invalid.push_back(bad);
+    bad=Play(pcm,709u);bad.loopBegin=1u;invalid.push_back(bad);
+    bad=Update(708u,1.0f,1.0f);bad.loopBegin=1u;invalid.push_back(bad);
+    bad=Update(708u,1.0f,1.0f);bad.loopEnd=4u;invalid.push_back(bad);
+    bad=Stop(708u);bad.loopBegin=1u;invalid.push_back(bad);
+    bad=Stop(708u);bad.loopEnd=4u;invalid.push_back(bad);
+    for(const auto& command:invalid) {
+        region.phaseStep=AudioPhaseOne;f.Apply(f.Batch({region}));
+        Require(!AudioVoiceMixer::ValidCommand(command),"Malformed sampler command passed validation");
+        const auto batch=f.Batch({Update(708u,0.0f,0.0f),command});AudioVoiceMixer::Retirement untouched;
+        Require(!f.mixer.Apply(batch,untouched)&&untouched.Empty(),"Invalid sampler command partially mutated an admitted voice");
+        Refused([&]{(void)f.transport->Reserve(batch);});
+        Samples(f.Mix(1u),{100,200},"Malformed sampler batch allowed the preceding zero-gain update");
+    }
+    Fixture sameGeneration;
+    const auto foreign=sameGeneration.transport->PrepareSourcePcm(source,24'000u);
+    Refused([&]{(void)f.transport->Reserve(f.Batch({Play(foreign,710u)}));});
+    AudioVoiceMixer::Retirement foreignRetirement;
+    Require(!f.mixer.Apply(f.Batch({Play(foreign,710u)}),foreignRetirement)&&foreignRetirement.Empty(),
+        "Native source rate bypassed exact foreign PCM/output capability admission");
+
+    Fixture lifetime;
+    auto only=lifetime.transport->PrepareSourcePcm(source,24'000u);std::weak_ptr<const PreparedAudioPcm> weak=only;
+    auto looping=Play(only,711u,0u,true);looping.loopBegin=1u;looping.loopEnd=4u;
+    lifetime.Apply(lifetime.Batch({looping}));looping.pcm.reset();only.reset();
+    const auto charged=lifetime.transport->RetainedPcmBytes();
+    Samples(lifetime.Mix(8u),{100,200,1100,1200,2100,2200,3100,3200,1100,1200,2100,2200,3100,3200,1100,1200},
+        "Retained native sampler resource changed while external owners were absent");
+    Require(!weak.expired()&&charged&&lifetime.transport->RetainedPcmBytes()==charged,
+        "Callback loop wrap freed/recharged prepared source PCM");
+    AudioVoiceMixer::Retirement offCallback;
+    Require(lifetime.mixer.Apply(lifetime.Batch({Stop(711u)}),offCallback)&&offCallback.count==1u&&!weak.expired(),
+        "Native-rate sampler stop failed fixed off-callback resource retirement");
+    offCallback=AudioVoiceMixer::Retirement{};
+    Require(weak.expired()&&!lifetime.transport->RetainedPcmBytes(),"Off-callback native source retirement leaked resource charge");
+}
+
+void ConsumerEpochFencing() {
+    Fixture f,other;
+    const auto first=f.transport->ConsumerEpoch(),otherFirst=other.transport->ConsumerEpoch();
+    Require(first&&otherFirst&&f.transport->MixerAttached()&&other.transport->MixerAttached(),
+        "A successfully attached output did not publish its first consumer epoch");
+    const auto pcm=f.Pcm({37,-41});f.Apply(f.Batch({Play(pcm,721u,0u,true)}));
+    AudioVoiceMixer::Retirement same;
+    Require(f.mixer.ResetOnOwner(f.transport->Identity(),same)&&same.count==1u&&f.transport->ConsumerEpoch()>first,
+        "Resetting an attached mixer cleared voices without advancing the consumer fence");
+    const auto afterReset=f.transport->ConsumerEpoch();
+    const auto cleared=f.transport->Feedback(0u);
+    Require(!cleared.voice&&cleared.playback==AudioVoicePlayback::Empty&&afterReset!=first,
+        "Same-identity reset could be mistaken for natural completion by a producer retaining the old epoch");
+    same=AudioVoiceMixer::Retirement{};
+    AudioVoiceMixer::Retirement denied;
+    Require(!other.mixer.ResetOnOwner(f.transport->Identity(),denied)&&denied.Empty()&&
+        f.transport->ConsumerEpoch()==afterReset&&other.transport->ConsumerEpoch()==otherFirst,
+        "Denied consumer claim changed either lifetime fence");
+    f.Apply(f.Batch({Play(pcm,722u,0u,true)}));
+    AudioVoiceMixer::Retirement detached;
+    Require(f.mixer.ResetOnOwner(nullptr,detached)&&detached.count==1u&&!f.transport->MixerAttached()&&
+        f.transport->ConsumerEpoch()==afterReset,"Detach advanced the attach epoch or left an attached consumer");
+    const bool oldClaimStillValid=f.transport->MixerAttached()&&f.transport->ConsumerEpoch()==afterReset;
+    Require(!oldClaimStillValid,"An old producer consumer fence survived owner detach");
+    detached=AudioVoiceMixer::Retirement{};
+    Require(f.mixer.ResetOnOwner(f.transport->Identity(),detached)&&f.transport->MixerAttached()&&
+        f.transport->ConsumerEpoch()>afterReset,"Reattaching the same mixer address revived the old consumer epoch");
+    Require(f.transport->ConsumerEpoch()!=afterReset,"A pending old-epoch update could mistake replacement Empty for natural voice completion");
+    const auto reattached=f.transport->ConsumerEpoch();
+    auto separate=std::make_shared<AudioOutputTransport>(f.endpoint,f.client,31u,47u);
+    Require(!separate->MixerAttached()&&!separate->ConsumerEpoch()&&f.transport->ConsumerEpoch()==reattached,
+        "Equal numeric endpoint identities shared their consumer epoch");
+    {
+        AudioVoiceMixer temporary;AudioVoiceMixer::Retirement empty;
+        Require(temporary.ResetOnOwner(separate->Identity(),empty)&&separate->ConsumerEpoch()!=0u,
+            "Temporary owner did not establish its distinct exact capability epoch");
+    }
+    const auto retired=separate->ConsumerEpoch();
+    Require(!separate->MixerAttached()&&retired!=0u,"Destroyed mixer lost historical epoch or retained a consumer");
+    AudioVoiceMixer next;AudioVoiceMixer::Retirement nextRetired;
+    Require(next.ResetOnOwner(separate->Identity(),nextRetired)&&separate->ConsumerEpoch()>retired,
+        "Destroyed/replaced consumer reused its old epoch fence");
+}
+
 void MalformedBatchAtomicity() {
     Fixture f;
     const auto pcm=f.Pcm({1000,-2000});
@@ -603,7 +752,8 @@ void SpscPublication() {
 int main() {
     try {
         ReservationPublication();QueueCapacityAndReuse();OwnerAndResourceValidation();PcmBudget();
-        PcmMixingAndFeedback();VoiceControlsAndRetirement();MalformedBatchAtomicity();OutputFeedbackOwnership();SpscPublication();
+        PcmMixingAndFeedback();VoiceControlsAndRetirement();NativeRateAndLoopRegions();ConsumerEpochFencing();
+        MalformedBatchAtomicity();OutputFeedbackOwnership();SpscPublication();
         std::cout<<"PASS audio transport/real stereo PCM math: "<<checks<<" checks/"<<refusals
             <<" refusals; 24000 deterministic SPSC publications and PCM frames. Host protocol ONLY; "
               "not AAudio hardware readiness, original AudioSubsystem parity or playable startup.\n";

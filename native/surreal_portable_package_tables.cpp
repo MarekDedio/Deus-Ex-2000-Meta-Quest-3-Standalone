@@ -1228,27 +1228,93 @@ std::string ResolvePortableValueObjectReference(
 
 PortableSound LoadPortableSound(
     const PortablePackageTables& package,
-    std::size_t exportIndex) {
+    std::size_t exportIndex,
+    std::size_t maxWorkingBytes) {
     if (exportIndex >= package.exports.size()) {
         throw std::runtime_error("UE1 sound export index is outside the table");
     }
     const ExportTableEntry& entry = package.exports[exportIndex];
-    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
+    if (entry.ObjSize <= 0 || entry.ObjOffset < 0) {
+        throw std::runtime_error("UE1 sound has no serialized payload");
+    }
+    const auto budgetFailure = []() -> void {
+        throw std::runtime_error("UE1 sound working-byte budget exceeded");
+    };
+    const auto add = [&](std::size_t left, std::size_t right) -> std::size_t {
+        if (right > std::numeric_limits<std::size_t>::max() - left) budgetFailure();
+        return left + right;
+    };
+    const auto multiply = [&](std::size_t count, std::size_t size) -> std::size_t {
+        if (size && count > std::numeric_limits<std::size_t>::max() / size) budgetFailure();
+        return count * size;
+    };
+    // The property decoder owns its raw-export/record peak. These outer
+    // handles remain live through that call and the later encoded-data copy.
+    // NameString values are existing process-arena handles, not copied text.
+    constexpr std::size_t fixedBytes = sizeof(PortableSound) +
+        sizeof(std::shared_ptr<File>) + sizeof(PackageStream);
+    if (fixedBytes > maxWorkingBytes) budgetFailure();
+    const auto propertyBudget = maxWorkingBytes - fixedBytes;
     const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    const auto sourceSize = file->size();
+    const auto objectEnd = static_cast<std::uint64_t>(entry.ObjOffset) +
+        static_cast<std::uint64_t>(entry.ObjSize);
+    if (sourceSize < 0 || objectEnd > static_cast<std::uint64_t>(sourceSize)) {
+        throw std::runtime_error("UE1 sound export is outside the actual source file");
+    }
+    const PortablePropertyStream properties =
+        LoadPortableExportProperties(package, exportIndex, propertyBudget);
+    auto retainedBytes = add(fixedBytes, add(sizeof(PortablePropertyStream),
+        multiply(properties.properties.capacity(), sizeof(PortableTaggedProperty))));
+    for (const auto& property : properties.properties) {
+        retainedBytes = add(retainedBytes, property.value.capacity());
+    }
+    if (retainedBytes > maxWorkingBytes) budgetFailure();
+    if (properties.bytesConsumed > static_cast<std::uint32_t>(entry.ObjSize)) {
+        throw std::runtime_error("UE1 sound properties exceed the export");
+    }
     PackageStream stream(nullptr, file);
     stream.Seek(static_cast<std::uint32_t>(entry.ObjOffset) + properties.bytesConsumed);
-    const std::int32_t formatIndex = stream.ReadIndex();
+    // PackageStream itself is not export-bounded. Keep every variable-size
+    // tail-header read within this actual export before allocating Sound data.
+    const auto byte = [&]() -> std::uint8_t {
+        if (stream.Tell() >= objectEnd) {
+            throw std::runtime_error("UE1 sound header is outside the export");
+        }
+        return stream.ReadUInt8();
+    };
+    const auto index = [&]() -> std::int32_t {
+        auto value = byte();
+        const bool negative = (value & 0x80u) != 0u;
+        bool more = (value & 0x40u) != 0u;
+        std::uint64_t magnitude = value & 0x3fu;
+        unsigned shift = 6u;
+        while (more && shift < 32u) {
+            value = byte();
+            magnitude |= static_cast<std::uint64_t>(value & 0x7fu) << shift;
+            more = (value & 0x80u) != 0u;
+            shift += 7u;
+        }
+        if (more || magnitude > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+            throw std::runtime_error("UE1 sound compact header index is invalid");
+        }
+        return negative ? -static_cast<std::int32_t>(magnitude) : static_cast<std::int32_t>(magnitude);
+    };
+    const std::int32_t formatIndex = index();
     ValidateNameIndex(formatIndex, package.names.size());
     PortableSound sound;
     sound.format = package.names[static_cast<std::size_t>(formatIndex)].Name;
-    if (package.version >= 63) stream.ReadUInt32();
-    const std::int32_t byteCount = stream.ReadIndex();
+    if (package.version >= 63) {
+        for (unsigned part = 0u; part < 4u; ++part) static_cast<void>(byte());
+    }
+    const std::int32_t byteCount = index();
     if (byteCount <= 0 || byteCount > 64 * 1024 * 1024 ||
-        static_cast<std::uint64_t>(stream.Tell()) + static_cast<std::uint64_t>(byteCount) >
-            static_cast<std::uint64_t>(entry.ObjOffset) + static_cast<std::uint64_t>(entry.ObjSize)) {
+        static_cast<std::uint64_t>(stream.Tell()) + static_cast<std::uint64_t>(byteCount) > objectEnd) {
         throw std::runtime_error("UE1 sound payload is outside the export");
     }
+    if (add(retainedBytes, static_cast<std::size_t>(byteCount)) > maxWorkingBytes) budgetFailure();
     sound.data.resize(static_cast<std::size_t>(byteCount));
+    if (add(retainedBytes, sound.data.capacity()) > maxWorkingBytes) budgetFailure();
     stream.ReadBytes(sound.data.data(), static_cast<std::uint32_t>(sound.data.size()));
     return sound;
 }

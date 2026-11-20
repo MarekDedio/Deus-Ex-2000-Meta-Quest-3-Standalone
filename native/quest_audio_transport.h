@@ -41,14 +41,14 @@ class AudioVoiceMixer;
 class AudioOutputIdentity final {
     friend class AudioOutputTransport;
     friend class AudioVoiceMixer;
-    AudioOutputIdentity(std::uint64_t generation,std::uint32_t rate,std::shared_ptr<AudioPcmBudget> budget)
-        :generation_(generation),rate_(rate),budget_(std::move(budget)) {}
+    AudioOutputIdentity(std::uint64_t generation,std::shared_ptr<AudioPcmBudget> budget)
+        :generation_(generation),budget_(std::move(budget)) {}
     const std::uint64_t generation_;
-    const std::uint32_t rate_;
     const std::shared_ptr<AudioPcmBudget> budget_;
     // Exact capability owns feedback even when the runtime cannot inspect the
     // owner's mixer. Only one mixer may publish to a capability at a time.
     mutable std::atomic<const AudioVoiceMixer*> mixer_{};
+    mutable std::atomic<std::uint64_t> consumerEpoch_{};
     mutable std::array<std::atomic<std::uint64_t>,AudioVoiceCapacity> feedback_{};
     AudioVoiceFeedback Feedback(std::size_t slot) const noexcept {
         if(slot>=feedback_.size())return {};
@@ -90,6 +90,7 @@ struct AudioVoiceCommand {
     std::shared_ptr<const PreparedAudioPcm> pcm;
     float leftGain{1.0f},rightGain{1.0f};
     bool loop{};
+    std::uint32_t loopBegin{},loopEnd{}; // Source frames; zero end means whole PCM.
 };
 struct AudioVoiceBatch {
     std::uint64_t generation{};
@@ -123,13 +124,16 @@ public:
     };
     static bool ValidCommand(const AudioVoiceCommand& command) noexcept {
         if(command.slot>=AudioVoiceCapacity||command.voice>AudioVoiceIdentityMaximum)return false;
-        if(command.operation==AudioVoiceOperation::Stop)return !command.pcm;
+        if(command.operation==AudioVoiceOperation::Stop)return !command.pcm&&!command.loopBegin&&!command.loopEnd;
         if(command.operation!=AudioVoiceOperation::Play&&command.operation!=AudioVoiceOperation::Update)return false;
         if(!command.voice||!command.phaseStep||command.phaseStep>(AudioPhaseOne<<16u)||
             !std::isfinite(command.leftGain)||!std::isfinite(command.rightGain)||
             command.leftGain<0.0f||command.rightGain<0.0f)return false;
-        return command.operation==AudioVoiceOperation::Play?
-            command.pcm&&command.pcm->Frames()!=0u&&command.pcm->Frames()<=AudioMaximumClipFrames:!command.pcm;
+        if(command.operation==AudioVoiceOperation::Update)return !command.pcm&&!command.loopBegin&&!command.loopEnd;
+        if(!command.pcm||!command.pcm->Frames()||command.pcm->Frames()>AudioMaximumClipFrames)return false;
+        if(!command.loop)return !command.loopBegin&&!command.loopEnd;
+        const auto end=command.loopEnd?command.loopEnd:command.pcm->Frames();
+        return command.loopBegin<end&&end<=command.pcm->Frames();
     }
     // Caller owns the same lock used by MixAdd. Admission precedes every write.
     bool Apply(const AudioVoiceBatch& batch,Retirement& retired) noexcept {
@@ -143,7 +147,7 @@ public:
             // Direct owner Apply is checked just as strictly as transport
             // Reserve: a numeric generation is never authority for foreign PCM.
             if(command.pcm&&(command.pcm->output_!=output_||command.pcm->budget_!=output_->budget_||
-                command.pcm->generation_!=output_->generation_||command.pcm->Rate()!=output_->rate_||
+                command.pcm->generation_!=output_->generation_||command.pcm->Rate()<8'000u||command.pcm->Rate()>192'000u||
                 command.pcm->Samples().size()%2u))return false;
         }
         for(std::size_t index=0u;index<batch.count;++index) {
@@ -164,6 +168,7 @@ public:
             if(command.operation==AudioVoiceOperation::Play) {
                 voice.pcm=command.pcm;voice.identity=command.voice;voice.step=command.phaseStep;
                 voice.left=command.leftGain;voice.right=command.rightGain;voice.loop=command.loop;voice.active=true;
+                voice.loopBegin=command.loopBegin;voice.loopEnd=command.loopEnd?command.loopEnd:command.pcm->Frames();
                 voice.reportedPlaying=false;activeMask_|=std::uint32_t{1u}<<command.slot;
                 PublishFeedback(command.slot,voice.identity,AudioVoicePlayback::Pending);
             }
@@ -176,6 +181,14 @@ public:
         if(output&&output!=output_) {
             const AudioVoiceMixer* vacant{};
             if(!output->mixer_.compare_exchange_strong(vacant,this,std::memory_order_acq_rel))return false;
+        }
+        if(output) {
+            const auto epoch=output->consumerEpoch_.load(std::memory_order_relaxed);
+            if(epoch==std::numeric_limits<std::uint64_t>::max()) {
+                if(output!=output_)output->mixer_.store(nullptr,std::memory_order_release);
+                return false;
+            }
+            output->consumerEpoch_.store(epoch+1u,std::memory_order_release);
         }
         for(std::size_t index=0u;index<voices_.size();++index) {
             auto& voice=voices_[index];if(voice.pcm)retired.pcm[retired.count++].swap(voice.pcm);
@@ -205,7 +218,8 @@ public:
                 remaining&=remaining-1u;auto& voice=voices_[slot];
                 const auto samples=voice.pcm->Samples();const auto length=voice.pcm->Frames();
                 const auto at=static_cast<std::size_t>(voice.cursor>>32u);
-                const auto next=at+1u<length?at+1u:voice.loop?0u:at;
+                const auto endFrame=voice.loop?voice.loopEnd:length;
+                const auto next=at+1u<endFrame?at+1u:voice.loop?voice.loopBegin:at;
                 const double blend=static_cast<double>(voice.cursor&0xffffffffu)/4294967296.0;
                 left+=(samples[at*2u]+(samples[next*2u]-samples[at*2u])*blend)*voice.left;
                 right+=(samples[at*2u+1u]+(samples[next*2u+1u]-samples[at*2u+1u])*blend)*voice.right;
@@ -213,9 +227,12 @@ public:
                     PublishFeedback(slot,voice.identity,AudioVoicePlayback::Playing);voice.reportedPlaying=true;
                 }
                 voice.cursor+=voice.step;
-                const auto end=static_cast<std::uint64_t>(length)<<32u;
+                const auto end=static_cast<std::uint64_t>(endFrame)<<32u;
                 if(voice.cursor>=end) {
-                    if(voice.loop)voice.cursor%=end;
+                    if(voice.loop) {
+                        const auto begin=static_cast<std::uint64_t>(voice.loopBegin)<<32u;
+                        voice.cursor=begin+(voice.cursor-end)%(end-begin);
+                    }
                     else {
                         voice.active=false;activeMask_&=~(std::uint32_t{1u}<<slot);
                         PublishFeedback(slot,voice.identity,AudioVoicePlayback::Finished);
@@ -231,6 +248,7 @@ private:
         std::shared_ptr<const PreparedAudioPcm> pcm;
         std::uint64_t identity{},cursor{},step{AudioPhaseOne};
         float left{},right{};bool active{},loop{},reportedPlaying{};
+        std::size_t loopBegin{},loopEnd{};
     };
     void PublishFeedback(std::size_t slot,std::uint64_t voice,AudioVoicePlayback playback) noexcept {
         if(output_)output_->feedback_[slot].store((voice<<2u)|static_cast<std::uint64_t>(playback),std::memory_order_release);
@@ -290,7 +308,7 @@ public:
         if(!endpoint_||!client_||!client_->Alive()||!endpoint_->MatchesOwner(client_,clientIdentity_,viewportIdentity_))
             throw std::runtime_error("Native audio transport owner does not match the actual endpoint");
         identity_=std::shared_ptr<const AudioOutputIdentity>(
-            new AudioOutputIdentity(Generation(),endpoint_->Format().sampleRate,pcmBudget_));
+            new AudioOutputIdentity(Generation(),pcmBudget_));
     }
     bool Ready() const noexcept {return alive_.load(std::memory_order_acquire)&&endpoint_->Ready();}
     void RequireReady() const {
@@ -305,6 +323,7 @@ public:
     const auto& Endpoint() const noexcept {return endpoint_;}
     const auto& Identity() const noexcept {return identity_;}
     bool MixerAttached() const noexcept {return identity_->mixer_.load(std::memory_order_acquire)!=nullptr;}
+    std::uint64_t ConsumerEpoch() const noexcept {return identity_->consumerEpoch_.load(std::memory_order_acquire);}
     AudioVoiceFeedback Feedback(std::size_t slot) const noexcept {return identity_->Feedback(slot);}
     std::size_t PendingBatches() const noexcept {
         // Diagnostic only; neither count nor this snapshot authorizes publish.
@@ -319,7 +338,16 @@ public:
     std::size_t RetainedPcmBytes() const noexcept {return pcmBudget_->RetainedBytes();}
     std::shared_ptr<const PreparedAudioPcm> PreparePcm(std::vector<std::int16_t> samples,std::uint32_t rate) {
         RequireReady();
-        if(samples.empty()||samples.size()%2u||samples.size()/2u>MaximumClipFrames||rate!=endpoint_->Format().sampleRate||
+        if(rate!=endpoint_->Format().sampleRate)
+            throw std::runtime_error("Canonical native audio PCM has the wrong output rate");
+        return PrepareSourcePcm(std::move(samples),rate);
+    }
+    // Native sounds retain their actual source rate and exact loop markers.
+    // The producer prepares frequency/output-rate in command.phaseStep; no
+    // double resampling or callback decoder is needed for pitched resources.
+    std::shared_ptr<const PreparedAudioPcm> PrepareSourcePcm(std::vector<std::int16_t> samples,std::uint32_t rate) {
+        RequireReady();
+        if(samples.empty()||samples.size()%2u||samples.size()/2u>MaximumClipFrames||rate<8'000u||rate>192'000u||
             samples.capacity()>(AudioPcmBudget::MaximumBytes-sizeof(PreparedAudioPcm)-8u*sizeof(void*))/sizeof(std::int16_t))
             throw std::runtime_error("Native audio PCM is empty, malformed, excessive or has the wrong output format");
         const auto charge=samples.capacity()*sizeof(std::int16_t)+sizeof(PreparedAudioPcm)+8u*sizeof(void*);
@@ -341,7 +369,7 @@ public:
             const auto& command=batch.commands[index];
             if(!AudioVoiceMixer::ValidCommand(command))throw std::runtime_error("Native audio batch command is invalid");
             if(command.pcm&&(command.pcm->output_!=identity_||command.pcm->generation_!=Generation()||command.pcm->budget_!=pcmBudget_||
-                command.pcm->Rate()!=endpoint_->Format().sampleRate))
+                command.pcm->Rate()<8'000u||command.pcm->Rate()>192'000u))
                 throw std::runtime_error("Native audio batch references another endpoint's prepared PCM");
         }
         batch.output=identity_;

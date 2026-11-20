@@ -6,6 +6,8 @@
 #include "portable_input_reset.h"
 #include "portable_flag_base.h"
 #include "portable_music_sources.h"
+#include "portable_sound_sources.h"
+#include "portable_native_audio.h"
 #include "portable_brush_texture_sources.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
@@ -19,6 +21,7 @@
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
+#include "quest_audio_transport.h"
 
 #include <algorithm>
 #include <array>
@@ -151,6 +154,21 @@ bool SameNativeClient(const PortableNativeClientSessionSnapshot& a,const Portabl
         std::equal(a.viewports.begin(),a.viewports.end(),b.viewports.begin(),[](const auto& left,const auto& right) {
             return left.identity==right.identity&&left.path==right.path;
         })&&std::equal(a.registeredTargets.begin(),a.registeredTargets.end(),b.registeredTargets.begin(),SameViewport);
+}
+bool SameNativeAudio(const PortableNativeAudioSnapshot& a,const PortableNativeAudioSnapshot& b) {
+    if(a.prepared!=b.prepared||a.initialized!=b.initialized||a.ready!=b.ready||a.disabled!=b.disabled||a.retired!=b.retired||
+        a.classPath!=b.classPath||a.audioPath!=b.audioPath||a.enginePath!=b.enginePath||a.viewportPath!=b.viewportPath||
+        a.configSource!=b.configSource||a.classIndex!=b.classIndex||a.audioIndex!=b.audioIndex||
+        a.baseDefaultIndex!=b.baseDefaultIndex||a.defaultIndex!=b.defaultIndex||a.liveChannels!=b.liveChannels||
+        a.freeCounter!=b.freeCounter||a.lookupGeneration!=b.lookupGeneration||a.outputGeneration!=b.outputGeneration||
+        a.consumerEpoch!=b.consumerEpoch||a.voiceSerial!=b.voiceSerial||a.updates!=b.updates||
+        std::bit_cast<std::uint64_t>(a.previousAudioTime)!=std::bit_cast<std::uint64_t>(b.previousAudioTime)||
+        a.resourceCount!=b.resourceCount||a.referenceBytes!=b.referenceBytes||a.pcmBytes!=b.pcmBytes||a.channels.size()!=b.channels.size())return false;
+    for(std::size_t slot=0u;slot<a.channels.size();++slot){const auto& x=a.channels[slot];const auto& y=b.channels[slot];
+        if(x.slot!=y.slot||x.id!=y.id||x.voice!=y.voice||x.actorPath!=y.actorPath||x.soundPath!=y.soundPath||
+            std::bit_cast<std::uint32_t>(x.priority)!=std::bit_cast<std::uint32_t>(y.priority)||
+            std::bit_cast<std::uint32_t>(x.elapsed)!=std::bit_cast<std::uint32_t>(y.elapsed))return false;}
+    return true;
 }
 struct ActorIdentity {
     std::string path,classPath;std::uint32_t objectIndex{},classIndex{},outerIndex{};
@@ -634,6 +652,10 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         std::cout<<"MUSIC IMPORT source="<<binding.importerSourcePath<<" ref="<<binding.importReference
             <<" object="<<binding.objectPath<<" target="<<binding.sourcePath<<" export="<<binding.exportIndex<<'\n';
     for(auto& source:musicSources.packages){sources.emplace_back(source.sourcePath);scripts.push_back(std::move(source));}
+    auto soundSources=LoadPortableRuntimeSoundSources(scripts,map,ini,QuestVr::OriginalLinkerLoadProfile{false,true,true});
+    std::cout<<"SOUND SOURCE ADMISSION packages="<<soundSources.packages.size()<<" bindings="<<soundSources.bindings.size()
+        <<" serialized="<<soundSources.serializedBytes<<" work="<<soundSources.nativeWork.used<<" retained="<<soundSources.retainedBytes<<'\n';
+    for(auto& source:soundSources.packages){sources.emplace_back(source.sourcePath);scripts.push_back(std::move(source));}
     auto brushTextures=LoadPortableRuntimeBrushTextureSources(scripts,map,ini,QuestVr::OriginalLinkerLoadProfile{false,true,true});
     std::cout<<"BRUSH TEXTURE SOURCE ADMISSION packages="<<brushTextures.packages.size()<<" bindings="<<brushTextures.bindings.size()
         <<" work="<<brushTextures.nativeWork.used<<" retained="<<brushTextures.retainedBytes<<'\n';
@@ -676,6 +698,26 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         "Cannot initialize the actual empty Engine.Client before original startup viewport construction");
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");
+    // Explicit host protocol fixture: this executable owns the output transport
+    // and a real software consumer, but opens no AAudio device or headset stream.
+    // Keep native Audio.Viewport=None until an actual original branch changes
+    // it; do not manufacture early SetPlayer, SetViewport or Update calls.
+    auto audioEndpoint=std::make_shared<QuestVr::AudioEndpointControl>(2803u,lifetime,Client,Viewport,QuestVr::AudioOutputFormat{48000u,2u});
+    auto audioOutput=std::make_shared<QuestVr::AudioOutputTransport>(audioEndpoint,lifetime,Client,Viewport);
+    Require(audioEndpoint->ConfirmStartedOnOwner(true),"Explicit host-only audio protocol confirmation refused");
+    QuestVr::AudioVoiceMixer audioConsumer;QuestVr::AudioVoiceMixer::Retirement audioAttached;
+    Require(audioConsumer.ResetOnOwner(audioOutput->Identity(),audioAttached),"Cannot attach the actual host-only PCM consumer");
+    BindPortableRuntimeAudioOutput(audioOutput);
+    const auto nativeAudio=PreparePortableRuntimeQuestAudioSubsystem(ini);
+    Require(nativeAudio.prepared&&nativeAudio.initialized&&nativeAudio.ready&&!nativeAudio.retired&&
+        nativeAudio.classPath=="Engine.QuestAudioSubsystem"&&nativeAudio.classIndex&&nativeAudio.audioIndex&&
+        nativeAudio.baseDefaultIndex&&nativeAudio.defaultIndex&&nativeAudio.viewportPath.empty()&&
+        !nativeAudio.resourceCount&&!nativeAudio.pcmBytes&&!nativeAudio.updates&&
+        ReadPortableRuntimeAudioOutput().engineAudioPath==nativeAudio.audioPath&&!audioOutput->PendingBatches(),
+        "Host-only native Audio lost actual Engine/Class/default/output ownership or fabricated an early listener");
+    std::cout<<"HOST AUDIO PROTOCOL class="<<nativeAudio.classPath<<" object="<<nativeAudio.audioPath
+        <<" channels="<<nativeAudio.liveChannels<<" output="<<nativeAudio.outputGeneration
+        <<"; actual software consumer, viewport=None, NOT AAudio startup, audible Quest playback or committed Training\n";
     const auto canvas=PreparePortableRuntimeViewportCanvas(Viewport,ini);
     Require(canvas.execution.passed()&&canvas.execution.committed&&canvas.canvas.initialized,
         "Cannot construct/initialize original configured Canvas before Input: "+canvas.execution.error);
@@ -782,6 +824,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             current.retainedBytes==lookup.retainedBytes,
             "Startup diagnostic changed actual UObject lookup root/generation/census");
         Require(SameActors(actors,ActorIdentities()),"Startup diagnostic changed Actor slots/classes/native object indices");
+        Require(SameNativeAudio(nativeAudio,ReadPortableRuntimeQuestAudioSubsystem())&&audioOutput->Ready()&&
+            audioOutput->MixerAttached()&&!audioOutput->PendingBatches()&&!audioOutput->RetainedPcmBytes()&&
+            ReadPortableRuntimeAudioOutput().engineAudioPath==nativeAudio.audioPath,
+            "Startup rollback changed native Audio identity/channels/clock/resources or published output commands");
+        for(std::size_t slot=0u;slot<QuestVr::AudioVoiceCapacity;++slot){const auto feedback=audioOutput->Feedback(slot);
+            Require(!feedback.voice&&feedback.playback==QuestVr::AudioVoicePlayback::Empty,
+                "Rollback-only Training startup published host voice playback feedback");}
         for(std::size_t i=0u;i<moverCommands.size();++i)
             Require(SameMoverState(moverStates[i],ReadTrainingMoverState(moverCommands[i].actorPath)),
                 "Startup diagnostic retained native Training mover state after full rollback");
@@ -1118,13 +1167,16 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         if(expected)Require(!completed&&world.execution.error==*expected,"Actual startup error differs from exact --expected-error boundary");
     }
     for(const auto& source:sources)source.Unchanged();
-    std::cout<<"ROLLBACK VERIFIED full save/state/revision/hash/RNG/client/lookup/Actor/GC; "<<sources.size()
+    std::cout<<"ROLLBACK VERIFIED full save/state/revision/hash/RNG/client/lookup/Actor/GC/native Audio/empty host queue; "<<sources.size()
         <<" owned sources unchanged. No other map loaded; no renderer, startup bypass or gameplay publication.\n";
     lifetime->Revoke();
     const auto revokedDistance=AdvancePortableLevelPlayerDistance();
     Require(!revokedDistance.execution.passed()&&!revokedDistance.pass.completed&&revokedDistance.execution.writes==0u,
         "Revoked client was silently treated as a valid unpossessed viewport");
     ClearPortableRuntimeClient();
+    Require(!audioOutput->Ready()&&ReadPortableRuntimeQuestAudioSubsystem().retired&&
+        ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Audio").text.empty(),
+        "Client teardown retained live native Audio/output or an Engine.Audio GC edge");
     Require(ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Client").text.empty(),
         "Client teardown retained an Engine.Client GC edge");
     const auto retiredModel=ReadPortableRuntimeNativeModel();

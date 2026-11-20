@@ -1,4 +1,6 @@
 [CmdletBinding()]
+# Pass -GameRoot explicitly when the owned installation is outside the
+# repository's parent folder; for example, an existing Steam installation.
 param(
     [Parameter()]
     [string]$GameRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -9,11 +11,14 @@ $requiredFiles = @(
     'System\User.ini',
     'System\DefUser.ini',
     'System\DeusEx.u',
+    'System\DeusExSounds.u',
     'System\DeusExCharacters.u',
     'System\DeusExConversations.u',
     'Maps\00_Training.dx',
     'Textures\CoreTexMetal.utx',
     'Textures\UNATCO.utx',
+    'Sounds\Ambient.uax',
+    'Sounds\MoverSFX.uax',
     'Music\Training_Music.umx'
 )
 

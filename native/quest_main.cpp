@@ -44,11 +44,13 @@
 #include "portable_system_services.h"
 #include "quest_runtime_script_packages.h"
 #include "portable_music_sources.h"
+#include "portable_sound_sources.h"
 #include "portable_brush_texture_sources.h"
 #include "quest_native_client.h"
 #include "quest_audio_endpoint.h"
 #include "quest_audio_pcm.h"
 #include "quest_audio_transport.h"
+#include "portable_native_audio.h"
 #include "portable_quest_input_source.h"
 #include "persona_ui_canvas.h"
 #include "quest_dialogue_ui.h"
@@ -733,6 +735,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: pre-map Music source admission: %zu packages/%zu actual import bindings",
                 musicSources.packages.size(),musicSources.bindings.size());
             for(auto& source:musicSources.packages)scripts.push_back(std::move(source));
+            auto soundSources=LoadPortableRuntimeSoundSources(scripts,trainingMap,
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini",
+                QuestVr::OriginalLinkerLoadProfile{false,true,true});
+            ALOG("DeusExQuest: pre-map Sound source admission: %zu packages/%zu actual import bindings",
+                soundSources.packages.size(),soundSources.bindings.size());
+            for(auto& source:soundSources.packages)scripts.push_back(std::move(source));
             auto brushTextures=LoadPortableRuntimeBrushTextureSources(scripts,trainingMap,
                 "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini",
                 QuestVr::OriginalLinkerLoadProfile{false,true,true});
@@ -808,7 +816,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 playerSession.clientPath!=nativeClient.clientPath)
                 throw std::runtime_error("Quest native viewport materialization changed its Client or fabricated player possession");
             BindPortableRuntimeAudioOutput(audioTransport);
-            ALOG("DeusExQuest: real output transport bound generation=%llu; original AudioSubsystem UObject/channels remain separate",
+            const auto nativeAudio=PreparePortableRuntimeQuestAudioSubsystem(
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini");
+            ALOG("DeusExQuest: concrete Quest Audio initialized=%s class=%s channels=%u output=%llu; original initial player driver still separate",
+                nativeAudio.initialized?"true":"false",nativeAudio.classPath.c_str(),nativeAudio.liveChannels,
                 static_cast<unsigned long long>(audioTransport->Generation()));
             BindPortableRuntimeQuestInputSource(viewport.identity,inputSource);
             ALOG("DeusExQuest: native player session objects ready client=%s viewport=%s class=%s bound=%s",
@@ -1211,6 +1222,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return;
         }
         PollDialogueAudioDecode();
+        UpdateNativeGameplayAudio();
         QuestVr::AdvanceDialoguePresentationClock(frame.DeltaSeconds,
             dialogueSubtitleSeconds_,dataLinkElapsedSeconds_);
         if (interactionStatusSeconds_ > 0.0f) {
@@ -2450,6 +2462,34 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool CanReadEquippedItemVisual() const {
         return runtimeAvailable_ && !initialPreparationPending_ && !initialPreparationFuture_.valid() &&
             !mapCacheFuture_.valid() && pendingMapName_.empty() && transitionMapName_.empty();
+    }
+
+    void UpdateNativeGameplayAudio() {
+        if(!CanReadEquippedItemVisual()||!nativeAudioTransport_||!nativeAudioTransport_->Ready())return;
+        try {
+            const auto player=ReadPortableRuntimePlayerSession(nativeAudioTransport_->ViewportIdentity());
+            if(!player.bound)return; // Dormant preview is not a possessed native listener.
+            const auto audio=ReadPortableRuntimeQuestAudioSubsystem();
+            if(audio.viewportPath!=player.viewportPath) {
+                const auto changed=SetPortableRuntimeQuestAudioViewport(player.viewportIdentity);
+                if(!changed.passed()||!changed.committed)throw std::runtime_error(changed.error);
+            }
+            const auto update=UpdatePortableRuntimeQuestAudio();
+            if(!update.passed()||!update.committed)throw std::runtime_error(update.error);
+            // Native ambient processing now owns actual world sound channels.
+            // Existing map music and Jaime streams remain unchanged; retire
+            // legacy emitters OFF the callback lock to avoid double playback.
+            std::vector<SpatialAudioEmitter> retired,retiredCatalog;
+            {
+                std::lock_guard<std::mutex> lock(audioMutex_);
+                retired.swap(spatialAudioEmitters_);retiredCatalog.swap(spatialAudioEmitterCatalog_);
+            }
+        }catch(const std::exception& error) {
+            if(!nativeAudioGameplayFailureReported_) {
+                ALOG("DeusExQuest: native gameplay audio refused: %s",error.what());
+                nativeAudioGameplayFailureReported_=true;
+            }
+        }
     }
 
     void UpdateHeldItemVisualSelection(float seconds,bool mapLoading) {
@@ -8258,6 +8298,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::shared_ptr<QuestVr::AudioEndpointControl> nativeAudioEndpoint_;
     std::shared_ptr<QuestVr::AudioOutputTransport> nativeAudioTransport_;
     QuestVr::AudioVoiceMixer nativeAudioMixer_;
+    bool nativeAudioGameplayFailureReported_{};
     std::unique_ptr<AudioCallbackContext> audioCallbackContext_;
     std::mutex audioMutex_;
     std::vector<std::int16_t> ambientSamples_;
