@@ -1,5 +1,36 @@
 # Port status
 
+## Latest integrated: Quest native sound provider (2026-11-20)
+
+The [native sound provider](QUEST-NATIVE-AUDIO-PROVIDER.md) is integrated in
+`fe4eea6`. Focused desktop and ARM64 builds and the owned sound resource and
+callback tests passed. These checks include real PCM mixing on the desktop,
+but do not establish native effects audible on the Quest. The full regression
+build and first-Training startup run had no final result for this commit.
+
+The next Training checkpoint is to complete the original map startup and wire
+live controller interactions, crate destruction, loot and gravity. There is no
+new APK or headset acceptance for this checkpoint yet.
+
+### First Training startup diagnostic (2026-11-20)
+
+The first original-map run reached the LoadMap URL tail. It observed the
+authenticated Audio Get/Set call, the real later viewport reset (255 keys,
+13 Byte and 15 Float properties), and the selected Game detail change, in
+order. The deliberately unfinished URL step caused full rollback; all 47
+owned sources were unchanged. The run took 518.033 seconds on desktop. This
+is not a committed startup, a headset performance result, or crate acceptance.
+
+The follow-up passed on original Training in 406.567 seconds. It derived the
+game-class and script options from one complete decoded FURL, returned the
+actual current Level, and verified one real User-cache value changed in memory.
+After rollback the Engine URL, all seven DefaultPlayer cache fields, dirty
+state, config files, and all 47 original source files matched the baseline.
+Focused desktop checks passed 4/4; strict ARM64 compilation and the Quest native
+libraries passed. See the terminal log
+`artifacts/first-training-url-real2-20261120.log`. This is still a rollback-only
+diagnostic, not a committed world or an APK.
+
 ## Latest verified: runtime-visible voice feedback (2026-11-04)
 
 The [playback-feedback connection](QUEST-AUDIO-PLAYBACK-FEEDBACK.md) makes actual

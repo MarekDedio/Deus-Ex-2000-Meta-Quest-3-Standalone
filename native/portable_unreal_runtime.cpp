@@ -289,10 +289,8 @@ struct RuntimeNativeEngineValues {
     bool useSound{};
     float currentTickRate{};
     // The complete fresh FURL payload, not a guessed reflected URL property.
-    std::string protocol,host,map,portal;
-    std::int32_t port{};
-    std::vector<std::string> options,serverActors,serverPackages;
-    bool urlValid{};
+    QuestVr::OriginalLoadMapUrl url{{},{},{},{},{},0,false};
+    std::vector<std::string> serverActors,serverPackages;
 };
 struct RuntimePreparedNativeDefaults {
     RuntimeNativeDefaultKind kind{};
@@ -1227,14 +1225,23 @@ std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
 std::unique_ptr<QuestVr::OriginalCollisionHashWorld> persistentRetailCollision;
 bool PreparedNativeClassDefaultValid(const RuntimeObject* cls);
 std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& domain);
+std::size_t NativeLoadMapUrlPayloadBytes(const QuestVr::OriginalLoadMapUrl& url) {
+    using QuestVr::DecalStateDetail::Add;
+    using QuestVr::DecalStateDetail::Multiply;
+    auto bytes=Multiply(url.options.capacity(),sizeof(std::u16string));
+    const auto include=[&](const auto& text){bytes=Add(bytes,Multiply(Add(text.capacity(),1u),sizeof(char16_t)));};
+    for(const auto* text:{&url.protocol,&url.host,&url.map,&url.portal})include(*text);
+    for(const auto& option:url.options)include(option);
+    return bytes;
+}
 std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& domain) {
     using QuestVr::DecalStateDetail::Add;
     auto bytes=sizeof(RuntimeEngineCollisionDomain)+sizeof(GCAllocation)+
         sizeof(GCRoot<RuntimeEngineCollisionDomain>)+sizeof(GCRootNode)+domain.iniPath.capacity()+1u+
         (domain.defaults.capacity()+domain.fields.capacity()+domain.classes.capacity())*sizeof(RuntimeObject*);
     const auto values=[&](const RuntimeNativeEngineValues& state) {
-        for(const auto* text:{&state.protocol,&state.host,&state.map,&state.portal}) bytes=Add(bytes,text->capacity()+1u);
-        for(const auto* list:{&state.options,&state.serverActors,&state.serverPackages}) {
+        bytes=Add(bytes,NativeLoadMapUrlPayloadBytes(state.url));
+        for(const auto* list:{&state.serverActors,&state.serverPackages}) {
             bytes=Add(bytes,list->capacity()*sizeof(std::string));
             for(const auto& text:*list) bytes=Add(bytes,text.capacity()+1u);
         }
@@ -3858,6 +3865,7 @@ public:
         ++nativeRootSerial_;
         if(beforeMutableModel_)throw std::runtime_error("Native Model journal survived its outer root");
         if(beforeBrushTracker_)throw std::runtime_error("Native Brush tracker journal survived its outer root");
+        if(beforeLoadMapUrl_)throw std::runtime_error("Native LoadMap URL journal survived its outer root");
         if(!beforeMutablePolys_.empty()||!beforeBrushModels_.empty())
             throw std::runtime_error("Native Polys/Brush binding journal survived its outer root");
         brushGeometryPreview_=false;
@@ -3880,6 +3888,7 @@ public:
         nativeActorOrderObservationBytes_=0u;
         std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         startupMoverPreview_=false;
+        startupLoadMapPreview_=false;
         nativeStartupOut_.clear();scriptCommandPackets_.clear();
         nativeDestroyReferenceBytes_=0u;
         nativePhysicsReferenceBytes_=0u;
@@ -3927,7 +3936,8 @@ public:
         }
         ValidateRootNativeClientLease();
         ValidateSoundClientLease();
-        if(brushGeometryPreview_||retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_||startupMoverPreview_) {
+        ValidateNativeLoadMapUrlLease();
+        if(brushGeometryPreview_||retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_||startupMoverPreview_||startupLoadMapPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -3969,6 +3979,7 @@ public:
         PrepareNativeAudioPublication();
         PublishNativeUserConfig(); // Last fallible preparation, then no rollback after a rename.
         CommitNativeAudioPublication(); // Reserved fixed slot: no throw after config rename.
+        beforeLoadMapUrl_.reset();
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeMutableModel_.reset();
@@ -4001,6 +4012,13 @@ public:
     void Rollback() noexcept override {
         if (!transaction_) return;
         RollbackNativeAudio();
+        if(beforeLoadMapUrl_) {
+            auto* engine=beforeLoadMapUrl_->engine.get();
+            if(!engine||!engine->nativeEngineInstance)std::terminate();
+            using std::swap;
+            swap(engine->nativeEngineInstance->values.url,beforeLoadMapUrl_->url);
+            beforeLoadMapUrl_.reset();
+        }
         if(beforeBrushTracker_) {
             beforeBrushTracker_->level->nativeBrushTracker.swap(beforeBrushTracker_->state);
             beforeBrushTracker_.reset();
@@ -9419,6 +9437,7 @@ public:
 #include "portable_startup_mover.inl"
 #include "portable_player_login.inl"
 #include "portable_startup_player_tail.inl"
+#include "portable_load_map_url.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
         PortableRetailCollisionSnapshot* originalCollision=nullptr,
@@ -9487,6 +9506,30 @@ public:
             !validText(options.defaultServerGameClass, 4096u) ||
             !validText(options.initGameOptions, 8192u))
             throw std::runtime_error("World startup configuration is oversized or contains an embedded NUL");
+        const auto* incomingUrl=options.incomingLoadMapUrl?&*options.incomingLoadMapUrl:nullptr;
+        std::optional<QuestVr::NativeScratchScope> decodedUrlScratch;
+        std::string urlGameClass,initGameOptions;
+        if(incomingUrl) {
+            if(!originalCollision||!incomingUrl->valid||incomingUrl->map.empty()||incomingUrl->protocol.empty()||
+                !options.urlGameClass.empty()||!options.initGameOptions.empty()||
+                (options.playerLogin&&(!options.playerLogin->portal.empty()||!options.playerLogin->urlOptions.empty())))
+                throw std::runtime_error("Original LoadMap requires one valid complete FURL without duplicate option sources");
+            for(const auto* field:{&incomingUrl->map,&incomingUrl->protocol,&incomingUrl->host,&incomingUrl->portal}) {
+                if(field->size()>4096u||field->find(u'\0')!=std::u16string::npos)
+                    throw std::runtime_error("Original LoadMap FURL field exceeds portable text bounds");
+                nativeWork_.Step(field->size()+1u);
+            }
+            const auto derived=QuestVr::DeriveOriginalLoadMapOptions(incomingUrl->options,
+                [this](std::size_t units){nativeWork_.Step(units);},[&](std::size_t bytes) {
+                    decodedUrlScratch.reset();
+                    decodedUrlScratch.emplace(nativeQueryScratchBytes_,QuestVr::DecalStateDetail::Multiply(bytes,4u),
+                        [this](std::size_t peak){ValidateStateBudget(peak);});
+                });
+            urlGameClass=QuestVr::UnrealString::Encode(derived.gameClass);
+            initGameOptions=QuestVr::UnrealString::Encode(derived.initGame);
+        }
+        const auto& selectedUrlGame=incomingUrl?urlGameClass:options.urlGameClass;
+        const auto& selectedGameOptions=incomingUrl?initGameOptions:options.initGameOptions;
         // This diagnostic targets standalone authority. Client-only removal /
         // Role swapping is a separate original branch, never silently emulated.
         if (QuestVr::Vm::ToInt(Read(info, PropertyNamed(info, "NetMode"), 0u)) != 0)
@@ -9501,7 +9544,7 @@ public:
         auto* game = ActorLink(info, "Game");
         if (!game) {
             RuntimeObject* gameClass{};
-            if (!options.urlGameClass.empty()) gameClass = Object(options.urlGameClass);
+            if (!selectedUrlGame.empty()) gameClass = Object(selectedUrlGame);
             else {
                 const auto mapClass = Read(info, PropertyNamed(info, "DefaultGameType"), 0u);
                 if (mapClass.kind != Kind::Object)
@@ -9538,6 +9581,23 @@ public:
         if (!IsDerivedFromPath(game->cls, "Engine.GameInfo") || NativeLevelInfo(game) != info)
             throw std::runtime_error("LevelInfo.Game is not an actual GameInfo in its native Level");
         result.gameInfoPath = game->reflection.objectPath;
+        auto& continuation=result.loadMapContinuation;
+        if(originalCollision) {
+            // 1038D6B3: set the actual slot-zero detail flag before testing
+            // bBegunPlay. A pre-open viewport has no render device to lower it.
+            visit(Phase::SelectDetail,info,0u);
+            const auto field=OriginalAnimationField(info,"Engine.LevelInfo","bHighDetailMode",Kind::Bool,0u,"BoolProperty");
+            WriteFallingScalar(info,field,Value::Bool(true),execution);
+            if(auto* client=RequireActualEngineClient(CurrentClockLevel())) {
+                if(auto* viewport=ActualClientViewportAt(client,0u)) {
+                    const auto& payload=RequireQuestViewportPayload(viewport);
+                    if(payload.renderDevice||payload.windowOpened)
+                        throw std::runtime_error("Original detail selection requires a concrete Quest render-device provider");
+                }
+            }
+            continuation.detailSelected=true;
+            continuation.highDetail=true;
+        }
         result.restoredWorld = QuestVr::Vm::ToBool(Read(info, PropertyNamed(info, "bBegunPlay"), 0u));
         // Index/count is deliberately re-read after every callback. Nested
         // Spawn can append actors that this SAME pass must subsequently visit.
@@ -9583,7 +9643,7 @@ public:
             visit(Phase::InitGame, game, static_cast<std::size_t>(game->worldActorIndex));
             const auto [error,out]=StartupOutString();
             static_cast<void>(execution.CallEvent(game->reflection.objectPath, "InitGame", false,
-                {{Value::Text(Kind::String, options.initGameOptions), {}}, {*error, out}}));
+                {{Value::Text(Kind::String, selectedGameOptions), {}}, {*error, out}}));
             if (error->kind != Kind::String) throw std::runtime_error("InitGame OUT Error did not remain a String");
             result.initGameError = error->text;
             // Original LoadMap copies this OUT string but does NOT test it for
@@ -9667,7 +9727,7 @@ public:
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
                 StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.landingCommands,options.fallingCommands,options.damageCommands,options.collectDamageLoot,
-                    options.collectDamageLootViaPlayer,options.physicsCohort,options.weapon,fireCommand,fireOutput,execution);
+                    options.collectDamageLootViaPlayer,options.physicsCohort,options.weapon,fireCommand,fireOutput,execution,incomingUrl);
                 if(options.observeInitialInputResetPrefix)
                     ProbeInitialInputResetPrefix(NativeSessionViewport(login.viewportIdentity),result.inputResetPrefix,execution);
             }
@@ -9691,11 +9751,60 @@ public:
                 auto& provider=RequireNativeAudio();
                 if(audio!=provider.instance)throw std::runtime_error("LoadMap Audio is not its actual concrete Quest provider");
                 auto* viewport=provider.state->viewport; // Original GetViewport, then SetViewport even when equal.
+                continuation.audioAttempted=true;
+                continuation.audioIndex=audio->objectIndex.Index();
+                continuation.audioViewportIdentity=viewport?viewport->nativeViewportIdentity:0u;
                 NativeAudioSetViewport(viewport,execution);
+                continuation.audioCompleted=true;
+            }
+            if(originalCollision) {
+                // 1038DFDE..1038E005: reread the live Client array each time.
+                // Reset can run script; reacquire the SAME viewport's render
+                // slot only after validating the Client lease again.
+                for(std::size_t slot=0u;;++slot) {
+                    LifecycleStep();
+                    auto* viewport=ActualClientViewportAt(client,slot);
+                    if(!viewport)break;
+                    visit(Phase::ResetViewportInput,viewport,slot);
+                    PortableWorldStartupProbeResult::InputResetPrefixObservation counts;
+                    ResetNativeViewportInput(viewport,execution,&counts);
+                    ++continuation.resetViewports;
+                    continuation.resetKeys+=counts.keysCleared;
+                    continuation.resetBytes+=counts.byteProperties;
+                    continuation.resetFloats+=counts.floatProperties;
+                    ValidateRootNativeClientLease();
+                    const auto& payload=RequireQuestViewportPayload(viewport);
+                    if(payload.renderDevice||payload.windowOpened)
+                        throw std::runtime_error("Original LoadMap render-device +68(1) requires a concrete Quest render-device provider");
+                }
             }
         }
-        // Native client/player/detail providers after the original partition
-        // still require their own integration. This root remains nonpublishing.
+        if(originalCollision) {
+            // 1038E037..1038E053 is outside the Client-only block. DetailChange
+            // updates only its Bool, then looks up the current Game callback
+            // with Global=false, rather than forcing Engine.GameInfo's body.
+            auto* current=NativeLevelInfo(persistentWorldActors.front());
+            visit(Phase::DetailChange,current,0u);
+            continuation.detailAttempted=true;
+            const auto field=OriginalAnimationField(current,"Engine.LevelInfo","bHighDetailMode",Kind::Bool,0u,"BoolProperty");
+            const auto selected=OriginalAnimationRead(current,field,Kind::Bool);
+            continuation.highDetail=selected.boolean;
+            WriteFallingScalar(current,field,selected,execution);
+            current=NativeLevelInfo(persistentWorldActors.front());
+            if(auto* currentGame=NoiseObjectField(current,"Engine.LevelInfo.Game",0u,"Engine.GameInfo")) {
+                if(NativeLevelInfo(currentGame)!=current||currentGame->worldRemoved)
+                    throw std::runtime_error("Original DetailChange Game is not in its actual current Level");
+                continuation.detailDispatched=OriginalNativeActorCallback(currentGame,"DetailChange",std::nullopt,execution);
+            }
+            continuation.detailCompleted=true;
+            visit(Phase::LoadMapTail,current,0u);
+            if(incomingUrl) {
+                startupLoadMapPreview_=true;
+                return FinishOriginalLoadMapUrl(*incomingUrl,continuation);
+            }
+            throw std::runtime_error("Original LoadMap URL/config tail is not implemented; non-publishing startup probe rolled back");
+        }
+        // Historical isolated lifecycle fixture has no original LoadMap/detail authority.
         throw std::runtime_error("Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back");
     }
     PortableWorldActorOrderSnapshot ReadWorldActorOrder() {
@@ -10569,6 +10678,15 @@ private:
     bool actorPhysicsPreview_{};
     bool actorAnimationPreview_{};
     bool startupMoverPreview_{};
+    bool startupLoadMapPreview_{};
+    struct LoadMapUrlJournal {
+        GCRoot<RuntimeObject> engine,level;
+        std::uint64_t lookupGeneration{},mapGeneration{};
+        QuestVr::OriginalLoadMapUrl url;
+        LoadMapUrlJournal(RuntimeObject* engine,RuntimeObject* level,std::uint64_t lookupGeneration)
+            :engine(engine),level(level),lookupGeneration(lookupGeneration),mapGeneration(level->nativeMapGeneration){}
+    };
+    std::unique_ptr<LoadMapUrlJournal> beforeLoadMapUrl_;
     std::size_t nativeActorOrderObservationBytes_{};
     struct StartupOutStorage {std::shared_ptr<Value> value;std::shared_ptr<Reference> reference;};
     std::vector<StartupOutStorage> nativeStartupOut_;
@@ -12085,6 +12203,8 @@ private:
         defaults.Retain(provisionalCanvases_.capacity()*sizeof(GCRoot<RuntimeObject>)+provisionalCanvases_.size()*sizeof(GCRootNode));
         defaults.Retain(NativeInputInventoryBytes());
         defaults.Retain(NativeInputJournalBytes());
+        if(beforeLoadMapUrl_) defaults.Retain(QuestVr::DecalStateDetail::Add(
+            sizeof(LoadMapUrlJournal)+2u*sizeof(GCRootNode),NativeLoadMapUrlPayloadBytes(beforeLoadMapUrl_->url)));
         defaults.Retain(UserConfigStorageBytes());
         if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
         if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
@@ -14176,6 +14296,24 @@ PortableRuntimeSummary InitializePortableRuntime(
 
 std::optional<QuestVr::OriginalLinkerLoadProfile> ReadPortableRuntimeLoadProfile() {
     return persistentRuntime&&persistentRuntime->get()?persistentRuntime->get()->loadProfile:std::nullopt;
+}
+std::optional<QuestVr::OriginalLoadMapUrl> ReadPortableRuntimeLoadMapUrl() {
+    auto* engine=persistentEngineCollision?persistentEngineCollision->get()->engine:nullptr;
+    if(!engine||!ActualNativeCollisionObjectValid(engine)||!engine->nativeEngineInstance)return std::nullopt;
+    PortableActorVmHost host;
+    const auto& url=engine->nativeEngineInstance->values.url;
+    host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(sizeof(url),NativeLoadMapUrlPayloadBytes(url)));
+    return url;
+}
+std::optional<std::string> ReadPortableRuntimeLoadMapUserValue(const std::string& key) {
+    if(key.empty()||key.size()>64u||key.find('\0')!=std::string::npos)
+        throw std::runtime_error("Invalid bounded DefaultPlayer cache query");
+    if(!persistentInputSchema||!persistentInputSchema->get()->config)return std::nullopt;
+    const auto value=persistentInputSchema->get()->config->document.Scalar("DefaultPlayer",key);
+    if(!value)return std::nullopt;
+    PortableActorVmHost host;
+    host.ValidateAdditionalPackageBudget(QuestVr::DecalStateDetail::Add(sizeof(std::string),value->size()+1u));
+    return std::string(*value);
 }
 
 static RuntimeMoverMotion ReadRuntimeMoverMotion(RuntimeObject* actor, const bool legacyActivated = false,
@@ -16531,6 +16669,10 @@ const char* PortableWorldStartupPhaseName(const PortableWorldStartupPhase phase)
     case PortableWorldStartupPhase::PostPostBeginPlay: return "PostPostBeginPlay";
     case PortableWorldStartupPhase::CompactActorSlots: return "CompactActorSlots";
     case PortableWorldStartupPhase::ClientSetup: return "ClientSetup";
+    case PortableWorldStartupPhase::SelectDetail: return "SelectDetail";
+    case PortableWorldStartupPhase::ResetViewportInput: return "ResetViewportInput";
+    case PortableWorldStartupPhase::DetailChange: return "DetailChange";
+    case PortableWorldStartupPhase::LoadMapTail: return "LoadMapTail";
     default: return "InvalidPhase";
     }
 }
@@ -16738,6 +16880,9 @@ static PortableRetailCollisionStartupResult ProbeRetailCollisionStartupRoot(
         result.world.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
             return host.ProbeWorldStartup(options,result.world,execution,&result.collision,fireCommand,fireOutput);
         },limits);
+        // The host restores the entire startup root after validating the
+        // returned Level. Successful VM return is not a world publication.
+        if(options.incomingLoadMapUrl)result.world.execution.committed=false;
     }catch(const std::exception& error) {
         result.world.execution.status=QuestVr::Vm::Status::Unsupported;result.world.execution.error=error.what();
     }

@@ -116,7 +116,7 @@ confirms:
 3. Reread actual slot-zero LevelInfo and its current Game pointer. A genuine
    Game=None skips the event; no dummy Game or forced absent Game is allowed.
 4. For nonnull Game,1039D09A..1039D0AD supplies ENGINE_DetailChange FName
-   10583618 and Global0 to native FindFunction, then1039D0BC ProcessEvents the
+   10583618 and Global0 to native FindFunctionChecked, then1039D0BC ProcessEvents the
    selected function with no argument/result packet.
 
 The portable write must authenticate the actual declared
@@ -159,3 +159,49 @@ be moved into later LoadMap.ResetInput. Genuine bootstrap Entry/FURL authority
 is an engine prerequisite, not permission to integrate other campaign maps.
 None of this audit completes that driver, live VR control/weapon/frame wiring,
 crate destruction/loot/gravity, or a new APK.
+
+## Source handoff: the LoadMap URL tail
+
+The next tail starts at `1038E059`. Through `1038E318` it deep-copies the
+incoming FURL to GameEngine `+74`: Protocol, Host, Port, Map, ordered options,
+Portal, and Valid. The per-member alias checks do not authorize writes to
+the adjacent reserved Level fields. `1038E31B` tests the imported `GIsClient`
+global, not whether the Engine has a Client object or any open viewport.
+
+On the client branch, FURL.SaveURLConfig is invoked for `Name`, `Team`,
+`Class`, `Skin`, `Face`, `Voice`, and `OverrideClass`, in that order, in
+`[DefaultPlayer]` of the `User` config namespace. The selected original body
+(`103032DD -> 103F9CB0`) splits each ordered option at its first `=`, matches
+the full key case-insensitively, and writes the matched option's key and value
+through SetString. Each match is applied (duplicates are last-wins), absent
+values leave the cache unchanged, and an explicit empty value is valid. The
+copy to the native 1024-wide local buffer needs bounded admission, not silent
+truncation. There is no Flush at this site. Reuse the owned cache's COW and
+ordered-document replacement, but do not request its persistence operation.
+
+The existing Login source contains only Portal and ordered options. It cannot
+be treated as a complete FURL, nor can one be reconstructed from the flattened
+InitGame option string. A single complete source must be shared by LoadMap,
+InitGame, and SpawnPlayActor, with an explicit, authenticated process role. The
+tail retains the *actual* Engine current Level at `1038E3C6` and returns it at
+`1038E44E`. This describes a future journaled implementation, not proof that
+the map can now be published.
+
+## Source handoff: initial audio order
+
+Base `UGameEngine::Init` loads Entry at `103892F5`, browses at `103895E2`
+(fallback `1038965B`), and creates the viewport only at `103896C5`. After
+OpenWindow (`10389776`) and Level.DetailChange (`10389785`), it calls
+`UEngine::InitAudio` (`1038978D`; thunk `10303314` to `1037FE50`). The audio
+provider is then actually stored at `1037FEDE` and initialized at `1037FEE8`;
+the caller reads Engine.Audio and, if present, sets the new viewport at
+`10389792..1038979C`. The earlier base `UEngine::Init` does not perform this
+audio initialization.
+
+Consequently the initial LoadMap/Browse path can have a genuinely empty
+viewport array and a fresh Engine.Audio=None. This is distinct from clearing
+a live provider or skipping an initialized viewport on later map loads.
+Keep early platform output preparation separate from publishing Engine.Audio;
+bind the existing Quest transport to the actual new viewport when the native
+initial driver reaches audio initialization. The explicit rollback probe with
+an initialized viewport and Audio instead exercises the later LoadMap path.

@@ -18,6 +18,7 @@
 #include "portable_process_loop.h"
 #include "quest_native_work.h"
 #include "quest_native_config.h"
+#include "quest_input_key_queries.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
@@ -42,6 +43,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -55,6 +57,8 @@ using Kind=QuestVr::Vm::Kind;
 constexpr std::uint32_t InitialSeed=0x13579bdfu;
 constexpr std::uint64_t Client=2801u,Viewport=2802u;
 constexpr std::size_t StartupWriteLimit=1'048'576u;
+constexpr std::string_view TrainingUrlPlayerName="Quest Training URL Test";
+constexpr std::array<const char*,7u> LoadMapPlayerKeys{"Name","Team","Class","Skin","Face","Voice","OverrideClass"};
 constexpr std::array<std::string_view,4u> TrainingDamageActors{
     "00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral1",
     "00_Training.CrateBreakableMedGeneral2","00_Training.CrateBreakableMedGeneral2"};
@@ -98,6 +102,52 @@ struct Source {
             "Owned source bytes/size/timestamp changed: "+path.string());
     }
 };
+struct LoadMapConfigFileSnapshot {
+    std::string leaf;
+    std::uintmax_t size{};
+    fs::file_time_type modified;
+    std::uint64_t fingerprint{};
+    bool operator==(const LoadMapConfigFileSnapshot&)const=default;
+};
+struct LoadMapRollbackSnapshot {
+    std::optional<QuestVr::OriginalLoadMapUrl> url;
+    std::array<std::optional<std::string>,LoadMapPlayerKeys.size()> player;
+    PortableUserConfigStorageSnapshot storage;
+    bool dirty{},configDirectory{};
+    std::vector<LoadMapConfigFileSnapshot> files;
+};
+LoadMapRollbackSnapshot ReadLoadMapRollbackSnapshot(const fs::path& temporary) {
+    LoadMapRollbackSnapshot state;
+    state.url=ReadPortableRuntimeLoadMapUrl();
+    Require(state.url.has_value(),"LoadMap URL diagnostic lost its actual Engine URL storage");
+    for(std::size_t i=0u;i<LoadMapPlayerKeys.size();++i)
+        state.player[i]=ReadPortableRuntimeLoadMapUserValue(LoadMapPlayerKeys[i]);
+    state.dirty=ReadPortableRuntimeInputSchema().configCacheDirty;
+    state.storage=ReadPortableRuntimeUserConfigStorage();
+    const auto directory=temporary/"Config";
+    Require(state.storage.prepared&&fs::path(state.storage.targetPath).lexically_normal()==directory/"User.ini",
+        "LoadMap User cache target no longer belongs to the isolated diagnostic");
+    state.configDirectory=fs::exists(directory);
+    if(state.configDirectory) {
+        Require(!fs::is_symlink(fs::symlink_status(directory))&&fs::is_directory(directory),
+            "LoadMap diagnostic config directory is not privately owned");
+        for(const auto& file:fs::directory_iterator(directory)) {
+            const auto leaf=file.path().filename().string();
+            const auto status=file.symlink_status();
+            Require((leaf=="User.ini"||leaf=="User.ini.stage"||leaf=="User.ini.lock")&&fs::is_regular_file(status),
+                "LoadMap diagnostic found an unexpected app-config file: "+leaf);
+            state.files.push_back({leaf,file.file_size(),file.last_write_time(),Fingerprint(file.path())});
+        }
+        std::sort(state.files.begin(),state.files.end(),[](const auto& a,const auto& b){return a.leaf<b.leaf;});
+    }
+    return state;
+}
+bool SameLoadMapRollbackSnapshot(const LoadMapRollbackSnapshot& a,const LoadMapRollbackSnapshot& b) {
+    const auto& x=a.storage;const auto& y=b.storage;
+    return a.url==b.url&&a.player==b.player&&a.dirty==b.dirty&&a.configDirectory==b.configDirectory&&a.files==b.files&&
+        std::tie(x.prepared,x.owned,x.seedPath,x.targetPath,x.bytes,x.retainedBytes,x.generation,x.publication)==
+        std::tie(y.prepared,y.owned,y.seedPath,y.targetPath,y.bytes,y.retainedBytes,y.generation,y.publication);
+}
 struct Temporary {
     fs::path parent,directory;std::vector<fs::path> files;
     explicit Temporary(const fs::path& source) {
@@ -213,6 +263,15 @@ struct Boundary {
             function==world.execution.function&&error==world.execution.error&&opcode==world.execution.opcode;
     }
 };
+using LoadMapContinuation=decltype(PortableWorldStartupProbeResult::loadMapContinuation);
+constexpr std::string_view LoadMapTailRefusal=
+    "Original LoadMap URL/config tail is not implemented; non-publishing startup probe rolled back";
+auto LoadMapContinuationFields(const LoadMapContinuation& row) {
+    return std::tie(row.detailSelected,row.highDetail,row.audioAttempted,row.audioCompleted,
+        row.detailAttempted,row.detailDispatched,row.detailCompleted,row.audioIndex,row.audioViewportIdentity,
+        row.resetViewports,row.resetKeys,row.resetBytes,row.resetFloats,row.urlCopied,row.urlConfigCacheDirty,
+        row.urlReturnedLevel,row.urlConfigMatches,row.urlConfigChanges);
+}
 bool SameSpawnPackets(const std::vector<PortableSpawnEncroachmentSnapshot>& a,
     const std::vector<PortableSpawnEncroachmentSnapshot>& b) {
     if(a.size()!=b.size())return false;
@@ -635,7 +694,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
     const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon,
     const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance,bool observeDynamicActors,
-    const std::vector<PortableStartupMoverCommand>& moverCommands,bool observeInitialInputResetPrefix) {
+    const std::vector<PortableStartupMoverCommand>& moverCommands,bool observeInitialInputResetPrefix,bool exerciseLoadMapUrlTail) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+4u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -763,6 +822,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         "First Training has no actual current native Level/Model/Engine binding");
     Require(!Declared("Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&
         Declared("Engine.LevelInfo.Game",Kind::Object).text.empty(),"Fresh Training is not authentically dormant");
+    const bool dormantHighDetail=Declared("Engine.LevelInfo.bHighDetailMode",Kind::Bool).boolean;
     const auto actors=ActorIdentities();Require(!actors.empty(),"First Training has no actual actors");
     std::vector<PortableStartupMoverState> moverStates;
     for(const auto& command:moverCommands) {
@@ -807,6 +867,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const auto saved=temporary.Save("BeforeStartup");const auto revision=GetPortableRuntimeWorldRevision();
     const bool statePresent=GetPortableRuntimeScriptStatePresent(),unsaved=GetPortableRuntimeUnsavedScriptState();
     const auto time=ReadPortableRuntimeLevelTime();const auto lookup=ReadPortableRuntimeObjectLookup();
+    std::optional<LoadMapRollbackSnapshot> loadMapBefore;
+    if(exerciseLoadMapUrlTail)loadMapBefore=ReadLoadMapRollbackSnapshot(temporary.directory);
     GC::Collect();const auto gc=GC::GetStats();
     std::cout<<"INITIAL LOOKUP objects="<<lookup.objects<<" retainedBytes="<<lookup.retainedBytes<<'\n';
     const auto rollback=[&] {
@@ -846,6 +908,10 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             "Startup diagnostic changed actual Client/Engine/viewport/player ownership or array order");
         Require(!Declared("Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&
             Declared("Engine.LevelInfo.Game",Kind::Object).text.empty(),"Startup diagnostic retained begun-world/GameInfo publication");
+        Require(Declared("Engine.LevelInfo.bHighDetailMode",Kind::Bool).boolean==dormantHighDetail,
+            "Startup diagnostic retained a native LevelInfo detail-bit write after rollback");
+        if(loadMapBefore)Require(SameLoadMapRollbackSnapshot(*loadMapBefore,ReadLoadMapRollbackSnapshot(temporary.directory)),
+            "LoadMap diagnostic retained an Engine URL, player-cache value/dirty bit, or User config file/publication change");
         GC::Collect();const auto actual=GC::GetStats();
         Require(actual.numObjects==gc.numObjects&&actual.memoryUsage==gc.memoryUsage,"Startup diagnostic leaked rooted native UObjects");
     };
@@ -887,6 +953,29 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const auto userConfig=QuestVr::NativeConfig::ReadOrderedIni(userIni);
     const auto iniConfig=QuestVr::NativeConfig::ReadOrderedIni(fs::path(ini));
     Require(userConfig.has_value()&&iniConfig.has_value(),"Cannot read explicit original Login class configuration sources");
+    if(exerciseLoadMapUrlTail) {
+        const auto configured=[&](const char* key) {
+            const auto value=iniConfig->PropertyScalar("URL",key);
+            Require(value.has_value()&&value->size()<=4092u,std::string("Missing or oversized owned URL.")+key);
+            auto decoded=QuestVr::UnrealString::Decode(*value);
+            Require(decoded.size()<=1023u&&decoded.find(u'\0')==std::u16string::npos,
+                std::string("Invalid owned URL.")+key+" for the original FURL default buffer");
+            return decoded;
+        };
+        auto& url=options.incomingLoadMapUrl.emplace();
+        url.protocol=configured("Protocol");url.host=configured("Host");url.portal=configured("Portal");
+        url.port=QuestVr::NativeInputKeyQueries::AppAtoi(configured("Port"));
+        url.map=fs::path(map.sourcePath).filename().u16string();
+        url.options.push_back(QuestVr::UnrealString::Decode(std::string("Name=")+std::string(TrainingUrlPlayerName)));
+        Require(loadMapBefore->url!=options.incomingLoadMapUrl&&
+            Fold(loadMapBefore->player[0u].value_or(""))!=Fold(std::string(TrainingUrlPlayerName)),
+            "LoadMap URL fixture would not change both the Engine URL and player-name cache");
+        std::cout<<"INCOMING LOADMAP URL protocol="<<std::quoted(QuestVr::UnrealString::Encode(url.protocol))
+            <<" host="<<std::quoted(QuestVr::UnrealString::Encode(url.host))<<" port="<<url.port
+            <<" map="<<std::quoted(QuestVr::UnrealString::Encode(url.map))
+            <<" portal="<<std::quoted(QuestVr::UnrealString::Encode(url.portal))<<" valid="<<url.valid
+            <<" options="<<url.options.size()<<"; explicit decoded local Training fixture, NOT the FURL constructor\n";
+    }
     if(const auto value=userConfig->Scalar("DefaultPlayer","Class"))
         options.playerLogin->userDefaultPlayerClass=QuestVr::UnrealString::Decode(*value);
     if(const auto value=iniConfig->Scalar("URL","Class"))
@@ -899,7 +988,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     // a1024-unit destination. Missing lookup produces an empty CString.
     if(const auto value=iniConfig->PropertyScalar("URL","Name"))
         options.playerLogin->tail->urlDefaultName=QuestVr::UnrealString::Decode(*value);
-    std::cout<<"PLAYER LOGIN SOURCE explicit decoded diagnostic Portal=empty/Op=empty; owned User.ini DefaultPlayer.Class="
+    std::cout<<"PLAYER LOGIN SOURCE "<<(exerciseLoadMapUrlTail?"shared incoming LoadMap FURL":"explicit decoded diagnostic Portal=empty/Op=empty")
+        <<"; owned User.ini DefaultPlayer.Class="
         <<std::quoted(options.playerLogin->userDefaultPlayerClass?QuestVr::UnrealString::Encode(*options.playerLogin->userDefaultPlayerClass):"<absent>")
         <<" DeusEx.ini URL.Class="<<std::quoted(options.playerLogin->iniUrlClass?QuestVr::UnrealString::Encode(*options.playerLogin->iniUrlClass):"<absent>")
         <<" FURL.DefaultName="<<std::quoted(QuestVr::UnrealString::Encode(options.playerLogin->tail->urlDefaultName))
@@ -923,6 +1013,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<PortableLevelPlayerDistanceObservation> distanceObservation;
     std::optional<PortableActorTickBoundaryObservation> nativeTickBoundary;
     std::optional<PortableModelTraceWorkObservation> modelTraceWork;
+    std::optional<LoadMapContinuation> loadMapContinuation;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto modelBefore=ReadPortableRuntimeNativeModel();
         const auto start=std::chrono::steady_clock::now();
@@ -982,8 +1073,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 row.initializedAuthenticated&&row.readInputPreVerified&&row.readInputPostVerified&&row.readInputRateVerified&&
                 row.laterResetVerified&&row.laterResetKeys==255u&&row.laterResetBytes==13u&&row.laterResetFloats==15u&&
                 row.initializationRefusals==9u&&row.readInputHolds==1u&&row.readInputFloats==15u&&row.readInputStrafe==3600.0f&&
-                std::bit_cast<std::uint32_t>(row.readInputForward)==0x45960001u&&
-                world.execution.error=="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back",
+                std::bit_cast<std::uint32_t>(row.readInputForward)==0x45960001u,
                 "Initial Input diagnostic failed before authentic reset prefix/platform boundary");
             const auto restoredInput=ReadPortableRuntimeViewportInput(Viewport);
             Require(!restoredInput.initialized&&!restoredInput.nativeViewportIndex&&restoredInput.keys==input.keys&&
@@ -1008,11 +1098,39 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             <<" movers="<<brushTracker.movers<<" polygons="<<brushTracker.polygons<<" nodes="<<brushTracker.nodes
             <<" vertices="<<brushTracker.vertices<<" points="<<brushTracker.points
             <<"; same original startup rollback root, NOT live query/noninitial-update/detail completion\n";
-        if(world.execution.error=="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back")
+        const auto& continuation=world.loadMapContinuation;
+        std::cout<<"LOADMAP CONTINUATION detailSelected="<<continuation.detailSelected<<" highDetail="<<continuation.highDetail
+            <<" audioAttempted="<<continuation.audioAttempted<<" audioCompleted="<<continuation.audioCompleted
+            <<" audioIndex="<<continuation.audioIndex<<" audioViewport="<<continuation.audioViewportIdentity
+            <<" resetViewports="<<continuation.resetViewports<<" resetKeys="<<continuation.resetKeys
+            <<" resetBytes="<<continuation.resetBytes<<" resetFloats="<<continuation.resetFloats
+            <<" detailAttempted="<<continuation.detailAttempted<<" detailDispatched="<<continuation.detailDispatched
+            <<" detailCompleted="<<continuation.detailCompleted
+            <<" urlCopied="<<continuation.urlCopied<<" urlConfigMatches="<<continuation.urlConfigMatches
+            <<" urlConfigChanges="<<continuation.urlConfigChanges<<" urlConfigCacheDirty="<<continuation.urlConfigCacheDirty
+            <<" urlReturnedLevel="<<continuation.urlReturnedLevel
+            <<"; original LoadMap continuation in rollback root, NOT render-device work, audible output or playable startup\n";
+        if(loadMapContinuation)Require(LoadMapContinuationFields(*loadMapContinuation)==LoadMapContinuationFields(continuation),
+            "Repeated first Training startup changed its native audio/later input reset/detail continuation");
+        else loadMapContinuation=continuation;
+        const bool reachedTail=world.execution.error==LoadMapTailRefusal;
+        if(continuation.audioAttempted||reachedTail) {
             Require(brushTracker.attempted&&brushTracker.completed&&brushTracker.levelOwned&&brushTracker.topologyChecked&&
                 brushTracker.movers==25u&&brushTracker.polygons==150u&&brushTracker.nodes>0u&&
                 brushTracker.vertices==brushTracker.points,
                 "Post-brush startup boundary lacks genuine first-Training tracker construction/ownership");
+            Require(continuation.detailSelected&&continuation.highDetail,
+                "Training LoadMap did not select high detail for its genuine pre-open viewport");
+        }
+        if(continuation.audioCompleted)Require(continuation.audioAttempted&&continuation.audioIndex==nativeAudio.audioIndex&&
+            !continuation.audioViewportIdentity,"Training LoadMap did not use the real Audio provider and its None viewport");
+        if(continuation.resetViewports)Require(continuation.audioCompleted&&continuation.resetViewports==1u&&
+            continuation.resetKeys==255u&&continuation.resetBytes==13u&&continuation.resetFloats==15u,
+            "Original LoadMap later ResetInput did not follow Audio or independently clear the actual authored Input fields");
+        if(reachedTail||continuation.urlReturnedLevel)Require(world.phase==PortableWorldStartupPhase::LoadMapTail&&continuation.audioAttempted&&
+            continuation.audioCompleted&&continuation.resetViewports==1u&&
+            continuation.detailAttempted&&continuation.detailDispatched&&continuation.detailCompleted,
+            "LoadMap tail lacks completed Audio, actual viewport ResetInput or selected GameInfo DetailChange evidence");
         Require(world.execution.error!="Original model extent trace: work budget exhausted"||world.modelTraceWork.has_value(),
             "Reached extent work refusal omitted its actual Model/phase/allowance snapshot");
         if(world.modelTraceWork) {
@@ -1156,19 +1274,24 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         else spawnPackets=world.spawnedEncroachment;
         rollback();
         completed=world.execution.status==QuestVr::Vm::Status::Returned&&world.execution.error.empty();
-        if(completed)Require(world.phase==PortableWorldStartupPhase::ClientSetup&&
-            world.visited[static_cast<std::size_t>(PortableWorldStartupPhase::CompactActorSlots)]>0u,
-            "Returned startup diagnostic did not reach its authentic final phase");
+        if(completed)Require(exerciseLoadMapUrlTail&&world.phase==PortableWorldStartupPhase::LoadMapTail&&
+            world.visited[static_cast<std::size_t>(PortableWorldStartupPhase::CompactActorSlots)]>0u&&
+            continuation.urlCopied&&continuation.urlConfigMatches==1u&&continuation.urlConfigChanges==1u&&
+            continuation.urlConfigCacheDirty&&continuation.urlReturnedLevel&&
+            world.execution.value.kind==Kind::Object&&world.execution.value.text==native.levelPath&&!world.execution.committed,
+            "LoadMap did not copy the incoming FURL, update the in-memory Name option, and return its actual Level without publishing");
         if(!completed)Require(!world.execution.passed()&&!world.execution.committed&&!world.execution.error.empty(),
             "Startup observation has neither a genuine completed diagnostic nor an explicit safely rolled-back refusal");
         if(boundary)Require(boundary->Same(world),"Repeated first Training startup observation changed phase/slot/actor/function/PC/opcode/error");
         else boundary=Boundary{world.phase,world.actorSlot,world.execution.offset,world.actorPath,world.execution.function,
             world.execution.error,world.execution.opcode};
         if(expected)Require(!completed&&world.execution.error==*expected,"Actual startup error differs from exact --expected-error boundary");
+        else if(exerciseLoadMapUrlTail)Require(completed,"Full FURL fixture did not reach a rollback-only LoadMap return: "+world.execution.error);
     }
     for(const auto& source:sources)source.Unchanged();
     std::cout<<"ROLLBACK VERIFIED full save/state/revision/hash/RNG/client/lookup/Actor/GC/native Audio/empty host queue; "<<sources.size()
         <<" owned sources unchanged. No other map loaded; no renderer, startup bypass or gameplay publication.\n";
+    if(exerciseLoadMapUrlTail)std::cout<<"LOADMAP ROLLBACK VERIFIED Engine URL, all DefaultPlayer option values, User cache dirty state and files unchanged.\n";
     lifetime->Revoke();
     const auto revokedDistance=AdvancePortableLevelPlayerDistance();
     Require(!revokedDistance.execution.passed()&&!revokedDistance.pass.completed&&revokedDistance.execution.writes==0u,
@@ -1202,6 +1325,7 @@ int main(int argc,char** argv) {
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
         bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{},observePlayerDistance{},observeDynamicActors{},observeInitialInputResetPrefix{};
+        bool exerciseLoadMapUrlTail{};
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
@@ -1217,6 +1341,7 @@ int main(int argc,char** argv) {
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
             else if(option=="--observe-training-stasis")observeTrainingStasis=true;
             else if(option=="--observe-initial-input-reset-prefix")observeInitialInputResetPrefix=true;
+            else if(option=="--exercise-loadmap-url-tail")exerciseLoadMapUrlTail=true;
             else if(option=="--observe-player-distance")observePlayerDistance=true;
             else if(option=="--observe-dynamic-actors"){observeDynamicActors=true;observePlayerDistance=true;}
             else if(option=="--interpolate-training-mover") {
@@ -1267,7 +1392,9 @@ int main(int argc,char** argv) {
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--observe-training-stasis] [--observe-player-distance] [--observe-dynamic-actors] [--require-spawn-encroachment] [--interpolate-training-mover PATH KEY0..7 SECONDS0<..60 (at most8; isolated from damage/weapon commands)] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--observe-initial-input-reset-prefix [--exercise-loadmap-url-tail]] [--observe-training-stasis] [--observe-player-distance] [--observe-dynamic-actors] [--require-spawn-encroachment] [--interpolate-training-mover PATH KEY0..7 SECONDS0<..60 (at most8; isolated from damage/weapon commands)] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+        Require(!exerciseLoadMapUrlTail||observeInitialInputResetPrefix,
+            "--exercise-loadmap-url-tail requires --observe-initial-input-reset-prefix for genuine later ResetInput");
         Require(fireLocation.has_value()==fireRotation.has_value(),"Diagnostic Fire pose requires both --fire-location and --fire-rotation");
         Require(fire||(!fireLocation&&!fireRotation&&!fireAttacks),"Fire pose/attack switches require --fire-training-weapon");
         if(fire) {
@@ -1296,7 +1423,7 @@ int main(int argc,char** argv) {
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors,moverCommands,observeInitialInputResetPrefix);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors,moverCommands,observeInitialInputResetPrefix,exerciseLoadMapUrlTail);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

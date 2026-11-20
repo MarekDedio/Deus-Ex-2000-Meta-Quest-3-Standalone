@@ -14,6 +14,7 @@
 #include "quest_native_tile_layout.h"
 #include "portable_input_schema.h"
 #include "portable_viewport_input.h"
+#include "quest_save_url_config.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -213,7 +214,8 @@ enum class PortableWorldStartupPhase : std::uint8_t {
     ValidateWorld, SelectGameInfo, ResetTime, RestoreTime, ClearTouching,
     InitializeExecution, PublishStartup, InitGame, PreBeginPlay, BeginPlay,
     SetActorZone, LastRenderTime, PostBeginPlay, SetInitialState, WorldBases,
-    ClearStartup, PostPostBeginPlay, CompactActorSlots, ClientSetup, Count
+    ClearStartup, PostPostBeginPlay, CompactActorSlots, ClientSetup,
+    SelectDetail, ResetViewportInput, DetailChange, LoadMapTail, Count
 };
 struct PortablePlayerTailSource {
     // Explicit engine-session appCmdLine and FURL.StaticInit URL.Name values.
@@ -465,6 +467,10 @@ struct PortableWorldStartupProbeOptions {
     // Omission refuses that missing configuration rather than using DefaultGame.
     std::string defaultServerGameClass{};
     std::optional<PortablePlayerLoginSource> playerLogin{};
+    // Complete decoded FURL supplied by the actual LoadMap caller. The same
+    // ordered options and Portal drive Game selection, InitGame and Login.
+    // The separate legacy fixture strings above are not additional sources.
+    std::optional<QuestVr::OriginalLoadMapUrl> incomingLoadMapUrl;
     // Explicit rollback-only INITIAL GameEngine Input.Init diagnostic after
     // genuine SpawnPlayActor, NOT an Init inserted at later LoadMap.ResetInput.
     // The still-missing concrete platform dispatcher must refuse, not succeed
@@ -623,6 +629,15 @@ struct PortableWorldStartupProbeResult {
         std::size_t movers{},polygons{},nodes{},vertices{},points{};
         bool operator==(const BrushTrackerObservation&) const = default;
     } brushTracker;
+    struct LoadMapContinuationObservation {
+        bool detailSelected{}, highDetail{}, audioAttempted{}, audioCompleted{};
+        bool detailAttempted{}, detailDispatched{}, detailCompleted{};
+        bool urlCopied{}, urlConfigCacheDirty{}, urlReturnedLevel{};
+        std::uint32_t audioIndex{};
+        std::uint64_t audioViewportIdentity{};
+        std::size_t resetViewports{}, resetKeys{}, resetBytes{}, resetFloats{};
+        std::size_t urlConfigMatches{}, urlConfigChanges{};
+    } loadMapContinuation;
     std::vector<PortableDumpLocationObservation> dumpLocations;
     struct FlagBaseObservation {
         std::string path,pawnPath;
@@ -711,6 +726,9 @@ PortableRuntimeSummary InitializePortableRuntime(
 // Omission retains the historical UNFILTERED inspection/test mode. Standalone
 // gameplay must select its explicit noneditor profile BEFORE object creation.
 std::optional<QuestVr::OriginalLinkerLoadProfile> ReadPortableRuntimeLoadProfile();
+// Detached snapshot of the genuine Engine FURL; unavailable without the Engine.
+std::optional<QuestVr::OriginalLoadMapUrl> ReadPortableRuntimeLoadMapUrl();
+std::optional<std::string> ReadPortableRuntimeLoadMapUserValue(const std::string& key);
 void ShutdownPortableRuntime();
 // Explicit read-only config/file-manager bindings for native DumpLocation.
 // They are engine-session-owned; no process CWD change or original DLL call.

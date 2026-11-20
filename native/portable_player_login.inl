@@ -101,7 +101,8 @@
         const std::optional<PortableStartupPhysicsCohortCommand>& cohort,
         const std::optional<PortableStartupWeaponCommand>& weapon,
         const PortableStartupWeaponFireCommand* fireCommand,
-        std::vector<PortableStartupWeaponFireObservation>* fireOutput,QuestVr::Vm::Execution& execution) {
+        std::vector<PortableStartupWeaponFireObservation>* fireOutput,QuestVr::Vm::Execution& execution,
+        const QuestVr::OriginalLoadMapUrl* incomingUrl) {
         if(!transaction_ || !worldStartupProbe_)
             throw std::runtime_error("SpawnPlayActor continuation requires its actual startup root");
         auto* level=CurrentClockLevel();auto* viewport=NativeSessionViewport(viewportIdentity);
@@ -110,15 +111,17 @@
         clientDependent_=true;
         const auto previous=nativeQueryScratchBytes_;
         struct RestoreScratch {std::size_t& value;std::size_t before;~RestoreScratch(){value=before;}} scratch{nativeQueryScratchBytes_,previous};
-        if(source.urlOptions.size()>1024u || source.portal.size()>4096u)
+        const auto& sourceOptions=incomingUrl?incomingUrl->options:source.urlOptions;
+        const auto& sourcePortal=incomingUrl?incomingUrl->portal:source.portal;
+        if(sourceOptions.size()>1024u || sourcePortal.size()>4096u)
             throw std::runtime_error("SpawnPlayActor URL source exceeds portable input bounds");
         for(const auto* alias:{&source.userDefaultPlayerClass,&source.iniUrlClass})
             if(*alias && (**alias).size()>4096u)throw std::runtime_error("SpawnPlayActor config class source exceeds portable bounds");
-        ValidateStateBudget(sizeof(std::vector<std::u16string_view>)+source.urlOptions.size()*sizeof(std::u16string_view));
-        std::vector<std::u16string_view> options;options.reserve(source.urlOptions.size());
+        ValidateStateBudget(sizeof(std::vector<std::u16string_view>)+sourceOptions.size()*sizeof(std::u16string_view));
+        std::vector<std::u16string_view> options;options.reserve(sourceOptions.size());
         const auto optionBytes=sizeof(options)+options.capacity()*sizeof(std::u16string_view);
         ValidateStateBudget(optionBytes);nativeQueryScratchBytes_+=optionBytes;
-        for(const auto& option:source.urlOptions) {
+        for(const auto& option:sourceOptions) {
             LifecycleStep();if(option.size()>4096u)throw std::runtime_error("SpawnPlayActor URL option exceeds portable input bound");
             options.push_back(option);
         }
@@ -217,7 +220,7 @@
         };
         try {
             const auto result=QuestVr::RunOriginalSpawnPlayActorLoginPrefix(reinterpret_cast<std::uintptr_t>(level),
-                reinterpret_cast<std::uintptr_t>(viewport),{source.portal,options},q,nativeQueryScratchBytes_);
+                reinterpret_cast<std::uintptr_t>(viewport),{sourcePortal,options},q,nativeQueryScratchBytes_);
             if(result.player) {
                 auto* player=reinterpret_cast<RuntimeObject*>(result.player);
                 ProbeStartupLandings(player,landingCommands,execution);
@@ -233,7 +236,7 @@
                 }
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));
                 observation.paired=true;
-                StartupPlayerTail(level,player,source,{source.portal,options},observation,execution);
+                StartupPlayerTail(level,player,source,{sourcePortal,options},observation,execution);
             }
         }catch(...){retainObservation();throw;}
         retainObservation();

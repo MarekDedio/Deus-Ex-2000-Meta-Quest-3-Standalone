@@ -49,7 +49,7 @@ PortableEngineCollisionSnapshot EngineCollisionSnapshot(const RuntimeEngineColli
     if(!cylinder || !cylinder->nativePrimitiveInstance || !domain.engine->cls || !cylinder->cls ||
         !domain.transient->cls || domain.engine->outer!=domain.transient || cylinder->outer!=domain.transient ||
         domain.engine->reflection.flags || cylinder->reflection.flags || domain.transient->reflection.flags ||
-        !state.execInstalled || !state.values.urlValid || state.reservedLevels[0u] || state.reservedLevels[1u] ||
+        !state.execInstalled || !state.values.url.valid || state.reservedLevels[0u] || state.reservedLevels[1u] ||
         (state.currentLevel && state.currentLevel->nativeLevelEngine!=domain.engine))
         throw std::runtime_error("Native collision Engine constructor/header/level state is invalid");
     PortableEngineCollisionSnapshot result;result.prepared=true;
@@ -61,7 +61,7 @@ PortableEngineCollisionSnapshot EngineCollisionSnapshot(const RuntimeEngineColli
     result.cylinderClassIndex=cylinder->cls->objectIndex.Index();result.levelIndex=state.currentLevel?state.currentLevel->objectIndex.Index():0u;
     result.engineFlags=domain.engine->reflection.flags;result.transientFlags=domain.transient->reflection.flags;
     result.cylinderFlags=cylinder->reflection.flags;result.engineExecInstalled=state.execInstalled;
-    result.instanceUrlValid=state.values.urlValid;result.cylinderBoundsValid=cylinder->nativePrimitiveInstance->boundsValid;
+    result.instanceUrlValid=state.values.url.valid;result.cylinderBoundsValid=cylinder->nativePrimitiveInstance->boundsValid;
     result.engineUniqueCounter=domain.engine->cls->uniqueObjectCounter;result.primitiveUniqueCounter=cylinder->cls->uniqueObjectCounter;
     result.instanceCacheSizeMegs=state.values.cacheSizeMegs;result.instanceUseSound=state.values.useSound;
     result.instanceConfiguredClasses=NativeConfiguredPaths(state.values);
@@ -87,7 +87,7 @@ PortableEngineCollisionSnapshot EngineCollisionSnapshot(const RuntimeEngineColli
         result.defaults.push_back({profile.path,object->cls->objectIndex.Index(),object->objectIndex.Index(),
             object->cls->base?object->cls->base->objectIndex.Index():0u,profile.size,profile.flags,
             NativeConfiguredPaths(prepared.engine),prepared.engine.cacheSizeMegs,prepared.engine.useSound,
-            prepared.engine.urlValid,prepared.engine.currentTickRate,prepared.engine.serverActors,prepared.engine.serverPackages});
+            prepared.engine.url.valid,prepared.engine.currentTickRate,prepared.engine.serverActors,prepared.engine.serverPackages});
     }
     for(const auto* field:domain.fields) {
         if(!field || !field->nativeProperty || !field->cls || !field->outer || field->property || field->defaultOwner)
@@ -493,8 +493,7 @@ PortableEngineCollisionSnapshot PreparePortableRuntimeEngineCollision(const std:
     for(const auto& payload:payloads) if(payload.first==defaultsByClass.at(engineClass)) engine.values=payload.second->engine;
     // Genuine fresh Engine/GameEngine constructor sequence, before later
     // FURL.StaticInit globals. Deep string/array copies must not alias the CDO.
-    engine.execInstalled=true;engine.values.protocol.clear();engine.values.host.clear();engine.values.map.clear();engine.values.portal.clear();
-    engine.values.port=0;engine.values.options.clear();engine.values.urlValid=true;
+    engine.execInstalled=true;engine.values.url=QuestVr::OriginalLoadMapUrl{};
     auto* cylinder=allocate("Transient."+unique(primitiveClass,primitiveCounter),"Primitive",primitiveClass,domain->transient,0u);
     cylinder->nativePrimitiveInstance=std::make_unique<RuntimeNativePrimitiveInstance>();
     const RuntimePreparedNativeDefaults* primitiveDefaults{};
@@ -524,8 +523,8 @@ PortableEngineCollisionSnapshot PreparePortableRuntimeEngineCollision(const std:
         if(payload.first->cls->defaultObject==payload.first) {
             stagedPayloadBytes+=sizeof(RuntimePreparedNativeDefaults);
             const auto& values=payload.second->engine;
-            for(const auto* text:{&values.protocol,&values.host,&values.map,&values.portal}) stagedPayloadBytes+=text->capacity()+1u;
-            for(const auto* list:{&values.options,&values.serverActors,&values.serverPackages}) {
+            stagedPayloadBytes+=NativeLoadMapUrlPayloadBytes(values.url);
+            for(const auto* list:{&values.serverActors,&values.serverPackages}) {
                 stagedPayloadBytes+=list->capacity()*sizeof(std::string);for(const auto& text:*list) stagedPayloadBytes+=text.capacity()+1u;
             }
         }else payload.first->preparedNativeDefaults=std::move(payload.second);

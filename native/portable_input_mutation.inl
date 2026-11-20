@@ -42,8 +42,8 @@
         // Input defaults have no admitted native Engine payload. Copying that
         // zero-valued parent tail is not permission to omit nonempty strings.
         const auto& engine=input.engine;
-        if(!engine.protocol.empty()||!engine.host.empty()||!engine.map.empty()||!engine.portal.empty()||
-            !engine.options.empty()||!engine.serverActors.empty()||!engine.serverPackages.empty())
+        if(!engine.url.protocol.empty()||!engine.url.host.empty()||!engine.url.map.empty()||!engine.url.portal.empty()||
+            !engine.url.options.empty()||!engine.serverActors.empty()||!engine.serverPackages.empty())
             throw std::runtime_error("Native Input default has an unsupported nonempty Engine tail");
         return QuestVr::DecalStateDetail::Add(sizeof(input),NativeInputValuesBytes(*input.input));
     }

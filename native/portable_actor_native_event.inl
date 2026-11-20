@@ -1,7 +1,7 @@
 // Native FindFunctionChecked + AActor::ProcessEvent, on the caller's existing
 // root. Input packets are deliberately limited to the authenticated scalar
 // Float/Bool/Actor or no-parameter forms reached by these native phases.
-    void OriginalNativeActorCallback(RuntimeObject* actor,const char* name,std::optional<Value> input,
+    bool OriginalNativeActorCallback(RuntimeObject* actor,const char* name,std::optional<Value> input,
         QuestVr::Vm::Execution& execution,const char* objectInputClass="Engine.Actor") {
         if(!transaction_)throw std::runtime_error("Original native Actor callback lacks its caller root");
         actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
@@ -41,9 +41,9 @@
         if(levelValue.text.empty())throw std::runtime_error("Original native Actor callback has no actual Actor.Level");
         ValidateObjectValue(levelValue,"Engine.LevelInfo",false);auto* level=Object(levelValue.text);
         const auto begun=OriginalAnimationField(level,"Engine.LevelInfo","bBegunPlay",Kind::Bool,0u,"BoolProperty");
-        if(!OriginalAnimationRead(level,begun,Kind::Bool).boolean||!OriginalGameScriptsEnabled())return;
+        if(!OriginalAnimationRead(level,begun,Kind::Bool).boolean||!OriginalGameScriptsEnabled())return false;
         if(!function)throw std::runtime_error("Enabled original native Actor callback has no retained selected UFunction");
-        if(!CanCall(*function,actor->reflection.objectPath)||OriginalAnimationPendingKill(actor)||function->nativeIndex)return;
+        if(!CanCall(*function,actor->reflection.objectPath)||OriginalAnimationPendingKill(actor)||function->nativeIndex)return false;
         if(function->flags&0x400u)throw std::runtime_error("Original native Actor callback RPC virtual branch is not represented");
         const auto declaration=FunctionFor(Object(function->path));auto* method=Object(function->path);
         if(declaration->source!=function->source||declaration->nativeIndex!=function->nativeIndex||declaration->flags!=function->flags)
@@ -66,4 +66,5 @@
         }
         if(parameters!=(input?1u:0u))throw std::runtime_error("Original native Actor callback is missing its actual input packet");
         static_cast<void>(execution.CallFunction(*function,actor->reflection.objectPath,arguments));
+        return true;
     }

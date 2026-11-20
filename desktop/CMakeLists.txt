@@ -1897,9 +1897,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME quest_native_window_store COMMAND quest_native_window_store_test)
 
-# Source-matched command-line and post-Possess/travel protocol; provider mocks,
+# Source-matched command-line, post-Possess/travel and LoadMap URL protocol; provider mocks,
 # not successful runtime startup or on-device gameplay acceptance.
-foreach(PLAYER_TAIL_TEST quest_command_line_param quest_spawn_play_actor_tail)
+foreach(PLAYER_TAIL_TEST quest_command_line_param quest_spawn_play_actor_tail quest_save_url_config)
     add_executable(${PLAYER_TAIL_TEST}_test ${PLAYER_TAIL_TEST}_test.cpp)
     target_compile_features(${PLAYER_TAIL_TEST}_test PRIVATE cxx_std_20)
     target_include_directories(${PLAYER_TAIL_TEST}_test PRIVATE "${PORT_NATIVE}")
