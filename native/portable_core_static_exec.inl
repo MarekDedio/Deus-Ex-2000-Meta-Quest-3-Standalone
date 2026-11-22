@@ -300,6 +300,8 @@
         ValidateRootNativeClientLease();
         ValidateNativeInputMutationLeases();
         ValidateNativeAudioPublicationLease();
+        ValidateNativeLoadMapUrlLease();
+        if(initialLoadMapCommit_)RequireInitialLoadMapAttachment();
         const auto result=prepared.Publish();
         if(!result.Published())throw std::runtime_error("Native app-owned config was not published");
         // Rename has happened. Only noexcept state publication follows: NEVER

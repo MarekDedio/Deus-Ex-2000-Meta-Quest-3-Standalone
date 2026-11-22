@@ -1,5 +1,31 @@
 # Port status
 
+## First Training map commits on desktop (2026-11-23)
+
+The owned `00_Training.dx` cold-load test returned the real Level and committed
+one world revision with the configured GameInfo, collision hash, brush
+tracker, native actor partition (317 slots, FirstDynamic 192) and Engine URL.
+The real Client had no viewport; Audio was still None, as expected at this
+phase. The run took 39.49 seconds on desktop (150,722 instructions and
+11,449 writes). The fixture verified unchanged bytes for 47 owned files and
+no partial publication on the forced early cut. It also refused a duplicate
+startup without mutating the committed world. Strict ARM64 compilation and both
+Android native links passed. No new APK or headset validation yet.
+
+The preceding unforced rollback stopped while Jaime's shadow was being
+destroyed. `Engine.Decal` uses the already supported `AActor::Destroy` in the
+retail vtable, so the port now dispatches that exact inherited routine. A
+separate source audit corrected the `AttachDecal` contract: the original
+checks `Client.Decals`, not Viewports.Num. The passing cold run still used the
+port's legacy viewport-based guard, which disabled attachment before viewport
+creation. It proves map commit and the self-destruction path, not the owned
+enabled-decals path. See [the decal audit](DECAL-NATIVE-CONTRACT.md).
+
+Next: bind the actual Client's configured decal setting and check both modes,
+then publish player/input startup and connect live first-Training crate hits,
+loot and falling. `Entry.dx`/Browse, rendering the committed world on Quest,
+and save/travel remain separate full-driver requirements.
+
 ## Latest integrated: Quest native sound provider (2026-11-20)
 
 The [native sound provider](QUEST-NATIVE-AUDIO-PROVIDER.md) is integrated in

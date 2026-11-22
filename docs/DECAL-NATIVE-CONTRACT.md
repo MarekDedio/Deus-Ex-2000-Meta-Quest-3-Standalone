@@ -1,6 +1,6 @@
 # Original GOTY decal native contract audit
 
-Audit dates: 2026-10-11 and 2026-10-12. This is a bounded static audit of the user's original
+Audit dates: 2026-10-11, 2026-10-12 and 2026-11-23. This is a bounded static audit of the user's original
 GOTY binaries and package bytecode, not a claim that the port implements decals.
 The original executables/DLLs were only read, never loaded or executed. Generic
 Unreal/SurrealEngine decal behavior is not evidence for this contract.
@@ -79,11 +79,30 @@ NPC behavior rather than implement the original startup path.
 
 ## Attach: bounded entry and primary surface selection
 
+`UClient::StaticConstructor` registers `Decals` as a `CPF_Config=0x4000`
+BoolProperty at offset `+0x4C`, mask `1` (`0x1037560B..0x1037564A`; UTF-16
+name at `0x1047C368`). The entry predicate below tests the whole DWORD. The
+native Viewports `Num` field is `+0x30`, independently read by `UClient::Flush`
+at `0x10375CCB`. `GameEngine.Init` loads the configured `ViewportManager` class
+before running `Client.Init` (`0x1038923E..0x1038927A`). In the owned GOTY INI
+that selector is `WinDrv.WindowsClient`; `Decals=True` is in that class's
+section, not in `[Engine.Client]`. The ordinary Config property uses the
+selected class's section, following the separate base-default/config phase.
+
+The port's legacy `HasViewport()` guard currently disagrees with this branch.
+Replacing it needs the live Client's configured Decals value, not an earlier
+viewport, a constant true, or a lookup of an unrelated driver section. An
+enabled client can take the geometry path with no viewport; a disabled client
+must take the early false path even when a viewport is registered. A geometry
+miss can still legitimately self-destroy a shadow in either startup profile.
+
 The following is directly established for the primary attachment path:
 
-1. Set result false. Require a non-null native client and at least one client
-   viewport (`0x103E72E5..0x103E7328`). The native assumes preceding engine/level
-   links exist. A headless success/failure shortcut is not equivalent behavior.
+1. Set result false. Follow Level.Engine (`+0x40`) to Engine.Client (`+0x44`).
+   Return false if Client is None or its **Decals** DWORD (`+0x4C`) is zero
+   (`0x103E72E5..0x103E7328`). The native assumes preceding engine/level links
+   exist. There is no viewport-count test here. The independent UClient
+   constructor writes the Viewports array at `+0x2C/+0x30/+0x34`.
 2. Require `self.Texture` (actor offset `+0x16C`), otherwise log
    `AttachDecal: No Texture` and return false. Only after these guards,
    `MultiDecalLevel` (`+0x318`) is upper-clamped to four; negatives are preserved.
@@ -302,7 +321,7 @@ Follow-up static reading of `artifacts/decal-native-20261011/attach-body.asm`
 and `pe-evidence.log` establishes the following **in-call** order. These are
 original image addresses, not evidence of completed host integration:
 
-1. After the client/viewport and nonnull Texture guards, upper-clamp and write
+1. After the client/Decals and nonnull Texture guards, upper-clamp and write
    `self.MultiDecalLevel` at `0x103E733B..7351`. Compute the rotation-derived
    ray and prepare the optional direction; zero direction consumes its
    rejection-sampled random draws at `0x103E74FD/7514/752B`, before the primary

@@ -281,6 +281,13 @@ destructor/free-index/unhash operation.
 Static exported-vtable checks show Engine Actor, Brush, Decoration, Inventory
 and Pawn all use `10301F8C` at slot`+24`. A later bounded PE read confirms
 Keypoint also uses10301F8C, covering PickupDistributor's native ancestor.
+ADecal's vtable at `10426F74` also contains `10301F8C` at `+24`; see
+[the decal audit](DECAL-NATIVE-CONTRACT.md). `ScriptedPawn.CreateShadow` spawns
+a `DeusEx.Shadow`, whose `Decal.BeginPlay` destroys it when `AttachDecal`
+returns false (for example with client Decals disabled or no hit).
+The lifecycle runs `Decal.Destroyed` (including `DetachDecal`) before the
+inherited native AActor destruction. No viewport or shadow record is created
+just to allow this path to proceed.
 DeusExDecoration and ScriptedPawn use
 `1001AFA4`, a thunk through IAT `1002727C` whose import is Engine AActor.Destroy.
 DeusExPlayer instead uses its own `100141F0` override. This is finite evidence

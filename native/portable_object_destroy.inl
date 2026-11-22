@@ -50,9 +50,10 @@
                 if(!AnyFlags(Table(cls->sourcePath).exports.at(cls->exportIndex).ObjFlags,ObjectFlags::Native))continue;
                 const auto name=LowerAscii(cls->reflection.objectPath);
                 selected=name=="engine.actor"||name=="engine.keypoint"||name=="engine.decoration"||
-                    name=="engine.inventory"||name=="engine.pawn"||name=="engine.brush"||
+                    name=="engine.inventory"||name=="engine.pawn"||name=="engine.brush"||name=="engine.decal"||
                     name=="deusex.deusexdecoration"||name=="deusex.scriptedpawn";
-                if(!selected)throw std::runtime_error("ConditionalDestroy selected native Actor override is not implemented");
+                if(!selected)throw std::runtime_error("ConditionalDestroy selected native Actor override is not implemented: "+
+                    cls->reflection.objectPath+" for "+current->reflection.objectPath);
                 break;
             }
             if(!selected)throw std::runtime_error("ConditionalDestroy has no authenticated native Actor Destroy selection");

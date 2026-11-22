@@ -47,8 +47,8 @@
 #include <utility>
 #include <vector>
 
-// Observation CLI, not an acceptance test or a startup publication path.
-// The production source list is shared, but ONLY Maps/00_Training.dx is loaded.
+// Rollback diagnostics plus an opt-in world-commit acceptance fixture.
+// ONLY Maps/00_Training.dx is loaded, not Entry or the GameEngine.Init driver.
 // Owned commercial packages are data; no original EXE/DLL is loaded/executed.
 namespace {
 namespace fs=std::filesystem;
@@ -689,12 +689,227 @@ void ObserveTrainingStasis(const PortableWorldStartupProbeResult& world,bool req
             <<"; original read-only gate, NOT Tick, physics scheduling or live Quest acceptance\n";
     }
 }
+QuestVr::OriginalLoadMapUrl ReadTrainingLoadMapUrl(const QuestVr::NativeConfig::OrderedIni& ini,
+    const PortablePackageTables& map) {
+    const auto configured=[&](const char* key) {
+        const auto value=ini.PropertyScalar("URL",key);
+        Require(value.has_value()&&value->size()<=4092u,std::string("Missing or oversized owned URL.")+key);
+        auto decoded=QuestVr::UnrealString::Decode(*value);
+        Require(decoded.size()<=1023u&&decoded.find(u'\0')==std::u16string::npos,
+            std::string("Invalid owned URL.")+key+" for the original FURL default buffer");
+        return decoded;
+    };
+    QuestVr::OriginalLoadMapUrl url;
+    url.protocol=configured("Protocol");url.host=configured("Host");url.portal=configured("Portal");
+    url.port=QuestVr::NativeInputKeyQueries::AppAtoi(configured("Port"));
+    url.map=fs::path(map.sourcePath).filename().u16string();
+    url.options.push_back(QuestVr::UnrealString::Decode(std::string("Name=")+std::string(TrainingUrlPlayerName)));
+    return url;
+}
+int RunFreshLoadMapCommit(const PortablePackageTables& map,const std::string& iniPath,Temporary& temporary,
+    const std::vector<Source>& sources,const PortableNativeClientSessionSnapshot& client,
+    const QuestVr::NativeClientLifetime& lifetime,std::size_t nativeWork) {
+    const auto ini=QuestVr::NativeConfig::ReadOrderedIni(fs::path(iniPath));
+    Require(ini.has_value(),"Cannot read owned first Training URL source");
+    const auto incoming=ReadTrainingLoadMapUrl(*ini,map);
+    // Explicitly no incoming travel replacement, not an inferred empty list.
+    const PortableMapTravelSource authoredTravel;
+    const auto loaded=LoadPortableRuntimeMap(map,&authoredTravel);
+    Require(loaded.passed&&loaded.exports==1356u&&loaded.contextExcludedExports==1991u&&loaded.actors==312u,
+        "Fresh commit fixture failed the independent first Training source census");
+    const auto model=ReadPortableRuntimeNativeModel();const auto engine=ReadPortableRuntimeEngineCollision();
+    const auto engineClient=[&] {
+        const auto value=ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Client");
+        return value.kind==Kind::Object&&value.text==client.clientPath;
+    };
+    const auto requireEmptyClientAudio=[&] {
+        const auto audio=ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Audio");
+        Require(lifetime.Alive()&&HasPortableRuntimeClient()&&engineClient()&&
+            SameNativeClient(client,ReadPortableRuntimeClientSession())&&ReadPortableRuntimeClientView().empty()&&
+            audio.kind==Kind::Object&&audio.text.empty()&&!ReadPortableRuntimeQuestAudioSubsystem().prepared&&
+            !ReadPortableRuntimeAudioOutput().bound,
+            "Initial LoadMap changed the actual empty Client phase or initialized premature audio");
+    };
+    const auto requireSameLevel=[&] {
+        const auto after=ReadPortableRuntimeNativeModel();const auto bound=ReadPortableRuntimeEngineCollision();
+        Require(after.available&&after.mapGeneration==model.mapGeneration&&after.levelPath==model.levelPath&&
+            after.modelPath==model.modelPath&&after.modelExportIndex==model.modelExportIndex&&
+            bound.prepared&&bound.engineIndex==engine.engineIndex&&bound.enginePath==engine.enginePath&&
+            bound.levelIndex==engine.levelIndex&&bound.boundLevelPath==model.levelPath,
+            "Initial LoadMap replaced its actual Engine/current Level or loaded Model identity");
+    };
+    const auto sameLookup=[](const PortableObjectLookupState& a,const PortableObjectLookupState& b) {
+        return a.prepared==b.prepared&&a.objects==b.objects&&a.retainedBytes==b.retainedBytes&&a.generation==b.generation;
+    };
+    Require(model.available&&model.mapGeneration&&engine.prepared&&engine.levelIndex&&
+        engine.engineIndex==client.engineIndex&&client.initialized&&client.viewports.empty()&&
+        client.registeredTargets.empty()&&engine.boundLevelPath==model.levelPath,
+        "Fresh LoadMap fixture has no genuine empty Client/Engine/current Training Level");
+    requireEmptyClientAudio();
+    const auto authoredOrder=ReadPortableWorldActorOrder();const auto hash=ReadPortableRuntimeRetailCollision();
+    const auto dormantDetail=Declared("Engine.LevelInfo.bHighDetailMode",Kind::Bool).boolean;
+    Require(!Declared("Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&
+        !Declared("Engine.LevelInfo.bStartup",Kind::Bool).boolean&&Declared("Engine.LevelInfo.Game",Kind::Object).text.empty()&&
+        authoredOrder.available&&!authoredOrder.firstDynamic&&authoredOrder.actorIndices.size()==1337u&&
+        authoredOrder.actorIndices[0u]!=0u&&authoredOrder.actorIndices[1u]==0u&&
+        !hash.initialized&&!hash.enabled&&hash.seed==InitialSeed,
+        "Fresh LoadMap fixture did not start against the actually dormant authored world");
+    auto expectedGame=Declared("Engine.LevelInfo.DefaultGameType",Kind::Object).text;
+    if(expectedGame.empty()) {
+        const auto configured=ini->Scalar("Engine.Engine","DefaultGame");
+        Require(configured.has_value()&&!configured->empty(),"Owned Engine.DefaultGame is missing for the genuine Client branch");
+        expectedGame=std::string(*configured);
+    }
+    const auto baseline=temporary.Save("BeforeInitialLoad");
+    const auto config=ReadLoadMapRollbackSnapshot(temporary.directory);
+    Require(config.url!=incoming&&Fold(config.player[0u].value_or(""))!=Fold(std::string(TrainingUrlPlayerName)),
+        "Initial LoadMap fixture must change the real Engine FURL and Name cache");
+    const auto revision=GetPortableRuntimeWorldRevision();const auto lookup=ReadPortableRuntimeObjectLookup();
+    const auto actors=ActorIdentities();const auto time=ReadPortableRuntimeLevelTime();
+    const auto statePresent=GetPortableRuntimeScriptStatePresent();const auto unsaved=GetPortableRuntimeUnsavedScriptState();
+    GC::Collect();const auto gc=GC::GetStats();
+    QuestVr::Vm::Limits limits;limits.instructions=4'000'000u;limits.nodes=1'048'576u;
+    limits.writes=StartupWriteLimit;limits.retainedBytes=128u<<20u;limits.nativeWork=nativeWork;
+    auto cut=limits;cut.writes=0;
+    const auto interrupted=CommitPortableRuntimeInitialLoadMap(incoming,cut);
+    Require(interrupted.execution.status==QuestVr::Vm::Status::Budget&&!interrupted.execution.committed&&
+        interrupted.execution.writes==0u&&interrupted.execution.error=="VM write limit"&&
+        interrupted.phase==PortableWorldStartupPhase::SelectGameInfo&&interrupted.gameInfoPath.empty()&&
+        !interrupted.loadMapContinuation.detailSelected,
+        std::string("Initial LoadMap cut did not refuse the first metered GameInfo spawn write: ")+
+        PortableWorldStartupPhaseName(interrupted.phase)+": "+interrupted.execution.error);
+    const auto requireRollback=[&](const std::string& snapshot) {
+        requireSameLevel();requireEmptyClientAudio();
+        Require(temporary.Save(snapshot)==baseline&&GetPortableRuntimeWorldRevision()==revision&&
+            GetPortableRuntimeScriptStatePresent()==statePresent&&GetPortableRuntimeUnsavedScriptState()==unsaved&&
+            std::bit_cast<std::uint64_t>(ReadPortableRuntimeLevelTime())==std::bit_cast<std::uint64_t>(time)&&
+            SameHash(hash,ReadPortableRuntimeRetailCollision())&&sameLookup(lookup,ReadPortableRuntimeObjectLookup())&&
+            authoredOrder==ReadPortableWorldActorOrder()&&SameActors(actors,ActorIdentities())&&
+            !Declared("Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&Declared("Engine.LevelInfo.Game",Kind::Object).text.empty()&&
+            Declared("Engine.LevelInfo.bHighDetailMode",Kind::Bool).boolean==dormantDetail&&
+            SameLoadMapRollbackSnapshot(config,ReadLoadMapRollbackSnapshot(temporary.directory)),
+            "Failed production LoadMap leaked world/hash/RNG/lookup ownership, URL/cache, or config file changes");
+        GC::Collect();const auto afterRefusal=GC::GetStats();
+        Require(afterRefusal.numObjects==gc.numObjects&&afterRefusal.memoryUsage==gc.memoryUsage,
+            "Failed production LoadMap retained provisional native objects");
+    };
+    requireRollback("AfterInitialLoadCut");
+    std::cout<<"INITIAL LOADMAP ROLLBACK VERIFIED zero-write budget cut during original SelectGameInfo\n";
+    const auto start=std::chrono::steady_clock::now();
+    const auto committed=CommitPortableRuntimeInitialLoadMap(incoming,limits);
+    const auto seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+    std::cout<<"OBSERVED first Training initial LoadMap seconds="<<seconds<<" status="<<StatusName(committed.execution.status)
+        <<" phase="<<PortableWorldStartupPhaseName(committed.phase)<<" actorSlot="<<committed.actorSlot
+        <<" actor="<<committed.actorPath<<" function="<<committed.execution.function<<" pc="<<committed.execution.offset
+        <<" opcode="<<static_cast<unsigned>(committed.execution.opcode)<<" instructions="<<committed.execution.instructions
+        <<" writes="<<committed.execution.writes
+        <<" committed="<<committed.execution.committed<<" error="<<committed.execution.error<<'\n';
+    if(!committed.execution.committed) {
+        for(const auto& frame:committed.execution.callStack)std::cout<<"  Initial LoadMap stack: "<<frame<<'\n';
+        requireRollback("AfterInitialLoadRefusal");
+        std::cout<<"INITIAL LOADMAP ROLLBACK VERIFIED unforced refusal during "
+            <<PortableWorldStartupPhaseName(committed.phase)<<'\n';
+    }
+    Require(committed.execution.status==QuestVr::Vm::Status::Returned&&committed.execution.committed&&
+        committed.execution.error.empty()&&committed.execution.value.kind==Kind::Object&&
+        committed.execution.value.text==model.levelPath&&committed.phase==PortableWorldStartupPhase::LoadMapTail,
+        "Original fresh Training LoadMap did not commit and return the actual Level: "+committed.execution.error);
+    const auto& continuation=committed.loadMapContinuation;
+    Require(continuation.detailSelected&&continuation.highDetail&&continuation.detailAttempted&&
+        continuation.detailDispatched&&continuation.detailCompleted&&continuation.urlCopied&&
+        continuation.urlConfigCacheDirty&&continuation.urlReturnedLevel&&continuation.urlConfigMatches==1u&&
+        continuation.urlConfigChanges==1u&&!continuation.audioAttempted&&!continuation.audioCompleted&&
+        !continuation.audioIndex&&!continuation.audioViewportIdentity&&
+        !continuation.resetViewports&&!continuation.resetKeys&&!continuation.resetBytes&&!continuation.resetFloats&&
+        committed.playerLogins.empty()&&!committed.inputResetPrefix.attempted&&
+        committed.brushTracker.attempted&&committed.brushTracker.completed&&
+        committed.brushTracker.levelOwned&&committed.brushTracker.topologyChecked&&committed.brushTracker.movers>0u,
+        "Initial LoadMap did not follow actual pre-OpenWindow Client/Detail/URL branches");
+    // Independently reread the live graph after collection. Unlike the
+    // rollback-only fixture, none of the committed actors are expected to
+    // disappear when the transaction host and its temporary roots retire.
+    GC::Collect();requireSameLevel();requireEmptyClientAudio();
+    const auto begunGame=Declared("Engine.LevelInfo.Game",Kind::Object).text;
+    Require(!begunGame.empty()&&begunGame==committed.gameInfoPath&&
+        Declared("Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&
+        !Declared("Engine.LevelInfo.bStartup",Kind::Bool).boolean&&Declared("Engine.LevelInfo.bHighDetailMode",Kind::Bool).boolean,
+        "Original LevelInfo temporary startup flag and persistent begun-world/GameInfo fields differ");
+    const auto game=ReadPortableRuntimeObjectOwnership(begunGame);
+    const auto gameLevel=ReadPortableRuntimeDeclaredScriptProperty(begunGame,"Engine.Actor.XLevel");
+    Require(game.objectIndex&&game.classIndex&&game.outerIndex&&game.outerPath=="00_Training"&&
+        Fold(game.classPath)==Fold(expectedGame)&&gameLevel.kind==Kind::Object&&gameLevel.text==model.levelPath,
+        "Committed LevelInfo.Game is not the actual configured GameInfo owned by Training");
+    const auto order=ReadPortableWorldActorOrder();
+    Require(order.available&&order.levelPath==model.levelPath&&order.firstDynamic&&
+        order.actorIndices.size()>2u&&order.actorIndices.size()==order.staticFlags.size()&&
+        *order.firstDynamic>=2u&&*order.firstDynamic<=order.actorIndices.size()&&
+        order.actorIndices[0u]==authoredOrder.actorIndices[0u]&&order.actorIndices[1u]==authoredOrder.actorIndices[1u]&&
+        std::find(order.actorIndices.begin()+2,order.actorIndices.end(),game.objectIndex)!=order.actorIndices.end(),
+        "Committed native actor slots lack the reserved pair, partition or actual spawned GameInfo");
+    // The original slot partition compacts and stably groups surviving static
+    // and dynamic actors. Verify committed live slots, not a probe snapshot.
+    std::array<std::optional<std::size_t>,2u> lastAuthored{};
+    auto unique=order.actorIndices;std::sort(unique.begin(),unique.end());
+    Require(std::adjacent_find(unique.begin(),unique.end())==unique.end(),"Committed Actor slots contain duplicate identities");
+    for(std::size_t i=2u;i<order.actorIndices.size();++i) {
+        const bool isStatic=i<*order.firstDynamic;
+        Require(order.actorIndices[i]&&(order.staticFlags[i]!=0u)==isStatic,
+            "Committed Level partition retained a non-reserved null or misplaced Actor");
+        const auto prior=std::find(authoredOrder.actorIndices.begin()+2,authoredOrder.actorIndices.end(),order.actorIndices[i]);
+        if(prior!=authoredOrder.actorIndices.end()) {
+            const auto index=static_cast<std::size_t>(prior-authoredOrder.actorIndices.begin());
+            auto& last=lastAuthored[isStatic?0u:1u];
+            Require(!last||*last<index,"Committed stable partition reordered surviving authored Actors");
+            last=index;
+        }
+    }
+    const auto liveHash=ReadPortableRuntimeRetailCollision();const auto liveLookup=ReadPortableRuntimeObjectLookup();
+    Require(liveHash.initialized&&liveHash.enabled&&liveHash.hashIdentity&&liveHash.mapGeneration==model.mapGeneration&&
+        liveHash.levelPath==model.levelPath&&liveHash.hashes==1u&&liveLookup.prepared&&liveLookup.generation==lookup.generation&&
+        GetPortableRuntimeWorldRevision()==revision+1u&&GetPortableRuntimeUnsavedScriptState(),
+        "Commit failed to retain the actual current-Level hash/lookup and publish exactly one world revision");
+    auto expectedConfig=config;expectedConfig.url=incoming;expectedConfig.player[0u]=std::string(TrainingUrlPlayerName);
+    expectedConfig.dirty=true;
+    Require(SameLoadMapRollbackSnapshot(expectedConfig,ReadLoadMapRollbackSnapshot(temporary.directory)),
+        "Commit did not publish exactly the Engine URL and Name cache without disk writes");
+    const auto liveActors=ActorIdentities();
+    Require(std::none_of(liveActors.begin(),liveActors.end(),[&](const auto& actor) {
+        return Fold(actor.classPath)=="deusex.shadow"&&
+            std::none_of(actors.begin(),actors.end(),[&](const auto& authored) {
+                return authored.objectIndex==actor.objectIndex&&authored.path==actor.path;
+            });
+    }),"Initial LoadMap kept a newly spawned shadow without a native viewport for AttachDecal");
+    GC::Collect();const auto liveGc=GC::GetStats();
+    const auto duplicate=CommitPortableRuntimeInitialLoadMap(incoming,limits);
+    Require(duplicate.execution.status==QuestVr::Vm::Status::Unsupported&&!duplicate.execution.committed&&
+        !duplicate.execution.instructions&&!duplicate.execution.writes&&duplicate.phase==PortableWorldStartupPhase::ValidateWorld&&
+        duplicate.execution.error=="Original initial LoadMap requires a fresh, not-yet-begun Level",
+        "Initial LoadMap did not reject a duplicate commit at its genuine freshness guard: "+duplicate.execution.error);
+    requireSameLevel();requireEmptyClientAudio();
+    Require(GetPortableRuntimeWorldRevision()==revision+1u&&ReadPortableWorldActorOrder()==order&&
+        SameActors(liveActors,ActorIdentities())&&SameHash(liveHash,ReadPortableRuntimeRetailCollision())&&
+        sameLookup(liveLookup,ReadPortableRuntimeObjectLookup())&&
+        SameLoadMapRollbackSnapshot(expectedConfig,ReadLoadMapRollbackSnapshot(temporary.directory)),
+        "Refused duplicate LoadMap mutated the committed world/URL/cache/config");
+    GC::Collect();const auto afterDuplicate=GC::GetStats();
+    Require(afterDuplicate.numObjects==liveGc.numObjects&&afterDuplicate.memoryUsage==liveGc.memoryUsage,
+        "Refused duplicate LoadMap leaked native objects");
+    for(const auto& source:sources)source.Unchanged();
+    // Temporary owns Shutdown; don't call map Unload (the actual live world
+    // still needs its separate session retirement and save/travel services).
+    std::cout<<"PASS original fresh Training LoadMap commit: Level="<<model.levelPath
+        <<" Actor slots="<<order.actorIndices.size()<<" firstDynamic="<<*order.firstDynamic
+        <<", genuine empty Client and pre-InitAudio None, "<<sources.size()
+        <<" owned sources unchanged. NOT Entry/Browse, player startup or headset play.\n";
+    return 0;
+}
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
     const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon,
     const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance,bool observeDynamicActors,
-    const std::vector<PortableStartupMoverCommand>& moverCommands,bool observeInitialInputResetPrefix,bool exerciseLoadMapUrlTail) {
+    const std::vector<PortableStartupMoverCommand>& moverCommands,bool observeInitialInputResetPrefix,bool exerciseLoadMapUrlTail,
+    bool commitFreshLoadMap) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+4u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -755,6 +970,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         initializedClient.clientIndex&&initializedClient.engineIndex&&!initializedClient.enginePath.empty()&&
         initializedClient.viewports.empty()&&initializedClient.registeredTargets.empty(),
         "Cannot initialize the actual empty Engine.Client before original startup viewport construction");
+    if(commitFreshLoadMap)return RunFreshLoadMapCommit(map,ini,temporary,sources,initializedClient,*lifetime,nativeWork);
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");
     // Explicit host protocol fixture: this executable owns the output transport
@@ -954,19 +1170,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const auto iniConfig=QuestVr::NativeConfig::ReadOrderedIni(fs::path(ini));
     Require(userConfig.has_value()&&iniConfig.has_value(),"Cannot read explicit original Login class configuration sources");
     if(exerciseLoadMapUrlTail) {
-        const auto configured=[&](const char* key) {
-            const auto value=iniConfig->PropertyScalar("URL",key);
-            Require(value.has_value()&&value->size()<=4092u,std::string("Missing or oversized owned URL.")+key);
-            auto decoded=QuestVr::UnrealString::Decode(*value);
-            Require(decoded.size()<=1023u&&decoded.find(u'\0')==std::u16string::npos,
-                std::string("Invalid owned URL.")+key+" for the original FURL default buffer");
-            return decoded;
-        };
-        auto& url=options.incomingLoadMapUrl.emplace();
-        url.protocol=configured("Protocol");url.host=configured("Host");url.portal=configured("Portal");
-        url.port=QuestVr::NativeInputKeyQueries::AppAtoi(configured("Port"));
-        url.map=fs::path(map.sourcePath).filename().u16string();
-        url.options.push_back(QuestVr::UnrealString::Decode(std::string("Name=")+std::string(TrainingUrlPlayerName)));
+        const auto& url=options.incomingLoadMapUrl.emplace(ReadTrainingLoadMapUrl(*iniConfig,map));
         Require(loadMapBefore->url!=options.incomingLoadMapUrl&&
             Fold(loadMapBefore->player[0u].value_or(""))!=Fold(std::string(TrainingUrlPlayerName)),
             "LoadMap URL fixture would not change both the Engine URL and player-name cache");
@@ -1325,7 +1529,7 @@ int main(int argc,char** argv) {
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
         bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{},observePlayerDistance{},observeDynamicActors{},observeInitialInputResetPrefix{};
-        bool exerciseLoadMapUrlTail{};
+        bool exerciseLoadMapUrlTail{},commitFreshLoadMap{};
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
@@ -1342,6 +1546,7 @@ int main(int argc,char** argv) {
             else if(option=="--observe-training-stasis")observeTrainingStasis=true;
             else if(option=="--observe-initial-input-reset-prefix")observeInitialInputResetPrefix=true;
             else if(option=="--exercise-loadmap-url-tail")exerciseLoadMapUrlTail=true;
+            else if(option=="--commit-fresh-loadmap")commitFreshLoadMap=true;
             else if(option=="--observe-player-distance")observePlayerDistance=true;
             else if(option=="--observe-dynamic-actors"){observeDynamicActors=true;observePlayerDistance=true;}
             else if(option=="--interpolate-training-mover") {
@@ -1392,7 +1597,13 @@ int main(int argc,char** argv) {
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--observe-initial-input-reset-prefix [--exercise-loadmap-url-tail]] [--observe-training-stasis] [--observe-player-distance] [--observe-dynamic-actors] [--require-spawn-encroachment] [--interpolate-training-mover PATH KEY0..7 SECONDS0<..60 (at most8; isolated from damage/weapon commands)] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--commit-fresh-loadmap] [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--observe-initial-input-reset-prefix [--exercise-loadmap-url-tail]] [--observe-training-stasis] [--observe-player-distance] [--observe-dynamic-actors] [--require-spawn-encroachment] [--interpolate-training-mover PATH KEY0..7 SECONDS0<..60 (at most8; isolated from damage/weapon commands)] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+        Require(!commitFreshLoadMap||(!expected&&repeats==1u&&!requireSpawnEncroachment&&!damageTrainingCrates&&
+            !collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates&&!fallTrainingCrates&&
+            !fallAfterLowerBreak&&!fallTrainingLoot&&!fallTrainingFragments&&!performTrainingFragments&&!performTrainingCohort&&
+            !observeTrainingStasis&&!observePlayerDistance&&!observeDynamicActors&&!observeInitialInputResetPrefix&&
+            !exerciseLoadMapUrlTail&&!damageWriteLimit&&!weapon&&!fire&&moverCommands.empty()),
+            "--commit-fresh-loadmap is independent of rollback flags, repeats and startup commands");
         Require(!exerciseLoadMapUrlTail||observeInitialInputResetPrefix,
             "--exercise-loadmap-url-tail requires --observe-initial-input-reset-prefix for genuine later ResetInput");
         Require(fireLocation.has_value()==fireRotation.has_value(),"Diagnostic Fire pose requires both --fire-location and --fire-rotation");
@@ -1423,7 +1634,7 @@ int main(int argc,char** argv) {
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors,moverCommands,observeInitialInputResetPrefix,exerciseLoadMapUrlTail);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors,moverCommands,observeInitialInputResetPrefix,exerciseLoadMapUrlTail,commitFreshLoadMap);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

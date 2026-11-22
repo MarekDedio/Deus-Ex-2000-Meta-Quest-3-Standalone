@@ -728,6 +728,11 @@ PortableRuntimeSummary InitializePortableRuntime(
 std::optional<QuestVr::OriginalLinkerLoadProfile> ReadPortableRuntimeLoadProfile();
 // Detached snapshot of the genuine Engine FURL; unavailable without the Engine.
 std::optional<QuestVr::OriginalLoadMapUrl> ReadPortableRuntimeLoadMapUrl();
+// Exclusive CPU owner; the real local map has already been attached from its
+// package. No Viewport or native Audio provider exists at this initial phase.
+// A committed Level does not by itself complete GameEngine.Init or Browse.
+PortableWorldStartupProbeResult CommitPortableRuntimeInitialLoadMap(
+    const QuestVr::OriginalLoadMapUrl& incoming,const QuestVr::Vm::Limits& limits={});
 std::optional<std::string> ReadPortableRuntimeLoadMapUserValue(const std::string& key);
 void ShutdownPortableRuntime();
 // Explicit read-only config/file-manager bindings for native DumpLocation.

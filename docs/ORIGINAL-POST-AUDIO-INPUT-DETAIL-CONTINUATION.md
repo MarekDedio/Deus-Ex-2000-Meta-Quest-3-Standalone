@@ -205,3 +205,23 @@ Keep early platform output preparation separate from publishing Engine.Audio;
 bind the existing Quest transport to the actual new viewport when the native
 initial driver reaches audio initialization. The explicit rollback probe with
 an initialized viewport and Audio instead exercises the later LoadMap path.
+
+## Next initial-driver requirement: retained Entry
+
+In the initial driver, `103893CB..103893D4` swaps the actual current Level
+(`+68`) into Entry (`+6C`) before Browse. A fresh Entry slot was None, so
+the current slot becomes empty, not a second alias for the Entry world.
+The existing public replacement loader retires the old linker and truncates
+its backing export range before decoding the candidate; calling it unchanged
+would destroy the Entry ownership required by this branch.
+
+The owned `Entry.dx` is a v68 package with 36 exports and 17 imports. It has a
+real Model and imports `DeusExItems.Skins.BlackMaskTex` and
+`Title_Music.Title_Music`. The current Training-only source set admits the
+Training track, not Title Music. Pre-admit the actual Entry dependencies,
+retain its Package, Model, actors, exact linker slots and lookup identities,
+and attach the selected playable map privately. The active-world generation
+must not double as the monotonic map-allocation counter if Entry can become
+current again. On candidate failure, preserve the private Entry for the real
+fallback or unwind the entire fresh embedding. Do not use the already-begun
+Training world as a surrogate Entry or expose it before viewport startup.
